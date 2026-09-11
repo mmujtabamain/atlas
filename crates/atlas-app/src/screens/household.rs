@@ -3,7 +3,10 @@
 //! and accounts of the boundary — each as the viewer is authorized to see it.
 
 use atlas_core::authz::Viewer;
-use atlas_core::forecast::household_projection;
+use atlas_core::forecast::{Case, ForecastOptions, forecast};
+use atlas_core::liquidity::Boundary;
+use atlas_core::provenance::ProvNode;
+use atlas_core::vocab::{MoneyClass, ResultStrength};
 use atlas_core::ids::ObjectRef;
 use atlas_core::liquidity::{account_liquidity, household_liquidity};
 use atlas_core::model::{Assumption, Household};
@@ -44,7 +47,21 @@ impl HouseholdOverview {
             household.series.len()
         );
         let liquidity = household_liquidity(household)?;
-        let projection = household_projection(household, horizon, None)?;
+        // The same chronological forecast the Projections screen runs (expected
+        // case, baseline), so every screen quotes one number.
+        let projection = forecast(household, Boundary::Household, ForecastOptions { through: horizon, scenario: None, case: Case::Expected })?;
+        let unreserved_total = projection.end.money().checked_sub(liquidity.reserved.money())?;
+        let unreserved = Calc::new(
+            unreserved_total,
+            ProvNode::sum(
+                "Conditional projected unreserved cash",
+                unreserved_total,
+                vec![projection.end.node().clone(), liquidity.reserved.node().clone().minus()],
+            )
+            .money_class(MoneyClass::ConditionalFuture)
+            .strength(ResultStrength::ScenarioTested)
+            .note("An earmark reduces unreserved cash, not the bank balance; paying the obligation later reduces cash and releases the earmark (§2.1)."),
+        );
         let viewer_name = household.entity_name(atlas_core::ids::EntityRef::Person(viewer.person));
         let figure = |id, label, calc: &Calc<Money>| ExplainedFigure::new(id, label, calc, household, viewer);
         let assumptions = projection
@@ -64,10 +81,10 @@ impl HouseholdOverview {
                 figure("liabilities", "Liabilities", &liquidity.liabilities),
                 figure("net-worth", "Net worth", &liquidity.net_worth),
             ],
-            conditional: figure("conditional-cash", "Conditional projected cash", &projection.conditional_cash),
-            unreserved: figure("unreserved-cash", "Conditional projected unreserved cash", &projection.unreserved_cash),
+            conditional: figure("conditional-cash", "Conditional projected cash", &projection.end),
+            unreserved: figure("unreserved-cash", "Conditional projected unreserved cash", &unreserved),
             assumptions,
-            occurrence_count: projection.occurrences.len(),
+            occurrence_count: projection.accounts.iter().map(|a| a.postings.len()).sum(),
         })
     }
 }
@@ -119,7 +136,7 @@ pub fn render(overview: &HouseholdOverview, household: &Household, viewer: Viewe
                                 .child(overview.conditional.figure(viewer_name, true))
                                 .child(overview.unreserved.figure(viewer_name, false))
                                 .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                                    "{} planned occurrences entered the chain. Only the first term is money already received; the rest is conditional on the assumptions below (§2.4).",
+                                    "{} postings entered the chain (expected case, baseline, taxes included once). Only the first term is money already received; the rest is conditional on the assumptions below (§2.4).",
                                     overview.occurrence_count
                                 ))),
                         )

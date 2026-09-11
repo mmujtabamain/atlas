@@ -5,7 +5,7 @@
 
 use atlas_core::authz::Viewer;
 use atlas_core::breach::{self, BreachReport};
-use atlas_core::forecast::household_projection;
+use atlas_core::forecast::{Case, ForecastOptions, forecast};
 use atlas_core::ids::{EntityRef, ObjectRef, ReservationId};
 use atlas_core::liquidity::{Boundary, boundary_liquidity};
 use atlas_core::model::{Coverage, Household};
@@ -74,7 +74,7 @@ impl LiquidityModel {
         let deficit = report.headroom.money().negated().clamped_at_zero();
 
         let (runway, minimum_injection) = if boundary == Boundary::Household {
-            let projection = household_projection(household, horizon, None)?;
+            let projection = forecast(household, Boundary::Household, ForecastOptions { through: horizon, scenario: None, case: Case::Expected })?;
             let breach = breach::analyse(&projection.path, report.hard_floor.money(), horizon)?;
             let injection = ExplainedFigure::new(format!("{slug}-injection"), "Minimum immediate injection K*", &breach.minimum_injection, household, viewer);
             (Some(breach), Some(injection))

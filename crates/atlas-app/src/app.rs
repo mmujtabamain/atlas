@@ -34,7 +34,10 @@ use crate::screens::{
     timeline::{TimelineFilter, TimelineModel},
     projections::ProjectionModel,
     assumptions::AssumptionsModel,
+    taxes::{E05Schedule, TaxModel},
 };
+use atlas_core::model::{TaxKind, TaxRule, TaxTiming, ThresholdBasis};
+use gpui_kit::component::input::InputEvent;
 use atlas_core::assumptions::{Derivation, apply_derived, derive};
 use atlas_core::ids::AssumptionId;
 use atlas_core::forecast::Case;
@@ -84,7 +87,60 @@ pub struct AtlasApp {
     sensitivity_boundary: Boundary,
     sensitivity_scenario: bool,
     assumptions: Result<AssumptionsModel, EngineError>,
+    tax_scenario: bool,
+    e05_amount: Money,
+    e05_split: bool,
+    e05_schedule: E05Schedule,
+    taxes: Result<TaxModel, EngineError>,
+    tax_controls: TaxControls,
+    tax_form: TaxRuleForm,
+    tax_form_effective_from_override: Option<NaiveDate>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Retained controls of the Taxes screen.
+pub struct TaxControls {
+    pub e05_amount: Entity<InputState>,
+}
+
+/// Values behind the stateless controls of the new-rule dialog.
+#[derive(Debug, Clone, Default)]
+pub struct TaxRuleDraft {
+    pub kind: usize,
+    pub timing: usize,
+}
+
+/// Retained state of the "New tax rule" dialog (§12.2).
+pub struct TaxRuleForm {
+    name: Entity<InputState>,
+    tax_type: Entity<InputState>,
+    category: Entity<SelectState<Vec<SharedString>>>,
+    rate: Entity<InputState>,
+    threshold: Entity<InputState>,
+    source: Entity<InputState>,
+    effective_from: Entity<DatePickerState>,
+    effective_to: Entity<DatePickerState>,
+    draft: Entity<TaxRuleDraft>,
+    categories: Vec<String>,
+}
+
+impl TaxRuleForm {
+    fn new(household: &Household, window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
+        let categories = household.categories();
+        let names: Vec<SharedString> = categories.iter().map(|c| SharedString::from(c.clone())).collect();
+        TaxRuleForm {
+            name: cx.new(|cx| InputState::new(window, cx).placeholder("e.g. Municipal levy on card spending")),
+            tax_type: cx.new(|cx| InputState::new(window, cx).placeholder("e.g. Card transaction tax")),
+            category: cx.new(|cx| SelectState::new(names, Some(IndexPath::default()), window, cx)),
+            rate: cx.new(|cx| InputState::new(window, cx).placeholder("rate in percent, e.g. 2.5")),
+            threshold: cx.new(|cx| InputState::new(window, cx).placeholder("threshold amount (only for threshold rules)")),
+            source: cx.new(|cx| InputState::new(window, cx).placeholder("official source or note — rule stays unverified")),
+            effective_from: cx.new(|cx| DatePickerState::new(window, cx).date_format("%d %b %Y")),
+            effective_to: cx.new(|cx| DatePickerState::new(window, cx).date_format("%d %b %Y")),
+            draft: cx.new(|_| TaxRuleDraft::default()),
+            categories,
+        }
+    }
 }
 
 /// Retained filter controls of the Timeline screen. Each `Select` is owned
@@ -250,7 +306,11 @@ impl AtlasApp {
         let series_form = SeriesForm::new(_window, _cx);
         let projection = Self::compute_projection(&household, viewer, Boundary::Household, Case::Expected, None, horizon);
         let assumptions = Self::compute_assumptions(&household, viewer, None, Derivation::ALL[0], Boundary::Household, false, horizon);
-        let subscriptions = timeline_controls
+        let e05_amount = Money::from_major(100_000, household.base_currency);
+        let taxes = Self::compute_taxes(&household, viewer, horizon, false, e05_amount, true, E05Schedule::PlanExample);
+        let tax_controls = TaxControls { e05_amount: _cx.new(|cx| InputState::new(_window, cx).default_value("100,000")) };
+        let tax_form = TaxRuleForm::new(&household, _window, _cx);
+        let mut subscriptions: Vec<Subscription> = timeline_controls
             .all()
             .iter()
             .map(|state| {
@@ -260,6 +320,12 @@ impl AtlasApp {
                 })
             })
             .collect();
+        subscriptions.push(_cx.subscribe_in(&tax_controls.e05_amount, _window, |this, state, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                let text = state.read(cx).value().to_string();
+                this.set_e05_amount_text(&text, cx);
+            }
+        }));
         log::info!("Atlas Financer window: section={} viewer={}", launch.section.slug(), viewer.person);
         AtlasApp {
             household,
@@ -288,8 +354,219 @@ impl AtlasApp {
             sensitivity_boundary: Boundary::Household,
             sensitivity_scenario: false,
             assumptions,
+            tax_scenario: false,
+            e05_amount,
+            e05_split: true,
+            e05_schedule: E05Schedule::PlanExample,
+            taxes,
+            tax_controls,
+            tax_form,
+            tax_form_effective_from_override: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn compute_taxes(household: &Household, viewer: Viewer, through: NaiveDate, scenario: bool, e05_amount: Money, e05_split: bool, e05_schedule: E05Schedule) -> Result<TaxModel, EngineError> {
+        let result = TaxModel::compute(household, viewer, through, scenario, e05_amount, e05_split, e05_schedule);
+        if let Err(err) = &result {
+            alerting::report(Level::Error, format!("tax model failed: {err}"));
+        }
+        result
+    }
+
+    fn refresh_taxes(&mut self) {
+        self.taxes = Self::compute_taxes(&self.household, self.viewer, self.horizon, self.tax_scenario, self.e05_amount, self.e05_split, self.e05_schedule);
+    }
+
+    /// The derived tax model, if the engine could compute it.
+    pub fn taxes(&self) -> Option<&TaxModel> {
+        self.taxes.as_ref().ok()
+    }
+
+    pub fn set_tax_scenario(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.tax_scenario = on;
+        self.refresh_taxes();
+        cx.notify();
+    }
+
+    pub fn set_e05_split(&mut self, split: bool, cx: &mut Context<Self>) {
+        self.e05_split = split;
+        self.refresh_taxes();
+        cx.notify();
+    }
+
+    pub fn set_e05_schedule(&mut self, schedule: E05Schedule, cx: &mut Context<Self>) {
+        self.e05_schedule = schedule;
+        self.refresh_taxes();
+        cx.notify();
+    }
+
+    /// Parses the E05 amount as typed; unparsable text leaves the last valid amount.
+    pub fn set_e05_amount_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if let Ok(amount) = Money::parse(text, self.household.base_currency)
+            && amount.is_positive()
+            && amount != self.e05_amount
+        {
+            self.e05_amount = amount;
+            self.refresh_taxes();
+            cx.notify();
+        }
+    }
+
+    // ----- user tax rules (§12.2) ----------------------------------------------------
+
+    pub fn open_new_tax_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let form = &self.tax_form;
+        let (name, tax_type, category, rate, threshold, source, from, to, draft) = (
+            form.name.clone(),
+            form.tax_type.clone(),
+            form.category.clone(),
+            form.rate.clone(),
+            form.threshold.clone(),
+            form.source.clone(),
+            form.effective_from.clone(),
+            form.effective_to.clone(),
+            form.draft.clone(),
+        );
+        let this = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let TaxRuleDraft { kind, timing } = draft.read(cx).clone();
+            let draft_entity = draft.clone();
+            let this = this.clone();
+            dialog
+                .title("New tax rule (user-authored, unverified)")
+                .w_96()
+                .child(
+                    Form::vertical()
+                        .child(Field::new().label("Name").required(true).child(Input::new(&name).id("tax-rule-name")))
+                        .child(Field::new().label("Tax type").child(Input::new(&tax_type).id("tax-rule-type")))
+                        .child(Field::new().label("Applies to series category").child(Select::new(&category).placeholder("Pick a category")))
+                        .child(
+                            Field::new().label("Kind (§14.3: full amount vs excess must be explicit)").child(
+                                RadioGroup::vertical("tax-rule-kind")
+                                    .children(["Flat rate on every matching transaction", "Rate on the full amount once a transaction exceeds the threshold", "Rate on the excess above the threshold"])
+                                    .selected_index(Some(kind))
+                                    .on_change({
+                                        let draft = draft_entity.clone();
+                                        move |index, _, cx| draft.update(cx, |d, cx| { d.kind = *index; cx.notify(); })
+                                    }),
+                            ),
+                        )
+                        .child(Field::new().label("Rate (%)").required(true).child(Input::new(&rate).id("tax-rule-rate")))
+                        .child(Field::new().label("Threshold (per transaction)").child(Input::new(&threshold).id("tax-rule-threshold")))
+                        .child(
+                            Field::new().label("Timing (§12.3)").child(
+                                RadioGroup::vertical("tax-rule-timing")
+                                    .children(["Paid immediately", "Withheld at source, creditable", "Withheld at source, final"])
+                                    .selected_index(Some(timing))
+                                    .on_change({
+                                        let draft = draft_entity.clone();
+                                        move |index, _, cx| draft.update(cx, |d, cx| { d.timing = *index; cx.notify(); })
+                                    }),
+                            ),
+                        )
+                        .child(Field::new().label("Effective from").required(true).child(DatePicker::new(&from)))
+                        .child(Field::new().label("Effective to (optional)").child(DatePicker::new(&to)))
+                        .child(Field::new().label("Source").child(Input::new(&source).id("tax-rule-source"))),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(Button::new("cancel-tax-rule").outline().label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(Button::new("save-tax-rule").primary().label("Add rule").on_click({
+                            let this = this.clone();
+                            move |_, window, cx| {
+                                Self::confirm_tax_rule(&this, window, cx);
+                            }
+                        })),
+                )
+                .on_ok(move |_, window, cx| Self::confirm_tax_rule(&this, window, cx))
+        });
+    }
+
+    fn confirm_tax_rule(this: &WeakEntity<Self>, window: &mut Window, cx: &mut App) -> bool {
+        match this.update(cx, |app, cx| app.submit_tax_rule(cx)) {
+            Ok(Ok(summary)) => {
+                window.push_notification(summary, cx);
+                window.close_dialog(cx);
+                true
+            }
+            Ok(Err(message)) => {
+                window.push_notification(message, cx);
+                false
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Sets the new-rule form's effective-from date (tests and scripted runs
+    /// cannot drive the calendar popup).
+    pub fn set_tax_form_effective_from(&mut self, date: NaiveDate, cx: &mut Context<Self>) {
+        self.tax_form_effective_from_override = Some(date);
+        cx.notify();
+    }
+
+    pub fn submit_tax_rule(&mut self, cx: &mut Context<Self>) -> Result<String, String> {
+        let form = &self.tax_form;
+        let currency = self.household.base_currency;
+        let name = form.name.read(cx).value().trim().to_string();
+        if name.is_empty() {
+            return Err("Give the rule a name.".to_string());
+        }
+        let rate_text = form.rate.read(cx).value().trim().replace('%', "");
+        let rate: f64 = rate_text.parse().map_err(|_| format!("Rate {rate_text:?} is not a percentage."))?;
+        if !(0.0..=100.0).contains(&rate) {
+            return Err("The rate must be between 0 and 100 percent.".to_string());
+        }
+        let rate_basis_points = (rate * 100.0).round() as u32;
+        let category_index = form.category.read(cx).selected_index(cx).map(|p| p.row).ok_or("Pick the series category the rule applies to.")?;
+        let category = form.categories.get(category_index).cloned().ok_or("Pick the series category the rule applies to.")?;
+        let TaxRuleDraft { kind, timing } = form.draft.read(cx).clone();
+        let kind = match kind {
+            0 => TaxKind::FlatRate { rate_basis_points },
+            on_excess => {
+                let threshold_text = form.threshold.read(cx).value().trim().to_string();
+                let threshold = Money::parse(&threshold_text, currency).map_err(|e| format!("Threshold: {e}"))?;
+                TaxKind::FlatAboveThreshold { rate_basis_points, threshold, basis: ThresholdBasis::PerTransaction, on_excess_only: on_excess == 2 }
+            }
+        };
+        let timing = match timing {
+            1 => TaxTiming::WithheldAtSource { creditable: true },
+            2 => TaxTiming::WithheldAtSource { creditable: false },
+            _ => TaxTiming::Immediate,
+        };
+        let effective_from = form
+            .effective_from
+            .read(cx)
+            .date()
+            .start()
+            .or(self.tax_form_effective_from_override)
+            .ok_or("Pick the date the rule takes effect.")?;
+        let effective_to = form.effective_to.read(cx).date().start();
+        if let Some(end) = effective_to
+            && end < effective_from
+        {
+            return Err("The end date must not be before the start date.".to_string());
+        }
+        let tax_type = form.tax_type.read(cx).value().trim().to_string();
+        let source = form.source.read(cx).value().trim().to_string();
+        let rule = TaxRule {
+            id: self.household.next_tax_rule_id(),
+            name: name.clone(),
+            tax_type: if tax_type.is_empty() { "User-defined tax".into() } else { tax_type },
+            categories: vec![category.clone()],
+            scope: format!("Series in category “{category}”"),
+            kind,
+            timing,
+            effective_from,
+            effective_to,
+            source: if source.is_empty() { "user-authored, no source attached — unverified (§12.7)".into() } else { format!("{source} — unverified until reviewed") },
+            explanation: "User-authored rule; simulated alongside the DEMO pack, never labelled legally compliant (§12.7, M54).".into(),
+        };
+        let pack = self.household.add_user_tax_rule(rule);
+        log::info!("user tax rule “{name}” added to {pack}");
+        self.refresh_derived();
+        cx.notify();
+        Ok(format!("Rule “{name}” added to {pack} (unverified); forecasts recomputed."))
     }
 
     fn compute_assumptions(
@@ -614,6 +891,7 @@ impl AtlasApp {
         self.timeline = Self::compute_timeline(&self.household, self.viewer, self.timeline_filter.clone());
         self.refresh_projection();
         self.refresh_assumptions();
+        self.refresh_taxes();
     }
 
     /// The derived liquidity model, if the engine could compute it.
@@ -910,7 +1188,7 @@ impl AtlasApp {
                     .gap_3()
                     .child(Icon::new(IconName::Wallet).small())
                     .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer"))
-                    .child(Tag::secondary().xsmall().outline().child("M5 assumptions")),
+                    .child(Tag::secondary().xsmall().outline().child("M6 taxes")),
             )
             .child(
                 h_flex()
@@ -1058,6 +1336,13 @@ impl AtlasApp {
                     screens::assumptions::render(&model, &self.household, self.viewer, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Assumptions, err, cx),
+            },
+            Section::Taxes => match &self.taxes {
+                Ok(model) => {
+                    let model = model.clone();
+                    screens::taxes::render(&model, &self.tax_controls, &self.household, self.viewer, cx).into_any_element()
+                }
+                Err(err) => self.render_engine_failure(Section::Taxes, err, cx),
             },
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
             other => screens::placeholder::render(other, cx).into_any_element(),
