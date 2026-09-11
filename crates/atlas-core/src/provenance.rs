@@ -449,6 +449,7 @@ impl ProvNode {
                 let mut projected = Vec::with_capacity(self.children.len());
                 let mut restricted: Vec<ProvNode> = Vec::new();
                 let mut restricted_level = Disclosure::Aggregate;
+                let mut restricted_subjects: Vec<ObjectRef> = Vec::new();
                 for child in &self.children {
                     let level = child.subject.as_ref().map(disclosure_of).unwrap_or(Disclosure::Full);
                     if matches!(level, Disclosure::Hidden | Disclosure::Aggregate) {
@@ -459,6 +460,11 @@ impl ProvNode {
                             continue;
                         }
                         restricted_level = restricted_level.min(level);
+                        if let Some(subject) = child.subject
+                            && !restricted_subjects.contains(&subject)
+                        {
+                            restricted_subjects.push(subject);
+                        }
                         restricted.push(child.clone());
                     } else {
                         if !restricted.is_empty() {
@@ -472,9 +478,41 @@ impl ProvNode {
                 if !restricted.is_empty() {
                     projected.push(merge_restricted(&restricted, restricted_level));
                 }
+                // §7.6 / V073 — a difference attack: with exactly one restricted
+                // term next to disclosed money terms and a disclosed total, the
+                // restricted value is total − the rest. Coarsen: the breakdown
+                // collapses into one authorized aggregate, only the total stays.
+                let restricted_terms: Vec<usize> = projected.iter().enumerate().filter(|(_, n)| matches!(n.operation, Operation::Aggregate { .. })).map(|(i, _)| i).collect();
+                let disclosed_money = projected.iter().filter(|n| !matches!(n.operation, Operation::Aggregate { .. }) && n.signed_money().is_some()).count();
+                // Exactly one restricted *object* (several lines of the same object count once).
+                let single_restricted_value = restricted_terms.len() == 1 && restricted_subjects.len() == 1 && projected[restricted_terms[0]].signed_money().is_some();
+                let mut notes = if own == Disclosure::SelectedFields { Vec::new() } else { self.notes.clone() };
+                if single_restricted_value && disclosed_money > 0 && matches!(self.operation, Operation::Sum) {
+                    let level = restricted_level;
+                    let (label, note) = match level {
+                        Disclosure::Hidden => ("Contributions (breakdown suppressed)", "one restricted contribution sits among disclosed terms; listing the others would reveal it as the difference, so only the authorized total is shown (§7.6, V073)"),
+                        _ => ("Contributions incl. an owner-authorized restricted one (breakdown suppressed)", "showing the other terms next to a single restricted contribution would reveal it as total − rest; the owner can authorize the disclosure explicitly (§7.6, V073)"),
+                    };
+                    // The single child carries the node's own value; the node's sign is its
+                    // parent's business, so the child adds up with a plus.
+                    let collapsed = ProvNode {
+                        label: label.into(),
+                        value: self.value.clone(),
+                        sign: Sign::Plus,
+                        operation: Operation::Aggregate { restricted_terms: projected.len() },
+                        children: Vec::new(),
+                        notes: vec![note.into()],
+                        strength: self.strength,
+                        money_class: self.money_class,
+                        certainty: self.certainty,
+                        subject: None,
+                    };
+                    notes.push("suppression applied: one restricted contribution (§7.6)".into());
+                    return ProvNode { children: vec![collapsed], notes, ..self.clone() };
+                }
                 ProvNode {
                     children: projected,
-                    notes: if own == Disclosure::SelectedFields { Vec::new() } else { self.notes.clone() },
+                    notes,
                     ..self.clone()
                 }
             }
@@ -676,14 +714,41 @@ mod tests {
             _ => Disclosure::Full,
         });
         assert!(projected.verify_sums().is_empty());
-        let aggregate = &projected.children()[1];
-        assert_eq!(aggregate.label(), "Owner-authorized restricted contribution");
-        assert_eq!(aggregate.value().as_money(), Some(pkr(500_000)));
+        // §7.6 / V073: one restricted object next to disclosed terms would be total − rest,
+        // so the breakdown is suppressed and only the authorized total remains.
+        assert_eq!(projected.children().len(), 1);
+        let aggregate = &projected.children()[0];
+        assert!(aggregate.label().contains("breakdown suppressed"));
+        assert_eq!(aggregate.value().as_money(), Some(pkr(1_200_000)));
         assert!(aggregate.children().is_empty());
-        assert!(matches!(aggregate.operation(), Operation::Aggregate { restricted_terms: 1 }));
         let text = projected.render_chain();
         assert!(!text.contains("Person A private savings"));
-        assert!(text.contains("underlying account details not disclosed"));
+        assert!(!text.contains("500,000"), "the private balance is not derivable");
+        assert!(!text.contains("1,400,000") && !text.contains("700,000"), "the other terms are coarsened away too");
+        assert!(text.contains("V073"));
+
+        // With two restricted objects, the aggregate of both is an authorized disclosure.
+        let other = AccountId::new(3);
+        let two = ProvNode::sum(
+            "Projected household-usable cash",
+            pkr(1_500_000),
+            vec![
+                ProvNode::input("Current household-visible cash", pkr(1_400_000), "balance").subject(ObjectRef::Account(shared)),
+                ProvNode::input("Person A private savings", pkr(500_000), "balance").subject(ObjectRef::Account(private)),
+                ProvNode::input("Person A private deposit", pkr(300_000), "balance").subject(ObjectRef::Account(other)),
+                ProvNode::input("planned household obligations", pkr(700_000), "series").minus(),
+            ],
+        );
+        let projected = two.project(&|object| match object {
+            ObjectRef::Account(id) if *id == private || *id == other => Disclosure::Aggregate,
+            _ => Disclosure::Full,
+        });
+        assert!(projected.verify_sums().is_empty());
+        let aggregate = &projected.children()[1];
+        assert_eq!(aggregate.label(), "Owner-authorized restricted contribution");
+        assert_eq!(aggregate.value().as_money(), Some(pkr(800_000)));
+        assert!(matches!(aggregate.operation(), Operation::Aggregate { restricted_terms: 2 }));
+        assert!(projected.render_chain().contains("underlying account details not disclosed"));
 
         // The owner sees everything.
         let full = node.project(&|_| Disclosure::Full);
@@ -700,6 +765,23 @@ mod tests {
                 ProvNode::input("visible", pkr(10), "b"),
                 ProvNode::input("s1", pkr(5), "b").subject(ObjectRef::Account(secret)),
                 ProvNode::input("s2", pkr(15), "b").subject(ObjectRef::Account(secret)),
+            ],
+        );
+        // Both hidden lines belong to one object: showing "visible 10" next to a total of 30
+        // would give it away, so the breakdown is suppressed (§7.6).
+        let projected = node.project(&|_| Disclosure::Hidden);
+        assert_eq!(projected.children().len(), 1);
+        assert!(projected.children()[0].label().contains("suppressed"));
+        assert_eq!(projected.children()[0].value().as_money(), Some(pkr(30)));
+        assert!(projected.verify_sums().is_empty());
+        // Two distinct hidden objects: their aggregate is shown without a count.
+        let node = ProvNode::sum(
+            "total",
+            pkr(30),
+            vec![
+                ProvNode::input("visible", pkr(10), "b"),
+                ProvNode::input("s1", pkr(5), "b").subject(ObjectRef::Account(secret)),
+                ProvNode::input("s2", pkr(15), "b").subject(ObjectRef::Account(AccountId::new(10))),
             ],
         );
         let projected = node.project(&|_| Disclosure::Hidden);

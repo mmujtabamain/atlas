@@ -321,6 +321,9 @@ pub struct AttributionLine {
     pub baseline: Money,
     pub scenario: Money,
     pub delta: Money,
+    /// The object the bucket belongs to (a series for event buckets), for
+    /// viewer projection (§7.6).
+    pub subject: Option<ObjectRef>,
 }
 
 /// The side-by-side result of [`compare`].
@@ -440,13 +443,14 @@ pub fn compare(household: &Household, boundary: Boundary, scenarios: &[ScenarioI
         label: String,
         baseline: i64,
         scenario: i64,
+        subject: Option<ObjectRef>,
     }
     let mut buckets: Vec<Bucket> = Vec::new();
-    let mut add = |kind: &'static str, label: String, side: bool, minor: i64| {
+    let mut add = |kind: &'static str, label: String, subject: Option<ObjectRef>, side: bool, minor: i64| {
         let bucket = match buckets.iter_mut().find(|b| b.kind == kind && b.label == label) {
             Some(b) => b,
             None => {
-                buckets.push(Bucket { kind, label, ..Default::default() });
+                buckets.push(Bucket { kind, label, subject, ..Default::default() });
                 buckets.last_mut().expect("just pushed")
             }
         };
@@ -457,12 +461,12 @@ pub fn compare(household: &Household, boundary: Boundary, scenarios: &[ScenarioI
             for posting in &account.postings {
                 let minor = posting.amount.share_basis_points(account.share_basis_points).minor();
                 if posting.tax_rule.is_some() {
-                    add("taxes", "Tax postings".into(), side, minor);
+                    add("taxes", "Tax postings".into(), None, side, minor);
                 } else if posting.fee_rule.is_some() {
-                    add("fees", "Fee events from rules".into(), side, minor);
+                    add("fees", "Fee events from rules".into(), None, side, minor);
                 } else {
                     let name = household.series_by_id(posting.series).or_else(|| overlaid_household.series_by_id(posting.series)).map(|s| s.name.clone()).unwrap_or_else(|| posting.series.to_string());
-                    add("events", name, side, minor);
+                    add("events", name, Some(ObjectRef::Series(posting.series)), side, minor);
                 }
             }
         }
@@ -478,11 +482,11 @@ pub fn compare(household: &Household, boundary: Boundary, scenarios: &[ScenarioI
                 ("events", _, _) => "events changed",
                 (other, _, _) => other,
             };
-            AttributionLine { kind, label: b.label, baseline: Money::new(b.baseline, currency), scenario: Money::new(b.scenario, currency), delta: Money::new(b.scenario - b.baseline, currency) }
+            AttributionLine { kind, label: b.label, baseline: Money::new(b.baseline, currency), scenario: Money::new(b.scenario, currency), delta: Money::new(b.scenario - b.baseline, currency), subject: b.subject }
         })
         .collect();
     if !start_delta.is_zero() {
-        attribution.push(AttributionLine { kind: "starting cash", label: "Reconciled starting cash".into(), baseline: baseline.start.money(), scenario: overlaid.start.money(), delta: start_delta });
+        attribution.push(AttributionLine { kind: "starting cash", label: "Reconciled starting cash".into(), baseline: baseline.start.money(), scenario: overlaid.start.money(), delta: start_delta, subject: None });
     }
     attribution.sort_by_key(|a| std::cmp::Reverse(a.delta.minor().abs()));
     let mut attribution_total = Money::zero(currency);
@@ -501,6 +505,47 @@ pub fn compare(household: &Household, boundary: Boundary, scenarios: &[ScenarioI
 
     log::info!("compared {} scenario(s) on {:?}: end delta {}, attribution {}", scenarios.len(), boundary, end_delta.format_signed(), if attribution_verified { "verified" } else { "MISMATCH" });
     Ok(ScenarioComparison { scenarios: scenarios.to_vec(), boundary, baseline, overlaid, metrics, attribution, attribution_total, end_delta, attribution_verified, merged_path })
+}
+
+/// §7.6 / V073 — the attribution as a viewer may see it: buckets of objects
+/// the viewer may not see are merged into one restricted line; if exactly one
+/// restricted object remains next to disclosed lines, the whole breakdown is
+/// suppressed (it would be the difference), leaving only the total.
+pub fn project_attribution(household: &Household, viewer: crate::authz::Viewer, lines: &[AttributionLine], end_delta: Money) -> (Vec<AttributionLine>, Option<String>) {
+    let currency = household.base_currency;
+    let mut visible = Vec::new();
+    let mut restricted_objects: Vec<ObjectRef> = Vec::new();
+    let mut restricted = AttributionLine { kind: "restricted", label: "Restricted contributions (details not disclosed to you)".into(), baseline: Money::zero(currency), scenario: Money::zero(currency), delta: Money::zero(currency), subject: None };
+    let mut any_restricted = false;
+    for line in lines {
+        let hidden = line.subject.is_some_and(|object| matches!(household.disclosure_for(viewer, object), crate::provenance::Disclosure::Hidden | crate::provenance::Disclosure::Aggregate));
+        if hidden {
+            any_restricted = true;
+            if let Some(object) = line.subject {
+                let governing = household.governing_object(object);
+                if !restricted_objects.contains(&governing) {
+                    restricted_objects.push(governing);
+                }
+            }
+            restricted.baseline = restricted.baseline.checked_add(line.baseline).unwrap_or(restricted.baseline);
+            restricted.scenario = restricted.scenario.checked_add(line.scenario).unwrap_or(restricted.scenario);
+            restricted.delta = restricted.delta.checked_add(line.delta).unwrap_or(restricted.delta);
+        } else {
+            visible.push(line.clone());
+        }
+    }
+    if !any_restricted {
+        return (visible, None);
+    }
+    if restricted_objects.len() == 1 && !visible.is_empty() {
+        log::info!("F139 attribution breakdown suppressed for {}: one restricted object next to disclosed buckets (§7.6)", viewer.person);
+        return (
+            vec![AttributionLine { kind: "suppressed", label: "Contributions (breakdown suppressed: one restricted contribution would be the difference, §7.6)".into(), baseline: Money::zero(currency), scenario: Money::zero(currency), delta: end_delta, subject: None }],
+            Some("Breakdown suppressed: a single restricted contribution next to the disclosed ones would be revealed as the difference (§7.6, V073). The total difference is still authorized.".into()),
+        );
+    }
+    visible.push(restricted);
+    (visible, None)
 }
 
 impl Household {
