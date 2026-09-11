@@ -120,7 +120,10 @@ fn person_b_gets_aggregates_not_person_a_details(cx: &mut TestAppContext) {
         assert_eq!(free.disclosure(), Disclosure::Aggregate);
         let text = free.calc.node().render_chain();
         assert!(!text.contains("Person A current account"), "{text}");
-        assert!(text.contains("Owner-authorized restricted contribution"), "{text}");
+        // §7.6 / V073: A's account is the only restricted term next to disclosed ones, so the
+        // breakdown is suppressed rather than exposed as a difference; its balance never appears.
+        assert!(text.contains("suppressed"), "{text}");
+        assert!(!text.contains("1,500,000"), "{text}");
         assert!(free.calc.node().verify_sums().is_empty());
         // The private Leave Job assumption stays with Person A (§18.5).
         assert!(overview.assumptions.iter().all(|a| a.private_to.is_none()));
@@ -1003,4 +1006,107 @@ fn decision_builder_steps_to_a_result_and_saves_a_scenario(cx: &mut TestAppConte
         assert_eq!(app.decision_step(), 1, "25,000,000 exceeds the 8,000,000 price");
         assert_eq!(app.decision_plan().down_payment, fixtures::pkr(2_500_000), "the plan keeps the last valid value");
     });
+}
+
+#[gpui_kit::test]
+fn privacy_screen_policy_editor_grants_and_fail_closed_view(cx: &mut TestAppContext) {
+    // Person A: the register, a new policy version through the editor, a purpose grant.
+    let launch = Launch { section: Section::Privacy, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+    cx.update(|cx| {
+        let model = app.read(cx).privacy();
+        assert_eq!(model.policies.len(), 16, "Person A may see every object");
+        assert_eq!(model.hidden_policies, 0);
+        assert!(model.problems.is_empty());
+        assert_eq!(model.grants.len(), 0);
+        assert!(!model.audit.is_empty(), "the fixture's own policy setup is on the log");
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-privacy").visible());
+        assert!(window.find("policy-row-1").visible());
+        window.click("privacy-edit-policy", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("policy-save").visible());
+        window.click("policy-note", cx);
+        window.input("shared summary from now on", cx);
+        window.click("policy-save", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx), "the policy was set");
+        window.clear_notifications(cx);
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let household = app.household();
+        // The first owned object in the picker is the shared savings account: now v2, "Shared summary".
+        let policy = household.policy_for(ObjectRef::Account(fixtures::ids::SHARED_SAVINGS)).unwrap();
+        assert_eq!(policy.version, 2);
+        assert_eq!(policy.preset_label(), "Shared summary");
+        assert_eq!(policy.previous_versions.len(), 1);
+        assert!(household.audit.iter().any(|e| matches!(e.kind, atlas_core::authz::AuditKind::PolicyChanged { from_version: 1, to_version: 2 })));
+        assert!(household.audit.iter().any(|e| e.summary.contains("shared summary from now on")));
+        assert!(app.is_dirty());
+        // Person B (co-owner) still sees it in full; a third person would not.
+        assert_eq!(household.disclosure_for(atlas_core::authz::Viewer::person(fixtures::ids::PERSON_B), ObjectRef::Account(fixtures::ids::SHARED_SAVINGS)), Disclosure::Full);
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("privacy-add-grant", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("grant-save").visible());
+        window.click("grant-save", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx), "the grant was added");
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let household = app.household();
+        assert_eq!(household.grants.len(), 1);
+        let grant = &household.grants[0];
+        assert_eq!(grant.grantee, atlas_core::authz::Grantee::Person(fixtures::ids::PERSON_B));
+        assert_eq!(grant.purpose, atlas_core::authz::Purpose::HouseholdForecast);
+        assert!(household.audit.iter().any(|e| matches!(e.kind, atlas_core::authz::AuditKind::GrantAdded)));
+        assert_eq!(app.privacy().grants.len(), 1);
+    });
+
+    // Person B: private objects are absent from the register; the denial text names no object.
+    let launch = Launch { section: Section::Privacy, viewer: 'b', ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    cx.update(|cx| {
+        let model = app.read(cx).privacy();
+        assert!(model.hidden_policies >= 3, "A's private account, payroll account and private scenarios");
+        assert!(model.policies.iter().all(|p| !p.object_name.contains("Person A current account")));
+        let example = model.denial_example.as_ref().expect("B is denied something");
+        assert!(example.contains("not authorized") || example.contains("fails closed"));
+        assert!(!example.contains("Person A current") && !example.contains("Leave job"));
+        assert!(model.problems.is_empty(), "problems are for owners; B owns no problematic object");
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("privacy-denial-example").is_some(), "the denial example is on the page (below the fold)");
+        assert!(window.try_find("policy-row-2").is_none(), "A's private account policy is not rendered for B");
+        assert!(window.try_find("policy-row-12").is_none(), "nor the private scenario's");
+    })
+    .unwrap();
 }
