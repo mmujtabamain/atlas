@@ -1,2 +1,13 @@
 # OS
 .DS_Store
+
+# Rust
+/target
+
+# Linux box plumbing (see README.md "Building on the Linux DevBench box"):
+# vendored system libraries for a box without root; never part of the product.
+/.sysroot
+
+# Headless screenshots produced by scripts/shoot.sh; shared through DevBench media instead.
+/shots/*.png
+/shots/*.log

@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = ["crates/atlas-core", "crates/atlas-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "UNLICENSED"
+
+[workspace.dependencies]
+# UI stack: gpui through gpui-kit only (never a direct gpui dependency).
+# `test-support` is enabled on the main dependency on purpose: it changes the
+# feature set of gpui itself, so keeping it in dev-dependencies would compile the
+# whole UI stack twice (once for `cargo build`, once for `cargo test`). On the
+# 2 GiB DevBench box that is ~8 extra minutes per cold build. Move it to
+# dev-dependencies once the build box has headroom.
+gpui-kit = { version = "0.6", features = ["test-support"] }
+
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+# Blocking HTTP client for the production-failure alert hook (DevBench notify endpoint).
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+
+# From https://gpui-kit.com/docs/installation "Faster development builds":
+# optimise the UI stack even in debug builds so `cargo run` renders at a usable
+# speed while our own crates stay debuggable.
+[profile.dev]
+# Line tables are enough for backtraces and keep rustc memory/disk in check on
+# the 2 GiB build box.
+debug = "line-tables-only"
+
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+gpui-kit = { opt-level = 3 }
+gpui-kit-assets = { opt-level = 3 }
+gpui-pre-macros = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+resvg = { opt-level = 3 }
