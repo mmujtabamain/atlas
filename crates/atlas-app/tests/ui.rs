@@ -374,3 +374,52 @@ fn timeline_scenario_toggle_and_series_editor(cx: &mut TestAppContext) {
         assert_eq!(overview.conditional.calc.money(), fixtures::pkr(6_195_000 - 4 * 10_000));
     });
 }
+
+#[gpui_kit::test]
+fn projections_switch_case_and_overlay_scenario(cx: &mut TestAppContext) {
+    use atlas_core::forecast::Case;
+    let launch = Launch { section: Section::Projections, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+
+    let (expected_end, expected_lowest) = cx.update(|cx| {
+        let model = app.read(cx).projection().unwrap();
+        assert_eq!(model.forecast.case, Case::Expected);
+        (model.forecast.end.money(), model.forecast.lowest.money())
+    });
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-projections").visible());
+        assert!(window.find("figure-household-proj-end").visible());
+        assert!(window.try_find("projection-runway-summary").is_some(), "the runway panel exists below the fold");
+        // Conservative is the first case tab.
+        window.within("projection-cases").click(0usize, cx);
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let model = app.read(cx).projection().unwrap();
+        assert_eq!(model.forecast.case, Case::Conservative);
+        assert!(model.forecast.end.money().minor() < expected_end.minor(), "low income / high expenses end lower");
+        assert!(model.forecast.lowest.money().minor() <= expected_lowest.minor());
+        assert_eq!(model.forecast.end.node().result_strength(), atlas_core::ResultStrength::ScenarioTested);
+    });
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("projection-buy-car", cx);
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let model = app.read(cx).projection().unwrap();
+        assert_eq!(model.forecast.scenario, Some(fixtures::ids::BUY_CAR));
+        // §11.3: the household aggregate survives the 2,500,000 down payment, but the
+        // account it is paid from does not — the per-account path and the transfer
+        // points make that visible.
+        assert!(model.forecast.breach.first_breach.is_none(), "{}", model.forecast.breach.summary());
+        let shared = model.forecast.accounts.iter().find(|a| a.account == fixtures::ids::SHARED_SAVINGS).unwrap();
+        assert!(shared.negative_from.is_some(), "shared savings goes negative on the car date");
+        assert!(model.forecast.transfer_points.iter().any(|t| t.account == fixtures::ids::SHARED_SAVINGS && t.coverable));
+        assert!(model.forecast.record.input_hash != 0);
+    });
+}
