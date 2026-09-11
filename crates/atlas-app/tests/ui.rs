@@ -696,3 +696,109 @@ fn real_data_new_household_entry_save_and_reopen(cx: &mut TestAppContext) {
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[gpui_kit::test]
+fn rules_inspector_simulation_and_editor(cx: &mut TestAppContext) {
+    let launch = Launch { section: Section::Rules, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+
+    // The fixture rules: two visible conflicts (the promo waiver beats the category fee
+    // on scope specificity in Oct and Nov), seven fee postings.
+    cx.update(|cx| {
+        let model = app.read(cx).rules().unwrap();
+        assert_eq!(model.rules.len(), 7);
+        assert_eq!(model.conflicts.len(), 2);
+        assert!(model.conflicts.iter().all(|d| d.resolution == "scope specificity"));
+        assert_eq!(model.evaluation.fees.len(), 7);
+        assert!(model.simulation.is_none());
+        assert!(model.funding.is_empty(), "funding rules are scenario-scoped");
+    });
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-rules").visible());
+        assert!(window.find("rule-row-1").visible());
+        // Simulate the transfer fee, then evaluate inside the scenario.
+        window.click("rule-simulate-3", cx);
+        window.click("rules-buy-car", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let model = app.read(cx).rules().unwrap();
+        let sim = model.simulation.as_ref().expect("simulation ran");
+        assert_eq!(sim.rule, fixtures::ids::RULE_TRANSFER_FEE);
+        assert!(sim.end_delta.is_negative(), "the fee rule costs money");
+        assert_eq!(sim.end_delta, sim.fee_delta);
+        assert_eq!(model.funding.len(), 3, "the car-purchase funding order is visible inside the scenario");
+        assert!(model.funding[0].forbidden);
+    });
+
+    // Disabling a rule records a version and removes its fees; the household is dirty.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("rule-toggle-1", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let rule = app.household().rule(fixtures::ids::RULE_FOREIGN_FEE).unwrap();
+        assert!(!rule.enabled);
+        assert_eq!(rule.version, 2);
+        assert!(app.is_dirty());
+        let model = app.rules().unwrap();
+        assert_eq!(model.conflicts.len(), 0, "without the category fee there is nothing to conflict with");
+        assert_eq!(model.evaluation.fees.len(), 5);
+    });
+
+    // The editor: a 2% fee on the "Living" category, validated by the engine.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.clear_notifications(cx);
+        window.click("new-rule", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("rule-save").visible());
+        window.click("rule-save", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "a nameless rule is refused");
+        window.click("rule-name", cx);
+        window.input("Living levy", cx);
+        window.click("rule-percent", cx);
+        window.input("2", cx);
+        window.click("rule-save", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx), "the rule was accepted");
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let household = app.household();
+        assert_eq!(household.rules.len(), 8);
+        let rule = household.rules.last().unwrap();
+        assert_eq!(rule.name, "Living levy");
+        assert!(matches!(&rule.action, atlas_core::rules::RuleAction::AddFee { basis_points: 200, .. }));
+        assert_eq!(rule.history.len(), 1);
+        let model = app.rules().unwrap();
+        assert!(model.evaluation.fees.iter().any(|f| f.rule == rule.id), "the new rule fires in the window");
+        // The new fee lands on the Visa card (the first category is "Card spending"), which is
+        // outside household cash; the record still names every rule that posted inside the boundary.
+        let projection = app.projection().unwrap();
+        assert!(projection.forecast.record.rules_applied.iter().any(|r| r.contains("Bank B transfer fee")), "the forecast record names the rules that posted");
+        assert!(projection.forecast.end.node().render_chain().contains("Fees from user rules"), "the §2.1 chain carries the fee term");
+    });
+}
