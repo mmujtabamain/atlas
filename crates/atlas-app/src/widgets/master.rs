@@ -64,6 +64,8 @@ pub fn master_detail(id: &'static str, master: impl IntoElement, detail: impl In
 /// Page header shared by every screen.
 pub fn page_header(title: impl Into<SharedString>, subtitle: impl Into<SharedString>, cx: &App) -> impl IntoElement {
     v_flex()
+        .flex_1()
+        .min_w_0()
         .gap_1()
         .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(title.into()))
         .child(div().text_sm().text_color(cx.theme().muted_foreground).child(subtitle.into()))

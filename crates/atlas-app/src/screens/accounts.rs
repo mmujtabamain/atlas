@@ -6,8 +6,10 @@ use atlas_core::authz::Viewer;
 use atlas_core::ids::{AccountId, EntityRef, ObjectRef};
 use atlas_core::model::{Account, Coverage, Household};
 use atlas_core::Disclosure;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _,
+    button::{Button, ButtonVariants as _},
     description_list::{DescriptionItem, DescriptionList},
     group_box::GroupBox, h_flex,
     table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
@@ -42,7 +44,33 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
     }));
 
     let detail: AnyElement = match selected.and_then(|id| household.account(id).zip(models.account(id))) {
-        Some((account, model)) => render_detail(account, model, household, &viewer_name, cx).into_any_element(),
+        Some((account, model)) => {
+            let id = account.id;
+            v_flex()
+                .gap_4()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("reconcile-account")
+                                .small()
+                                .outline()
+                                .label("Reconcile…")
+                                .tooltip("Set the settled balance from a statement (§7 last reconciliation)")
+                                .on_click(cx.listener(move |this, _, window, cx| this.open_entry(crate::entry::Entry::Reconcile(id), window, cx))),
+                        )
+                        .child(
+                            Button::new("delete-account")
+                                .small()
+                                .ghost()
+                                .label("Delete")
+                                .tooltip("Refused while series, earmarks or actuals still reference the account")
+                                .on_click(cx.listener(move |this, _, window, cx| this.delete_object(ObjectRef::Account(id), window, cx))),
+                        ),
+                )
+                .child(render_detail(account, model, household, &viewer_name, cx))
+                .into_any_element()
+        }
         None => div().text_color(cx.theme().muted_foreground).child("No account is visible to this viewer.").into_any_element(),
     };
 
@@ -50,17 +78,28 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
         .id("screen-accounts")
         .test_support()
         .gap_6()
-        .child(page_header(
-            "Accounts",
-            format!(
-                "{} of {} accounts visible to {}{} · every property of §7, every balance with its chain",
-                models.accounts.len(),
-                household.accounts.len(),
-                viewer_name,
-                if hidden > 0 { format!(" ({hidden} not disclosed, V062)") } else { String::new() }
+        .child(
+            h_flex().justify_between().items_start().gap_4().child(page_header(
+                "Accounts",
+                format!(
+                    "{} of {} accounts visible to {}{} · every property of §7, every balance with its chain",
+                    models.accounts.len(),
+                    household.accounts.len(),
+                    viewer_name,
+                    if hidden > 0 { format!(" ({hidden} not disclosed, V062)") } else { String::new() }
+                ),
+                cx,
+            ))
+            .child(
+                Button::new("new-account")
+                    .flex_shrink_0()
+                    .small()
+                    .outline()
+                    .icon(IconName::Plus)
+                    .label("New account…")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_entry(crate::entry::Entry::Account, window, cx))),
             ),
-            cx,
-        ))
+        )
         .child(master_detail("accounts-master-detail", master, detail, cx))
 }
 

@@ -4,8 +4,10 @@
 use atlas_core::authz::Viewer;
 use atlas_core::ids::{EntityRef, PersonId};
 use atlas_core::model::Household;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _,
+    button::Button,
     description_list::{DescriptionItem, DescriptionList},
     group_box::GroupBox, h_flex,
     table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
@@ -47,11 +49,22 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
         .id("screen-people")
         .test_support()
         .gap_6()
-        .child(page_header(
-            "People",
-            format!("{} participants · a person may own accounts, co-own accounts, earn salaries, own companies and owe taxes (§5.2)", household.people.len()),
-            cx,
-        ))
+        .child(
+            h_flex().justify_between().items_start().gap_4().child(page_header(
+                "People",
+                format!("{} participants · a person may own accounts, co-own accounts, earn salaries, own companies and owe taxes (§5.2)", household.people.len()),
+                cx,
+            ))
+            .child(
+                Button::new("new-person")
+                    .flex_shrink_0()
+                    .small()
+                    .outline()
+                    .icon(IconName::Plus)
+                    .label("New person…")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_entry(crate::entry::Entry::Person, window, cx))),
+            ),
+        )
         .child(master_detail("people-master-detail", master, detail, cx))
 }
 

@@ -5,8 +5,10 @@ use atlas_core::authz::Viewer;
 use atlas_core::ids::{CompanyId, EntityRef};
 use atlas_core::model::{Company, Household};
 use atlas_core::Disclosure;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _,
+    button::Button,
     description_list::{DescriptionItem, DescriptionList},
     group_box::GroupBox, h_flex,
     table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
@@ -53,15 +55,26 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
         .id("screen-companies")
         .test_support()
         .gap_6()
-        .child(page_header(
-            "Companies",
-            format!(
-                "{} of {} companies visible · a company is legally distinct from its owners; its cash is never household cash (§8.5)",
-                models.companies.len(),
-                household.companies.len()
+        .child(
+            h_flex().justify_between().items_start().gap_4().child(page_header(
+                "Companies",
+                format!(
+                    "{} of {} companies visible · a company is legally distinct from its owners; its cash is never household cash (§8.5)",
+                    models.companies.len(),
+                    household.companies.len()
+                ),
+                cx,
+            ))
+            .child(
+                Button::new("new-company")
+                    .flex_shrink_0()
+                    .small()
+                    .outline()
+                    .icon(IconName::Plus)
+                    .label("New company…")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_entry(crate::entry::Entry::Company, window, cx))),
             ),
-            cx,
-        ))
+        )
         .child(master_detail("companies-master-detail", master, detail, cx))
 }
 

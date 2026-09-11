@@ -127,12 +127,14 @@ pub fn render(overview: &HouseholdOverview, household: &Household, viewer: Viewe
                 .title(format!("Conditional projection through {} (§2.1)", overview.horizon.format("%d %b %Y")))
                 .child(
                     h_flex()
+                        .w_full()
                         .items_start()
                         .gap_8()
                         .child(
                             v_flex()
                                 .gap_6()
-                                .min_w_64()
+                                .w_80()
+                                .flex_shrink_0()
                                 .child(overview.conditional.figure(viewer_name, true))
                                 .child(overview.unreserved.figure(viewer_name, false))
                                 .child(div().text_xs().text_color(theme.muted_foreground).child(format!(

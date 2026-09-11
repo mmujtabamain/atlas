@@ -147,15 +147,25 @@ pub fn render(model: &AssumptionsModel, household: &Household, viewer: Viewer, c
         .id("screen-assumptions")
         .test_support()
         .gap_6()
-        .child(page_header(
-            "Assumptions",
-            format!(
-                "{} assumptions visible to {} · the application never invents one: each is entered, derived by a disclosed formula, imported from a rule pack or created by a scenario (§2.5)",
-                visible.len(),
-                viewer_name
+        .child(
+            h_flex().justify_between().items_start().gap_4().child(page_header(
+                "Assumptions",
+                format!(
+                    "{} assumptions visible to {} · the application never invents one: each is entered, derived by a disclosed formula, imported from a rule pack or created by a scenario (§2.5)",
+                    visible.len(),
+                    viewer_name
+                ),
+                cx,
+            ))
+            .child(
+                Button::new("new-assumption")
+                    .flex_shrink_0()
+                    .small()
+                    .outline()
+                    .label("New assumption…")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_entry(crate::entry::Entry::Assumption, window, cx))),
             ),
-            cx,
-        ))
+        )
         .child(render_register(model, household, &visible, cx))
         .child(render_derivation(model, household, &viewer_name, cx))
         .child(render_sensitivity(model, household, cx))

@@ -101,16 +101,38 @@ pub fn render(model: &TimelineModel, controls: &TimelineControls, household: &Ho
         .id("screen-timeline")
         .test_support()
         .gap_6()
-        .child(page_header(
-            "Timeline",
-            format!(
-                "{} occurrences from {} through {} — every planned movement with its due, posting, settlement and availability dates (M05) and its reconciliation status (§16)",
-                model.occurrences.len(),
-                household.as_of.format("%d %b %Y"),
-                model.filter.through.format("%d %b %Y")
+        .child(
+            h_flex().justify_between().items_start().gap_4().child(page_header(
+                "Timeline",
+                format!(
+                    "{} occurrences from {} through {} — every planned movement with its due, posting, settlement and availability dates (M05) and its reconciliation status (§16)",
+                    model.occurrences.len(),
+                    household.as_of.format("%d %b %Y"),
+                    model.filter.through.format("%d %b %Y")
+                ),
+                cx,
+            ))
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .gap_2()
+                    .child(
+                        Button::new("new-series")
+                            .small()
+                            .outline()
+                            .icon(IconName::Plus)
+                            .label("New series…")
+                            .on_click(cx.listener(|this, _, window, cx| this.open_entry(crate::entry::Entry::Series, window, cx))),
+                    )
+                    .child(
+                        Button::new("new-actual")
+                            .small()
+                            .outline()
+                            .label("Record actual…")
+                            .on_click(cx.listener(|this, _, window, cx| this.open_entry(crate::entry::Entry::Actual, window, cx))),
+                    ),
             ),
-            cx,
-        ))
+        )
         .child(
             h_flex()
                 .flex_wrap()
@@ -264,7 +286,7 @@ fn render_series(model: &TimelineModel, household: &Household, cx: &mut Context<
                                 .child(TableHead::new().min_w_0().child("Recurrence · clocks"))
                                 .child(TableHead::new().w_64().flex_shrink_0().child("Changes and exceptions"))
                                 .child(TableHead::new().w_32().flex_shrink_0().child("Certainty"))
-                                .child(TableHead::new().w_20().flex_shrink_0().child("")),
+                                .child(TableHead::new().w_24().flex_shrink_0().child("")),
                         ),
                     )
                     .child(TableBody::new().children(model.series.iter().enumerate().filter_map(|(index, id)| {
@@ -299,13 +321,25 @@ fn render_series(model: &TimelineModel, household: &Household, cx: &mut Context<
                                 .child(muted_cell(if edits.is_empty() { "—".to_string() } else { edits.join(" · ") }, cx).w_64().flex_shrink_0().overflow_hidden())
                                 .child(TableCell::new().w_32().flex_shrink_0().child(labels::certainty_tag(series.certainty)))
                                 .child(
-                                    TableCell::new().w_20().flex_shrink_0().child(
-                                        Button::new(SharedString::from(format!("edit-series-{}", id.raw())))
-                                            .xsmall()
-                                            .ghost()
-                                            .icon(IconName::Pencil)
-                                            .tooltip("Edit series…")
-                                            .on_click(cx.listener(move |this, _, window, cx| this.open_series_editor(id, window, cx))),
+                                    TableCell::new().w_24().flex_shrink_0().child(
+                                        h_flex()
+                                            .gap_1()
+                                            .child(
+                                                Button::new(SharedString::from(format!("edit-series-{}", id.raw())))
+                                                    .xsmall()
+                                                    .ghost()
+                                                    .icon(IconName::Pencil)
+                                                    .tooltip("Edit series…")
+                                                    .on_click(cx.listener(move |this, _, window, cx| this.open_series_editor(id, window, cx))),
+                                            )
+                                            .child(
+                                                Button::new(SharedString::from(format!("delete-series-{}", id.raw())))
+                                                    .xsmall()
+                                                    .ghost()
+                                                    .icon(IconName::Trash)
+                                                    .tooltip("Delete series")
+                                                    .on_click(cx.listener(move |this, _, window, cx| this.delete_object(ObjectRef::Series(id), window, cx))),
+                                            ),
                                     ),
                                 ),
                         )
