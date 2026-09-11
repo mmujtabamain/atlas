@@ -26,10 +26,22 @@ use gpui_kit::*;
 
 use crate::alerting::{self, Level};
 use crate::launch::Launch;
-use crate::screens::{self, Section, entities::EntityModels, household::HouseholdOverview, liquidity::LiquidityModel};
-use atlas_core::ids::{AccountId, CompanyId, PersonId, ReservationId};
+use crate::screens::{
+    self, Section,
+    entities::EntityModels,
+    household::HouseholdOverview,
+    liquidity::LiquidityModel,
+    timeline::{TimelineFilter, TimelineModel},
+};
+use atlas_core::timeline::{AmountSpec, Exception, ExceptionKind, OccurrenceStatus};
+use atlas_core::vocab::Certainty;
+use gpui_kit::component::{date_picker::{DatePicker, DatePickerState}, select::SelectEvent};
+use chrono::Months;
+use atlas_core::ids::{AccountId, CompanyId, PersonId, ReservationId, SeriesId};
 use atlas_core::liquidity::Boundary;
 use atlas_core::model::{Coverage, Hardness, Reservation};
+use atlas_core::ids::ObjectRef;
+use atlas_core::Disclosure;
 use gpui_kit::component::{
     IndexPath,
     dialog::DialogFooter,
@@ -54,6 +66,108 @@ pub struct AtlasApp {
     selected_company: Option<CompanyId>,
     selected_account: Option<AccountId>,
     reservation_form: ReservationForm,
+    timeline_filter: TimelineFilter,
+    timeline: Result<TimelineModel, EngineError>,
+    timeline_controls: TimelineControls,
+    series_form: SeriesForm,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// Retained filter controls of the Timeline screen. Each `Select` is owned
+/// here; a `SelectEvent::Confirm` subscription rebuilds the filter.
+pub struct TimelineControls {
+    pub entity: Entity<SelectState<Vec<SharedString>>>,
+    pub account: Entity<SelectState<Vec<SharedString>>>,
+    pub certainty: Entity<SelectState<Vec<SharedString>>>,
+    pub status: Entity<SelectState<Vec<SharedString>>>,
+    pub horizon: Entity<SelectState<Vec<SharedString>>>,
+    entities: Vec<EntityRef>,
+    accounts: Vec<AccountId>,
+}
+
+impl TimelineControls {
+    fn new(household: &Household, viewer: Viewer, window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
+        let mut entities = vec![EntityRef::Household];
+        entities.extend(household.people.iter().map(|p| EntityRef::Person(p.id)));
+        entities.extend(
+            household
+                .companies
+                .iter()
+                .filter(|c| matches!(household.disclosure_for(viewer, ObjectRef::Company(c.id)), Disclosure::Full | Disclosure::SelectedFields))
+                .map(|c| EntityRef::Company(c.id)),
+        );
+        let mut entity_names: Vec<SharedString> = vec!["All entities".into()];
+        entity_names.extend(entities.iter().map(|e| SharedString::from(household.entity_name(*e))));
+        let accounts: Vec<AccountId> = household
+            .accounts
+            .iter()
+            .filter(|a| !matches!(household.disclosure_for(viewer, ObjectRef::Account(a.id)), Disclosure::Hidden | Disclosure::Aggregate))
+            .map(|a| a.id)
+            .collect();
+        let mut account_names: Vec<SharedString> = vec!["All accounts".into()];
+        account_names.extend(accounts.iter().filter_map(|id| household.account(*id)).map(|a| SharedString::from(a.name.clone())));
+        let mut certainty_names: Vec<SharedString> = vec!["All certainties".into()];
+        certainty_names.extend(Certainty::ALL.iter().map(|c| SharedString::from(c.label())));
+        let mut status_names: Vec<SharedString> = vec!["All statuses".into()];
+        status_names.extend(STATUSES.iter().map(|s| SharedString::from(s.label())));
+        let horizon_names: Vec<SharedString> = HORIZONS.iter().map(|(label, _)| SharedString::from(*label)).collect();
+        let first = Some(IndexPath::default());
+        TimelineControls {
+            entity: cx.new(|cx| SelectState::new(entity_names, first, window, cx)),
+            account: cx.new(|cx| SelectState::new(account_names, first, window, cx)),
+            certainty: cx.new(|cx| SelectState::new(certainty_names, first, window, cx)),
+            status: cx.new(|cx| SelectState::new(status_names, first, window, cx)),
+            horizon: cx.new(|cx| SelectState::new(horizon_names, first, window, cx)),
+            entities,
+            accounts,
+        }
+    }
+
+    fn all(&self) -> [Entity<SelectState<Vec<SharedString>>>; 5] {
+        [self.entity.clone(), self.account.clone(), self.certainty.clone(), self.status.clone(), self.horizon.clone()]
+    }
+}
+
+/// Status filter options, in display order.
+const STATUSES: [OccurrenceStatus; 7] = [
+    OccurrenceStatus::Planned,
+    OccurrenceStatus::Due,
+    OccurrenceStatus::Overdue,
+    OccurrenceStatus::PartiallyFulfilled,
+    OccurrenceStatus::Fulfilled,
+    OccurrenceStatus::Skipped,
+    OccurrenceStatus::Cancelled,
+];
+
+/// Horizon options: label and months after `as_of` (`None` = the fixture default).
+const HORIZONS: [(&str, Option<u32>); 4] = [
+    ("Through 31 Jan 2027 (default)", None),
+    ("Next 3 months", Some(3)),
+    ("Next 6 months", Some(6)),
+    ("Next 12 months", Some(12)),
+];
+
+/// Retained state of the series editor dialog (§9.2–9.4).
+pub struct SeriesForm {
+    amount: Entity<InputState>,
+    change_from: Entity<DatePickerState>,
+    change_amount: Entity<InputState>,
+    skip_on: Entity<DatePickerState>,
+    end_after: Entity<DatePickerState>,
+    editing: Option<SeriesId>,
+}
+
+impl SeriesForm {
+    fn new(window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
+        SeriesForm {
+            amount: cx.new(|cx| InputState::new(window, cx).placeholder("expected amount for the whole series")),
+            change_from: cx.new(|cx| DatePickerState::new(window, cx).date_format("%d %b %Y")),
+            change_amount: cx.new(|cx| InputState::new(window, cx).placeholder("new amount from that date on")),
+            skip_on: cx.new(|cx| DatePickerState::new(window, cx).date_format("%d %b %Y")),
+            end_after: cx.new(|cx| DatePickerState::new(window, cx).date_format("%d %b %Y")),
+            editing: None,
+        }
+    }
 }
 
 /// Values behind the stateless controls of the reservation dialog. They live
@@ -116,6 +230,20 @@ impl AtlasApp {
         let boundary = Boundary::Household;
         let liquidity = Self::compute_liquidity(&household, viewer, boundary, horizon);
         let reservation_form = ReservationForm::new(&household, viewer, _window, _cx);
+        let timeline_filter = TimelineFilter { entity: None, account: None, certainty: None, status: None, scenario: None, through: horizon };
+        let timeline = Self::compute_timeline(&household, viewer, timeline_filter.clone());
+        let timeline_controls = TimelineControls::new(&household, viewer, _window, _cx);
+        let series_form = SeriesForm::new(_window, _cx);
+        let subscriptions = timeline_controls
+            .all()
+            .iter()
+            .map(|state| {
+                _cx.subscribe_in(state, _window, |this, _, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+                    let SelectEvent::Confirm(_) = event;
+                    this.apply_timeline_filters(cx);
+                })
+            })
+            .collect();
         log::info!("Atlas Financer window: section={} viewer={}", launch.section.slug(), viewer.person);
         AtlasApp {
             household,
@@ -131,7 +259,175 @@ impl AtlasApp {
             selected_company: None,
             selected_account: None,
             reservation_form,
+            timeline_filter,
+            timeline,
+            timeline_controls,
+            series_form,
+            _subscriptions: subscriptions,
         }
+    }
+
+    fn compute_timeline(household: &Household, viewer: Viewer, filter: TimelineFilter) -> Result<TimelineModel, EngineError> {
+        let result = TimelineModel::compute(household, viewer, filter);
+        if let Err(err) = &result {
+            alerting::report(Level::Error, format!("timeline model failed: {err}"));
+        }
+        result
+    }
+
+    /// The derived timeline, if the engine could compute it.
+    pub fn timeline(&self) -> Option<&TimelineModel> {
+        self.timeline.as_ref().ok()
+    }
+
+    pub fn timeline_filter(&self) -> &TimelineFilter {
+        &self.timeline_filter
+    }
+
+    /// Rebuilds the timeline filter from the Select states (§9 filters).
+    pub fn apply_timeline_filters(&mut self, cx: &mut Context<Self>) {
+        let row = |state: &Entity<SelectState<Vec<SharedString>>>, cx: &App| state.read(cx).selected_index(cx).map(|p| p.row).unwrap_or(0);
+        let controls = &self.timeline_controls;
+        let entity_row = row(&controls.entity, cx);
+        let account_row = row(&controls.account, cx);
+        let certainty_row = row(&controls.certainty, cx);
+        let status_row = row(&controls.status, cx);
+        let horizon_row = row(&controls.horizon, cx);
+        self.timeline_filter.entity = if entity_row == 0 { None } else { controls.entities.get(entity_row - 1).copied() };
+        self.timeline_filter.account = if account_row == 0 { None } else { controls.accounts.get(account_row - 1).copied() };
+        self.timeline_filter.certainty = if certainty_row == 0 { None } else { Certainty::ALL.get(certainty_row - 1).copied() };
+        self.timeline_filter.status = if status_row == 0 { None } else { STATUSES.get(status_row - 1).copied() };
+        self.timeline_filter.through = match HORIZONS.get(horizon_row).and_then(|(_, months)| *months) {
+            Some(months) => self.household.as_of.checked_add_months(Months::new(months)).unwrap_or(self.horizon),
+            None => self.horizon,
+        };
+        log::info!("timeline filters: {:?}", self.timeline_filter);
+        self.timeline = Self::compute_timeline(&self.household, self.viewer, self.timeline_filter.clone());
+        cx.notify();
+    }
+
+    /// Toggles the “Buy car” scenario overlay on the timeline (§18).
+    pub fn set_timeline_scenario(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.timeline_filter.scenario = if on { Some(fixtures::ids::BUY_CAR) } else { None };
+        self.timeline = Self::compute_timeline(&self.household, self.viewer, self.timeline_filter.clone());
+        cx.notify();
+    }
+
+    // ----- series editor (§9.2–9.4) --------------------------------------------------
+
+    pub fn open_series_editor(&mut self, id: SeriesId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(series) = self.household.series_by_id(id).cloned() else { return };
+        self.series_form.editing = Some(id);
+        let expected = series.amount.expected().format();
+        self.series_form.amount.update(cx, |state, cx| state.set_value(expected, window, cx));
+        self.series_form.change_amount.update(cx, |state, cx| state.set_value("", window, cx));
+        for picker in [&self.series_form.change_from, &self.series_form.skip_on, &self.series_form.end_after] {
+            picker.update(cx, |state, cx| state.set_date(gpui_kit::base::Date::Single(None), window, cx));
+        }
+        let amount = self.series_form.amount.clone();
+        let change_from = self.series_form.change_from.clone();
+        let change_amount = self.series_form.change_amount.clone();
+        let skip_on = self.series_form.skip_on.clone();
+        let end_after = self.series_form.end_after.clone();
+        let this = cx.entity().downgrade();
+        let title = format!("Edit series “{}”", series.name);
+        let summary = format!("{} · {} · {}", series.direction.label(), series.recurrence.describe(), series.certainty.label());
+        window.open_dialog(cx, move |dialog, _, _| {
+            let this = this.clone();
+            dialog
+                .title(title.clone())
+                .w_96()
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(div().text_xs().child(summary.clone()))
+                        .child(
+                            Form::vertical()
+                                .child(Field::new().label("Expected amount — whole series (§9.2 “edit entire series”)").child(Input::new(&amount).id("series-amount")))
+                                .child(Field::new().label("New amount from this date on (§9.3 effective-dated change)").child(DatePicker::new(&change_from)))
+                                .child(Field::new().label("New amount").child(Input::new(&change_amount).id("series-change-amount")))
+                                .child(Field::new().label("Skip the occurrence due on (§9.2 “edit only this occurrence”)").child(DatePicker::new(&skip_on)))
+                                .child(Field::new().label("End the series after (§9.4 last salary date)").child(DatePicker::new(&end_after))),
+                        ),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(Button::new("cancel-series").outline().label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(Button::new("save-series").primary().label("Apply changes").on_click({
+                            let this = this.clone();
+                            move |_, window, cx| {
+                                Self::confirm_series_edit(&this, window, cx);
+                            }
+                        })),
+                )
+                .on_ok(move |_, window, cx| Self::confirm_series_edit(&this, window, cx))
+        });
+    }
+
+    fn confirm_series_edit(this: &WeakEntity<Self>, window: &mut Window, cx: &mut App) -> bool {
+        match this.update(cx, |app, cx| app.submit_series_edit(cx)) {
+            Ok(Ok(summary)) => {
+                window.push_notification(summary, cx);
+                window.close_dialog(cx);
+                true
+            }
+            Ok(Err(message)) => {
+                window.push_notification(message, cx);
+                false
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Applies whichever parts of the series form were filled in.
+    pub fn submit_series_edit(&mut self, cx: &mut Context<Self>) -> Result<String, String> {
+        let id = self.series_form.editing.ok_or("No series is being edited.")?;
+        let currency = self.household.series_by_id(id).map(|s| s.amount.currency()).ok_or("Unknown series.")?;
+        let amount_text = self.series_form.amount.read(cx).value().trim().to_string();
+        let change_from = self.series_form.change_from.read(cx).date().start();
+        let change_amount_text = self.series_form.change_amount.read(cx).value().trim().to_string();
+        let skip_on = self.series_form.skip_on.read(cx).date().start();
+        let end_after = self.series_form.end_after.read(cx).date().start();
+
+        let new_amount = if amount_text.is_empty() { None } else { Some(Money::parse(&amount_text, currency).map_err(|e| format!("Expected amount: {e}"))?) };
+        let change = match (change_from, change_amount_text.is_empty()) {
+            (Some(from), false) => Some((from, Money::parse(&change_amount_text, currency).map_err(|e| format!("New amount: {e}"))?)),
+            (Some(_), true) => return Err("Enter the new amount that applies from the chosen date.".to_string()),
+            (None, false) => return Err("Pick the date the new amount applies from.".to_string()),
+            (None, true) => None,
+        };
+
+        let series = self.household.series.iter_mut().find(|s| s.id == id).ok_or("Unknown series.")?;
+        let mut applied = Vec::new();
+        if let Some(amount) = new_amount
+            && amount != series.amount.expected()
+        {
+            series.amount = match series.amount {
+                AmountSpec::Exact(_) => AmountSpec::Exact(amount),
+                AmountSpec::Range { low, high, .. } => AmountSpec::Range { low: low.min(amount).unwrap_or(low), expected: amount, high: high.max(amount).unwrap_or(high) },
+            };
+            applied.push(format!("expected amount now {}", amount.format()));
+        }
+        if let Some((from, amount)) = change {
+            series.change_amount_from(from, AmountSpec::Exact(amount));
+            applied.push(format!("{} from {}", amount.format(), from.format("%d %b %Y")));
+        }
+        if let Some(day) = skip_on {
+            series.set_exception(Exception { original_due: day, kind: ExceptionKind::Skip });
+            applied.push(format!("skip {}", day.format("%d %b %Y")));
+        }
+        if let Some(last) = end_after {
+            series.end_after(last);
+            applied.push(format!("ends after {}", last.format("%d %b %Y")));
+        }
+        if applied.is_empty() {
+            return Err("Nothing to apply — change an amount, add an exception or set an end date.".to_string());
+        }
+        let name = series.name.clone();
+        log::info!("series {id} edited: {}", applied.join("; "));
+        self.refresh_derived();
+        cx.notify();
+        Ok(format!("“{name}”: {}", applied.join("; ")))
     }
 
     fn compute_liquidity(household: &Household, viewer: Viewer, boundary: Boundary, horizon: NaiveDate) -> Result<LiquidityModel, EngineError> {
@@ -163,6 +459,7 @@ impl AtlasApp {
         self.overview = Self::compute_overview(&self.household, self.viewer, self.horizon);
         self.entities = Self::compute_entities(&self.household, self.viewer);
         self.liquidity = Self::compute_liquidity(&self.household, self.viewer, self.boundary, self.horizon);
+        self.timeline = Self::compute_timeline(&self.household, self.viewer, self.timeline_filter.clone());
     }
 
     /// The derived liquidity model, if the engine could compute it.
@@ -459,7 +756,7 @@ impl AtlasApp {
                     .gap_3()
                     .child(Icon::new(IconName::Wallet).small())
                     .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer"))
-                    .child(Tag::secondary().xsmall().outline().child("M2 liquidity")),
+                    .child(Tag::secondary().xsmall().outline().child("M3 timeline")),
             )
             .child(
                 h_flex()
@@ -586,6 +883,13 @@ impl AtlasApp {
                     screens::liquidity::render(&model, &self.household, self.viewer, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Liquidity, err, cx),
+            },
+            Section::Timeline => match &self.timeline {
+                Ok(model) => {
+                    let model = model.clone();
+                    screens::timeline::render(&model, &self.timeline_controls, &self.household, self.viewer, cx).into_any_element()
+                }
+                Err(err) => self.render_engine_failure(Section::Timeline, err, cx),
             },
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
             other => screens::placeholder::render(other, cx).into_any_element(),
