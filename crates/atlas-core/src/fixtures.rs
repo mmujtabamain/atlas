@@ -350,8 +350,9 @@ pub fn plan_household() -> Household {
     );
     salary_a.linked_account = Some(ALPHA_PAYROLL);
     salary_a.settlement_lag_days = 1;
+    salary_a.intraday_order = 20;
     salary_a.tax_treatment = "Salary income tax (DEMO pack)".into();
-    salary_a.notes = "One linked movement: expense for Company Alpha, income for Person A (§8.4).".into();
+    salary_a.notes = "One linked movement: −500,000 on Company Alpha payroll, +500,000 for Person A (§8.4); the employee payroll run is a separate series.".into();
 
     let mut car_down_payment = series(
         CAR_DOWN_PAYMENT,
@@ -465,9 +466,9 @@ pub fn plan_household() -> Household {
         ),
         series(
             ALPHA_PAYROLL_RUN,
-            "Company Alpha payroll run",
+            "Company Alpha payroll run (employees #42, #43)",
             Direction::Expense,
-            AmountSpec::Exact(pkr(1_200_000)),
+            AmountSpec::Exact(pkr(700_000)),
             Recurrence::Monthly { every_n_months: 1, day: 25, from: d(2026, 9, 25), until: Until::Indefinite, invalid_day: InvalidDayPolicy::ClampToMonthEnd },
             ALPHA_OPERATING,
             EntityRef::Company(ALPHA),

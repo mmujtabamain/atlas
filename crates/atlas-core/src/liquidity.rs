@@ -618,6 +618,12 @@ fn hard_floor_of(household: &Household, accounts: &[AccountId], share_of: impl F
     ))
 }
 
+/// Hard floor of one account: hard, non-nested earmarks plus the bank minimum
+/// unless a hard earmark already covers it (§17).
+pub fn hard_floor_for_account(household: &Household, id: AccountId) -> EngineResult<Money> {
+    Ok(hard_floor_of(household, &[id], |_| 10_000)?.money())
+}
+
 /// The §6 figures for any boundary.
 pub fn boundary_liquidity(household: &Household, boundary: Boundary) -> EngineResult<BoundaryLiquidity> {
     let currency = household.base_currency;

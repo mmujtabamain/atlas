@@ -62,9 +62,10 @@ impl BreachReport {
     }
 }
 
-/// Analyses a chronologically ordered path (one point per date; consecutive
-/// dates or not — the gap to the next point is the duration of each state)
-/// against a fixed floor.
+/// Analyses a chronologically ordered path against a fixed floor. Points may
+/// share a date (intraday postings, V010): the duration of a point is the gap
+/// to the next point's date, so an intraday dip counts for the lowest balance
+/// and the first breach but adds no days; the last point counts one day.
 pub fn analyse(path: &[PathPoint], floor: Money, horizon: NaiveDate) -> EngineResult<BreachReport> {
     let currency = floor.currency();
     let mut first_breach = None;
@@ -80,8 +81,10 @@ pub fn analyse(path: &[PathPoint], floor: Money, horizon: NaiveDate) -> EngineRe
         if point.balance.currency() != currency {
             return Err(MoneyError::CurrencyMismatch { left: currency, right: point.balance.currency() }.into());
         }
-        let next_date = path.get(index + 1).map(|p| p.date).unwrap_or(horizon.succ_opt().unwrap_or(horizon));
-        let duration = (next_date - point.date).num_days().max(1);
+        let duration = match path.get(index + 1) {
+            Some(next) => (next.date - point.date).num_days().max(0),
+            None => 1,
+        };
         let shortfall = point.balance.shortfall_below(floor)?;
         if lowest.is_none_or(|(low, _)| point.balance.minor() < low.minor()) {
             lowest = Some((point.balance, point.date));
@@ -93,6 +96,7 @@ pub fn analyse(path: &[PathPoint], floor: Money, horizon: NaiveDate) -> EngineRe
             recovery = None;
             days_below += duration;
             integrated += shortfall.minor() as i128 * duration as i128;
+            let _ = index;
             if shortfall.minor() > worst.minor() {
                 worst = shortfall;
                 worst_date = Some(point.date);
