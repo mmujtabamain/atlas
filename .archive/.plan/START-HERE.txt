@@ -1,0 +1,18 @@
+FINANCIAL PLAN ATLAS
+
+1. Extract this ZIP.
+2. Open index.html in a modern browser.
+
+No installation, server, account or internet connection is needed to use
+this self-contained requirements overview. Research links are external.
+
+Start with Overview, then explore the System map. Click any requirement
+or model to see its detail and linked sources. The entire v3.2 Markdown
+specification is included under docs/requirements-v3.2.md.
+
+The page is a requirements atlas, NOT the actual financial application,
+final product UX or delivery roadmap. All monetary examples are fictional.
+
+Developer source, optional build commands and verification notes are in
+README.md. Browser policies may require the optional local server instead
+of opening a file directly. Export review notes before changing browsers.

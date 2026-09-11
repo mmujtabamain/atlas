@@ -1,0 +1,11 @@
+{
+  "features": 162,
+  "models": 55,
+  "acceptanceCases": 80,
+  "references": 43,
+  "sections": 48,
+  "deferredDecisions": 12,
+  "uniqueEquations": 148,
+  "mathParseErrors": [],
+  "sourceSha256": "d63f3cb885c0707667711ea7ee96b1d552dcc755e1ababdcc0a662edfd092282"
+}

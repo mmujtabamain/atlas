@@ -1,0 +1,158 @@
+
+> financial-plan-atlas@1.0.0 test
+> node --test tests/*.test.cjs
+
+TAP version 13
+# Subtest: All 162 feature IDs are present exactly once
+ok 1 - All 162 feature IDs are present exactly once
+  ---
+  duration_ms: 1.276344
+  type: 'test'
+  ...
+# Subtest: All 55 models are present exactly once
+ok 2 - All 55 models are present exactly once
+  ---
+  duration_ms: 0.17391
+  type: 'test'
+  ...
+# Subtest: All 80 product acceptance cases are preserved
+ok 3 - All 80 product acceptance cases are preserved
+  ---
+  duration_ms: 0.147321
+  type: 'test'
+  ...
+# Subtest: All 33 research and 10 product sources are preserved
+ok 4 - All 33 research and 10 product sources are preserved
+  ---
+  duration_ms: 0.154152
+  type: 'test'
+  ...
+# Subtest: All 47 numbered chapters, reading guide and 12 deferred items are present
+ok 5 - All 47 numbered chapters, reading guide and 12 deferred items are present
+  ---
+  duration_ms: 0.269615
+  type: 'test'
+  ...
+# Subtest: Included Markdown is byte-for-byte the source used to build the atlas
+ok 6 - Included Markdown is byte-for-byte the source used to build the atlas
+  ---
+  duration_ms: 1.495243
+  type: 'test'
+  ...
+# Subtest: Feature ↔ model and model → reference edges are valid and bidirectional
+ok 7 - Feature ↔ model and model → reference edges are valid and bidirectional
+  ---
+  duration_ms: 2.79397
+  type: 'test'
+  ...
+# Subtest: Equations are compiled into MathML with no parse errors
+ok 8 - Equations are compiled into MathML with no parse errors
+  ---
+  duration_ms: 7.771205
+  type: 'test'
+  ...
+# Subtest: All original reference records retain external links
+ok 9 - All original reference records retain external links
+  ---
+  duration_ms: 0.532148
+  type: 'test'
+  ...
+# Subtest: Built page has no external scripts, stylesheets, frames or runtime requests
+ok 10 - Built page has no external scripts, stylesheets, frames or runtime requests
+  ---
+  duration_ms: 7.897914
+  type: 'test'
+  ...
+# Subtest: E03 1200000 on 2026-11-15: original minimum and date
+ok 11 - E03 1200000 on 2026-11-15: original minimum and date
+  ---
+  duration_ms: 8.31821
+  type: 'test'
+  ...
+# Subtest: E03 1300000 on 2026-11-15: original minimum and date
+ok 12 - E03 1300000 on 2026-11-15: original minimum and date
+  ---
+  duration_ms: 0.383104
+  type: 'test'
+  ...
+# Subtest: E03 1400000 on 2026-11-15: original minimum and date
+ok 13 - E03 1400000 on 2026-11-15: original minimum and date
+  ---
+  duration_ms: 0.102264
+  type: 'test'
+  ...
+# Subtest: E03 1200000 on 2026-11-30: original minimum and date
+ok 14 - E03 1200000 on 2026-11-30: original minimum and date
+  ---
+  duration_ms: 1.270095
+  type: 'test'
+  ...
+# Subtest: E03 1300000 on 2026-11-30: original minimum and date
+ok 15 - E03 1300000 on 2026-11-30: original minimum and date
+  ---
+  duration_ms: 0.111817
+  type: 'test'
+  ...
+# Subtest: E03 1400000 on 2026-11-30: original minimum and date
+ok 16 - E03 1400000 on 2026-11-30: original minimum and date
+  ---
+  duration_ms: 0.131978
+  type: 'test'
+  ...
+# Subtest: Future decisions do not change opening confirmed cash
+ok 17 - Future decisions do not change opening confirmed cash
+  ---
+  duration_ms: 0.47321
+  type: 'test'
+  ...
+# Subtest: Salary settles before the November 30 down payment
+ok 18 - Salary settles before the November 30 down payment
+  ---
+  duration_ms: 0.708323
+  type: 'test'
+  ...
+# Subtest: No salary exists after November
+ok 19 - No salary exists after November
+  ---
+  duration_ms: 0.351677
+  type: 'test'
+  ...
+# Subtest: Every balance replays exactly in integer minor units
+ok 20 - Every balance replays exactly in integer minor units
+  ---
+  duration_ms: 2.32029
+  type: 'test'
+  ...
+# Subtest: Reserve is a constraint, not another cash payment
+ok 21 - Reserve is a constraint, not another cash payment
+  ---
+  duration_ms: 0.209825
+  type: 'test'
+  ...
+# Subtest: Favorable path never falls below the adverse path at end of event dates
+ok 22 - Favorable path never falls below the adverse path at end of event dates
+  ---
+  duration_ms: 0.19353
+  type: 'test'
+  ...
+# Subtest: Identical input is reproducible and prior runs do not mutate
+ok 23 - Identical input is reproducible and prior runs do not mutate
+  ---
+  duration_ms: 0.176394
+  type: 'test'
+  ...
+# Subtest: Fixture rejects unsupported dates, invalid numbers and overflow
+ok 24 - Fixture rejects unsupported dates, invalid numbers and overflow
+  ---
+  duration_ms: 0.412028
+  type: 'test'
+  ...
+1..24
+# tests 24
+# suites 0
+# pass 24
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 80.177055
