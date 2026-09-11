@@ -10,7 +10,7 @@ pub mod entities;
 pub mod household;
 pub mod liquidity;
 pub mod people;
-pub mod placeholder;
+pub mod privacy;
 pub mod rules;
 pub mod scenarios;
 pub mod projections;
@@ -169,20 +169,6 @@ impl Section {
             Section::Scenarios => m(8, 2783, "Scenarios & comparison"),
             Section::Decisions => m(9, 2789, "Funding optimizer & affordability decisions"),
             Section::Privacy => m(10, 2796, "Privacy & authorization"),
-        }
-    }
-
-    /// What the screen will show, for the placeholder.
-    pub fn promise(self) -> &'static [&'static str] {
-        match self {
-            Section::People => &["Roles, owned and co-owned accounts with shares", "Income sources and companies per person"],
-            Section::Companies => &["Separate company ledger: accounts, employees, payroll", "Constraints: payroll reserve, working-capital floor", "Extractable cash with the §8.5/M27 legal-capacity caveat"],
-            Section::Accounts => &["The full §7 property table", "Account detail with the balance-definition strip"],
-            Section::Rules => &["User rules: scope, trigger, conditions, action, priority, version", "Conflict-resolution inspector", "Rule simulation"],
-            Section::Scenarios => &["Overlays over the baseline and their composition", "Side-by-side comparison metrics"],
-            Section::Decisions => &["Funding optimizer with gross-up to net (E02) and §13.5 strategy comparison", "Affordability grid (E03) with conditional result", "Goal trade-offs and the recommendation contract"],
-            Section::Privacy => &["Viewer switcher and per-object access policies", "Provenance projection and difference-attack suppression", "Privacy audit log"],
-            Section::Household | Section::Settings | Section::Liquidity | Section::Timeline | Section::Projections | Section::Assumptions | Section::Taxes => &[],
         }
     }
 }

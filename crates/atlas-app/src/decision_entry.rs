@@ -3,7 +3,7 @@
 //! builder runs as a stepper on the Decisions screen; every "Next" validates
 //! the current step through the plan's own rules before moving on.
 
-use atlas_core::decision::{CompanyRoute, ExtractionMethod, Financing, FundingSource, Objective, OtherCost, PurchasePlan, RunningCost, default_plan};
+use atlas_core::decision::{CompanyRoute, ExtractionMethod, Financing, FundingSource, Objective, OtherCost, PurchasePlan, RunningCost};
 use atlas_core::ids::*;
 use atlas_core::model::Household;
 use atlas_core::Money;
@@ -101,10 +101,12 @@ fn read_money(state: &Entity<InputState>, currency: atlas_core::Currency, cx: &A
 
 impl DecisionForm {
     /// Builds the form pre-filled from `plan`.
-    pub fn new(household: &Household, plan: &PurchasePlan, window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
-        let personal_accounts: Vec<AccountId> = household.accounts.iter().filter(|a| !a.holder.is_company()).map(|a| a.id).collect();
-        let all_accounts: Vec<AccountId> = household.accounts.iter().map(|a| a.id).collect();
-        let account_names: Vec<SharedString> = household.accounts.iter().map(|a| SharedString::from(a.name.clone())).collect();
+    pub fn new(household: &Household, plan: &PurchasePlan, viewer: atlas_core::authz::Viewer, window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
+        // §7.3: only objects the viewer may discover are offered (V062).
+        let visible = |a: &&atlas_core::model::Account| !matches!(household.disclosure_for(viewer, atlas_core::ids::ObjectRef::Account(a.id)), atlas_core::Disclosure::Hidden);
+        let personal_accounts: Vec<AccountId> = household.accounts.iter().filter(visible).filter(|a| !a.holder.is_company()).map(|a| a.id).collect();
+        let all_accounts: Vec<AccountId> = household.accounts.iter().filter(visible).map(|a| a.id).collect();
+        let account_names: Vec<SharedString> = household.accounts.iter().filter(visible).map(|a| SharedString::from(a.name.clone())).collect();
         let index_of = |id: Option<AccountId>| id.and_then(|id| all_accounts.iter().position(|a| *a == id)).unwrap_or(0);
         let source_floors = personal_accounts
             .iter()
@@ -316,8 +318,8 @@ impl AtlasApp {
 
     /// Resets the builder to the default plan.
     pub fn reset_decision(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.decision_plan = default_plan(&self.household, self.household.as_of);
-        self.decision_form = DecisionForm::new(&self.household, &self.decision_plan, window, cx);
+        self.decision_plan = atlas_core::decision::default_plan_for(&self.household, self.household.as_of, self.viewer);
+        self.decision_form = DecisionForm::new(&self.household, &self.decision_plan, self.viewer, window, cx);
         self.decision_step = 0;
         self.decision = None;
         cx.notify();

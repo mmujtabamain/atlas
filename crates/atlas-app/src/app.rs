@@ -42,6 +42,8 @@ use atlas_core::ids::ScenarioId;
 use crate::scenario_entry::ScenarioForms;
 use crate::decision_entry::DecisionForm;
 use atlas_core::decision::{Decision, PurchasePlan};
+use crate::privacy_entry::PrivacyForms;
+use crate::screens::privacy::PrivacyModel;
 use atlas_core::ids::RuleId;
 use atlas_core::rules::TieBreak;
 use crate::rules_entry::RuleForm;
@@ -116,6 +118,8 @@ pub struct AtlasApp {
     pub(crate) decision_plan: PurchasePlan,
     pub(crate) decision: Option<Result<Decision, EngineError>>,
     pub(crate) decision_form: DecisionForm,
+    pub(crate) privacy: PrivacyModel,
+    pub(crate) privacy_forms: PrivacyForms,
     /// Where the household is saved, once it has a file (M12).
     pub(crate) file: Option<atlas_store::HouseholdFile>,
     /// Unsaved changes since the last save/load.
@@ -360,8 +364,10 @@ impl AtlasApp {
         let scenario_selection: Vec<ScenarioId> = household.scenarios.first().map(|s| vec![s.id]).unwrap_or_default();
         let scenarios = Self::compute_scenarios(&household, viewer, horizon, Case::Expected, &scenario_selection);
         let scenario_forms = ScenarioForms::new(&household, _window, _cx);
-        let decision_plan = atlas_core::decision::default_plan(&household, household.as_of);
-        let decision_form = DecisionForm::new(&household, &decision_plan, _window, _cx);
+        let decision_plan = atlas_core::decision::default_plan_for(&household, household.as_of, viewer);
+        let decision_form = DecisionForm::new(&household, &decision_plan, viewer, _window, _cx);
+        let privacy = PrivacyModel::compute(&household, viewer);
+        let privacy_forms = PrivacyForms::new(&household, viewer.person, _window, _cx);
         let lifecycle_form = crate::lifecycle::LifecycleForm::new(_window, _cx);
         let entry_forms = crate::entry::EntryForms::new(&household, _window, _cx);
         let file = resolved.file;
@@ -429,6 +435,8 @@ impl AtlasApp {
             decision_plan,
             decision: None,
             decision_form,
+            privacy,
+            privacy_forms,
             file,
             dirty: false,
             owner,
@@ -445,7 +453,8 @@ impl AtlasApp {
         self.tax_form = TaxRuleForm::new(&self.household, window, cx);
         self.rule_form = RuleForm::new(&self.household, window, cx);
         self.scenario_forms = ScenarioForms::new(&self.household, window, cx);
-        self.decision_form = DecisionForm::new(&self.household, &self.decision_plan, window, cx);
+        self.decision_form = DecisionForm::new(&self.household, &self.decision_plan, self.viewer, window, cx);
+        self.privacy_forms = PrivacyForms::new(&self.household, self.viewer.person, window, cx);
         self.entry_forms = crate::entry::EntryForms::new(&self.household, window, cx);
         let mut subscriptions: Vec<Subscription> = self
             .timeline_controls
@@ -1002,6 +1011,12 @@ impl AtlasApp {
         if self.decision.is_some() {
             self.evaluate_decision();
         }
+        self.privacy = PrivacyModel::compute(&self.household, self.viewer);
+    }
+
+    /// The privacy model for the current viewer.
+    pub fn privacy(&self) -> &PrivacyModel {
+        &self.privacy
     }
 
     /// The evaluated decision, if the result step has been reached.
@@ -1420,7 +1435,18 @@ impl AtlasApp {
 
     /// Changes who is looking; every screen re-projects (M10 adds the UI).
     pub fn set_viewer(&mut self, viewer: Viewer, cx: &mut Context<Self>) {
-        self.viewer = viewer;
+        if self.viewer != viewer {
+            let from = self.viewer_name();
+            self.viewer = viewer;
+            let to = self.viewer_name();
+            // §5.18: a viewer switch is authorization-sensitive and goes on the audit log.
+            self.household.record_audit(viewer.person, None, atlas_core::authz::AuditKind::ViewerSwitched, format!("viewer switched from {from} to {to}; every screen re-filtered through their policies"), None, chrono::Local::now().naive_local());
+            self.mark_dirty();
+        }
+        // The decision builder must only offer sources this viewer may see.
+        self.decision_plan = atlas_core::decision::default_plan_for(&self.household, self.household.as_of, self.viewer);
+        self.decision = None;
+        self.decision_step = 0;
         self.refresh_derived();
         cx.notify();
     }
@@ -1621,8 +1647,11 @@ impl AtlasApp {
                 Err(err) => self.render_engine_failure(Section::Scenarios, err, cx),
             },
             Section::Decisions => screens::decisions::render(self.decision_step, &self.decision_form, self.decision.as_ref(), &self.household, &self.viewer_name(), cx).into_any_element(),
+            Section::Privacy => {
+                let model = self.privacy.clone();
+                screens::privacy::render(&model, &self.household, &self.viewer_name(), cx).into_any_element()
+            }
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
-            other => screens::placeholder::render(other, cx).into_any_element(),
         }
     }
 

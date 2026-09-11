@@ -65,6 +65,30 @@ tax rules) and account detail has **Reconcile…** and **Delete**.
 - Useful flags for scripts and tests: `--new`, `--sample`, `--household FILE`, `--as-of DATE`,
   `--viewer <person id>`, `--owner NAME`, `--take-over`.
 
+## Privacy & authorization (M10, §7, §5.13–§5.18)
+
+Ownership, visibility, calculation access and disclosure are four separate things; a missing
+policy fails closed (F162). **Privacy** shows, filtered through the viewer's own policies:
+
+- **Access policies** (§7.5): per object, who may learn it exists, see its balance, its
+  transactions, forecasts, assumptions and explanations; use in calculations; disclosure of a
+  restricted contribution; purposes; version history. Objects the viewer may not discover are
+  not listed at all (V062). **Set policy…** writes a new, effective-dated version (owners only;
+  `previous_versions` keep every earlier one so a historical calculation replays under the
+  policy that governed it, V071; the forecast record pins policy versions).
+- **Purpose-specific grants** (§7.4): one object, one person or role, one purpose (household
+  forecasts, a scenario, decisions, funding searches, tax), an effective range. The engine
+  evaluates authorization before an object becomes a forecast input or funding source; an
+  account authorized only for one scenario is unavailable everywhere else (V067).
+- **Difference-attack suppression** (§7.6, V073): in any projected chain, a single restricted
+  contribution next to disclosed terms is not shown as "total − rest" — the breakdown collapses
+  to the authorized total. The same rule projects the F139 attribution on the Scenarios screen.
+- **Fail-closed checks** (V077): objects without a policy, conflicting policies and dangling
+  grants, plus a sample denial message that names the object's kind and policy version, never
+  the object.
+- **Privacy audit log** (§5.18): policy changes with versions, grants, revocations, refused
+  changes and viewer switches — immutable, saved with the household (`audit` table).
+
 ## Decisions (M9, §13, §19, §20, §26)
 
 **Decisions** is a step-by-step builder, as asked: *what* (price, purchase date, purchase window,

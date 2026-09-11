@@ -16,6 +16,7 @@
 //! | [`rules_entry`] | the rule editor dialog (M7) |
 //! | [`scenario_entry`] | scenario change and composition dialogs (M8) |
 //! | [`decision_entry`] | the decision builder's form state and steps (M9) |
+//! | [`privacy_entry`] | policy editor and purpose-grant dialogs (M10) |
 //! | [`alerting`] | failure reporting to the DevBench notify endpoint |
 //! | [`launch`] | command-line options and theme selection |
 
@@ -25,6 +26,7 @@ pub mod decision_entry;
 pub mod entry;
 pub mod launch;
 pub mod lifecycle;
+pub mod privacy_entry;
 pub mod rules_entry;
 pub mod scenario_entry;
 pub mod screens;

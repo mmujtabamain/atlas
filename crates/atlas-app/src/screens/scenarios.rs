@@ -8,7 +8,7 @@ use atlas_core::forecast::Case;
 use atlas_core::ids::{ObjectRef, ScenarioId};
 use atlas_core::liquidity::Boundary;
 use atlas_core::model::Household;
-use atlas_core::scenario::{Incompatibility, OverlayEntry, ScenarioComparison, compare};
+use atlas_core::scenario::{AttributionLine, Incompatibility, OverlayEntry, ScenarioComparison, compare, project_attribution};
 use atlas_core::{Disclosure, EngineResult};
 use chrono::NaiveDate;
 use gpui_kit::assets::IconName;
@@ -59,6 +59,9 @@ pub struct ScenariosModel {
     pub comparison: Option<ScenarioComparison>,
     pub comparison_error: Option<String>,
     pub chart: Vec<ComparisonPoint>,
+    /// The attribution as this viewer may see it (§7.6).
+    pub attribution: Vec<AttributionLine>,
+    pub suppression_note: Option<String>,
 }
 
 impl ScenariosModel {
@@ -90,12 +93,16 @@ impl ScenariosModel {
                 }
             }
         };
+        let (attribution, suppression_note) = match &comparison {
+            Some(c) => project_attribution(household, viewer, &c.attribution, c.end_delta),
+            None => (Vec::new(), None),
+        };
         let per_major = 10f64.powi(household.base_currency.minor_digits() as i32);
         let chart = comparison
             .as_ref()
             .map(|c| c.merged_path.iter().map(|(date, base, over)| ComparisonPoint { label: SharedString::from(date.format("%d %b").to_string()), baseline: base.minor() as f64 / per_major, scenario: over.minor() as f64 / per_major }).collect())
             .unwrap_or_default();
-        Ok(ScenariosModel { through, case, cards, selection, hidden_count, incompatibilities, comparison, comparison_error, chart })
+        Ok(ScenariosModel { through, case, cards, selection, hidden_count, incompatibilities, comparison, comparison_error, chart, attribution, suppression_note })
     }
 }
 
@@ -324,7 +331,8 @@ fn render_comparison_body(comparison: &ScenarioComparison, model: &ScenariosMode
                             Tag::secondary().xsmall().outline().child(format!("sums to the end difference exactly: {}", comparison.attribution_total.format_signed()))
                         } else {
                             Tag::danger().xsmall().outline().child(format!("does not sum: {} vs {}", comparison.attribution_total.format_signed(), comparison.end_delta.format_signed()))
-                        }),
+                        })
+                        .when_some(model.suppression_note.clone(), |row, note| row.child(Tag::warning().xsmall().outline().child("breakdown suppressed (§7.6)")).child(div().id("scenario-suppression-note").test_support().text_xs().text_color(theme.muted_foreground).child(note))),
                 )
                 .child(div().text_xs().text_color(theme.muted_foreground).child(
                     "Every posting of the window belongs to exactly one bucket (a series, tax postings, fee events, or the starting cash), so nothing is counted twice and nothing hides. Values are the household's share of each account.",
@@ -341,7 +349,7 @@ fn render_comparison_body(comparison: &ScenarioComparison, model: &ScenariosMode
                                     .child(TableHead::new().w_40().flex_shrink_0().text_right().child("Difference")),
                             ),
                         )
-                        .child(TableBody::new().children(comparison.attribution.iter().enumerate().map(|(index, line)| {
+                        .child(TableBody::new().children(model.attribution.iter().enumerate().map(|(index, line)| {
                             TableRow::new()
                                 .when(index % 2 == 1, |r| r.bg(theme.table_even))
                                 .child(TableCell::new().w_32().flex_shrink_0().child(h_flex().child(Tag::secondary().xsmall().outline().child(line.kind))))
