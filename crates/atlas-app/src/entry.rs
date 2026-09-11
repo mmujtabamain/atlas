@@ -463,12 +463,14 @@ impl AtlasApp {
         };
         let body = std::rc::Rc::new(body);
         let wide = matches!(entry, Entry::Account | Entry::Series);
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_dialog(cx, move |dialog, window, cx| {
             let this = this.clone();
             let body = body.clone();
+            // `Dialog::w` takes pixels; 56 rem keeps the two-column forms readable.
+            let wide_width = window.rem_size() * 56.;
             dialog
                 .title(title.clone())
-                .map(|d| if wide { d.w_2_3() } else { d.w_96() })
+                .map(|d| if wide { d.w(wide_width) } else { d.w_96() })
                 .child(v_flex().child(body(cx)))
                 .footer(
                     DialogFooter::new()
