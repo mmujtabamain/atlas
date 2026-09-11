@@ -9,9 +9,22 @@ use atlas_app::{AtlasApp, Launch};
 use atlas_core::fixtures;
 use atlas_core::ids::ObjectRef;
 use atlas_core::Disclosure;
-use gpui_kit::component::Root;
+use gpui_kit::component::{Root, WindowExt as _};
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext as _, Entity, TestAppContext, px, size};
+use gpui_kit::{AppContext as _, Entity, ScrollDelta, TestAppContext, point, px, size};
+
+/// gpui-kit dialogs fade in over 250 ms of wall-clock time (not test time) and
+/// do not take pointer input until the animation has finished, so a test must
+/// let real time pass before clicking a dialog button.
+fn let_dialog_settle() {
+    std::thread::sleep(std::time::Duration::from_millis(400));
+}
+
+/// Scrolls the main column so content below the fold becomes visible.
+fn scroll_down(window: &mut gpui_kit::Window, anchor: &'static str, cx: &mut gpui_kit::App) {
+    window.scroll(anchor, ScrollDelta::Pixels(point(px(0.), px(-3000.))), cx);
+    window.render_frame(cx);
+}
 
 fn open_app(cx: &mut TestAppContext, launch: Launch) -> (gpui_kit::WindowHandle<Root>, Entity<AtlasApp>) {
     cx.update(gpui_kit::init);
@@ -167,5 +180,110 @@ fn person_b_sees_only_the_planning_safe_company_output(cx: &mut TestAppContext) 
         // Person B's own accounts screen never lists Person A's private account (V062).
         assert!(models.account(fixtures::ids::PERSON_A_CURRENT).is_none());
         assert!(models.account(fixtures::ids::PERSON_A_VISA).is_some(), "shared-balance accounts are listed");
+    });
+}
+
+#[gpui_kit::test]
+fn liquidity_adds_a_reservation_through_the_dialog(cx: &mut TestAppContext) {
+    let launch = Launch { section: Section::Liquidity, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-liquidity").visible());
+        assert!(window.find("figure-household-figure-2").visible(), "free current cash figure");
+        assert!(window.find("runway-summary").visible());
+        scroll_down(window, "screen-liquidity", cx);
+        window.click("new-reservation", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("save-reservation").visible(), "the dialog opened");
+        // An empty form is rejected and the dialog stays open.
+        window.click("save-reservation", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("save-reservation").visible(), "validation kept the dialog open");
+        window.click("reservation-name", cx);
+        window.input("Car reserve", cx);
+        window.click("reservation-amount", cx);
+        window.input("250,000", cx);
+        window.click("save-reservation", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx), "the dialog closed after saving");
+    })
+    .unwrap();
+
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let household = app.household();
+        assert_eq!(household.reservations.len(), 7);
+        let added = household.reservations.last().unwrap();
+        assert_eq!(added.name, "Car reserve");
+        assert_eq!(added.amount, fixtures::pkr(250_000));
+        assert_eq!(added.account, fixtures::ids::SHARED_SAVINGS, "the first editable account is preselected");
+        // Ledger cash unchanged, free cash reduced (§17).
+        let model = app.liquidity().unwrap();
+        assert_eq!(model.figures[0].calc.money(), fixtures::pkr(4_400_000));
+        assert_eq!(model.figures[2].calc.money(), fixtures::pkr(2_650_000 - 250_000));
+    });
+}
+
+#[gpui_kit::test]
+fn paying_and_releasing_an_earmark_keeps_free_cash(cx: &mut TestAppContext) {
+    let launch = Launch { section: Section::Liquidity, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        scroll_down(window, "screen-liquidity", cx);
+        window.click("release-2", cx); // the 300,000 tax reserve
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("confirm-release").visible());
+        window.click("confirm-release", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+        scroll_down(window, "screen-liquidity", cx);
+        assert!(window.try_find("release-2").is_none(), "a released earmark has no action");
+    })
+    .unwrap();
+
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let household = app.household();
+        assert!(household.reservation(fixtures::ids::TAX_RESERVE).unwrap().released_on.is_some());
+        assert_eq!(household.account(fixtures::ids::SHARED_SAVINGS).unwrap().settled_balance, fixtures::pkr(1_700_000));
+        // E01 through the UI: 1,700,000 − (800,000 + 250,000) = 650,000, unchanged.
+        let shared = atlas_core::liquidity::account_liquidity(household, fixtures::ids::SHARED_SAVINGS).unwrap();
+        assert_eq!(shared.free.money(), fixtures::pkr(650_000));
+        let model = app.liquidity().unwrap();
+        assert_eq!(model.figures[0].calc.money(), fixtures::pkr(4_100_000));
+        assert_eq!(model.figures[2].calc.money(), fixtures::pkr(2_650_000));
     });
 }
