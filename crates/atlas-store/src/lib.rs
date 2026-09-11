@@ -38,7 +38,7 @@ pub enum StoreError {
 pub type StoreResult<T> = Result<T, StoreError>;
 
 /// Entity tables, in save order.
-const TABLES: [&str; 12] = [
+const TABLES: [&str; 13] = [
     "people",
     "companies",
     "accounts",
@@ -51,6 +51,7 @@ const TABLES: [&str; 12] = [
     "actuals",
     "links",
     "history",
+    "rules",
 ];
 
 /// Rolling backups kept per household.
@@ -156,7 +157,8 @@ impl HouseholdFile {
              CREATE TABLE IF NOT EXISTS policies (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS actuals (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS links (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS history (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);",
+             CREATE TABLE IF NOT EXISTS history (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS rules (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);",
         )?;
         for table in TABLES {
             tx.execute(&format!("DELETE FROM {table}"), [])?;
@@ -166,6 +168,7 @@ impl HouseholdFile {
         meta.execute(params!["name", household.name.clone()])?;
         meta.execute(params!["base_currency", household.base_currency.code().to_string()])?;
         meta.execute(params!["as_of", household.as_of.to_string()])?;
+        meta.execute(params!["rule_tie_break", household.rule_tie_break.slug()])?;
         meta.execute(params!["saved_at", chrono::Local::now().to_rfc3339()])?;
         meta.execute(params!["app_version", env!("CARGO_PKG_VERSION")])?;
         drop(meta);
@@ -182,6 +185,7 @@ impl HouseholdFile {
         insert_all(&tx, "actuals", household.actuals.iter().map(|t| (t.id.raw() as i64, t)))?;
         insert_all(&tx, "links", household.links.iter().enumerate().map(|(i, l)| (i as i64 + 1, l)))?;
         insert_all(&tx, "history", household.history.iter().enumerate().map(|(i, h)| (i as i64 + 1, h)))?;
+        insert_all(&tx, "rules", household.rules.iter().map(|r| (r.id.raw() as i64, r)))?;
         tx.commit()?;
         log::info!(
             "saved {} to {} ({} people, {} accounts, {} series, {} policies)",
@@ -216,6 +220,7 @@ impl HouseholdFile {
             .and_then(|d| d.parse().ok())
             .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid"));
         let mut household = Household::empty(&name, currency, as_of);
+        household.rule_tie_break = meta_value(&connection, "rule_tie_break")?.and_then(|t| atlas_core::rules::TieBreak::from_slug(&t)).unwrap_or_default();
         household.people = load_all(&connection, "people")?;
         household.companies = load_all(&connection, "companies")?;
         household.accounts = load_all(&connection, "accounts")?;
@@ -228,6 +233,8 @@ impl HouseholdFile {
         household.actuals = load_all(&connection, "actuals")?;
         household.links = load_all(&connection, "links")?;
         household.history = load_all(&connection, "history")?;
+        // Tables added after the first files were written are optional on read (M7 rules).
+        household.rules = load_optional(&connection, "rules")?;
         log::info!("loaded {} from {} ({} accounts, {} series)", household.name, self.path.display(), household.accounts.len(), household.series.len());
         Ok(household)
     }
@@ -285,6 +292,13 @@ fn insert_all<'a, T: Serialize + 'a>(tx: &rusqlite::Transaction<'_>, table: &str
         statement.execute(params![id, serde_json::to_string(row)?])?;
     }
     Ok(())
+}
+
+fn load_optional<T: for<'de> Deserialize<'de>>(connection: &Connection, table: &str) -> StoreResult<Vec<T>> {
+    let exists: bool = connection
+        .query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", params![table], |row| row.get::<_, i64>(0))
+        .map(|n| n > 0)?;
+    if exists { load_all(connection, table) } else { Ok(Vec::new()) }
 }
 
 fn load_all<T: for<'de> Deserialize<'de>>(connection: &Connection, table: &str) -> StoreResult<Vec<T>> {

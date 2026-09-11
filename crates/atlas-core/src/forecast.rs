@@ -423,6 +423,8 @@ pub struct Posting {
     pub certainty: Certainty,
     /// Set for tax postings (§12.3): the rule that produced it.
     pub tax_rule: Option<TaxRuleId>,
+    /// Set for fee postings from user rules (§14.4).
+    pub fee_rule: Option<RuleId>,
 }
 
 /// The dated path of one account.
@@ -544,20 +546,20 @@ fn postings_for(household: &Household, series: &crate::timeline::EventSeries, op
         let label = occurrence.label.clone();
         match series.direction {
             Direction::Income => {
-                postings.push(Posting { date: occurrence.availability, intraday_order: occurrence.intraday_order, account: series.account, amount, label: label.clone(), series: series.id, certainty: series.certainty, tax_rule: None });
+                postings.push(Posting { date: occurrence.availability, intraday_order: occurrence.intraday_order, account: series.account, amount, label: label.clone(), series: series.id, certainty: series.certainty, tax_rule: None, fee_rule: None });
                 if let Some(linked) = series.linked_account {
-                    postings.push(Posting { date: occurrence.due, intraday_order: occurrence.intraday_order, account: linked, amount: amount.negated(), label: format!("{label} (paid)"), series: series.id, certainty: series.certainty, tax_rule: None });
+                    postings.push(Posting { date: occurrence.due, intraday_order: occurrence.intraday_order, account: linked, amount: amount.negated(), label: format!("{label} (paid)"), series: series.id, certainty: series.certainty, tax_rule: None, fee_rule: None });
                 }
             }
             Direction::Expense => {
-                postings.push(Posting { date: occurrence.due, intraday_order: occurrence.intraday_order, account: series.account, amount: amount.negated(), label: label.clone(), series: series.id, certainty: series.certainty, tax_rule: None });
+                postings.push(Posting { date: occurrence.due, intraday_order: occurrence.intraday_order, account: series.account, amount: amount.negated(), label: label.clone(), series: series.id, certainty: series.certainty, tax_rule: None, fee_rule: None });
                 if let Some(linked) = series.linked_account {
-                    postings.push(Posting { date: occurrence.availability, intraday_order: occurrence.intraday_order, account: linked, amount, label: format!("{label} (received)"), series: series.id, certainty: series.certainty, tax_rule: None });
+                    postings.push(Posting { date: occurrence.availability, intraday_order: occurrence.intraday_order, account: linked, amount, label: format!("{label} (received)"), series: series.id, certainty: series.certainty, tax_rule: None, fee_rule: None });
                 }
             }
             Direction::Transfer { to } => {
-                postings.push(Posting { date: occurrence.due, intraday_order: occurrence.intraday_order, account: series.account, amount: amount.negated(), label: format!("{label} (out)"), series: series.id, certainty: series.certainty, tax_rule: None });
-                postings.push(Posting { date: occurrence.availability, intraday_order: occurrence.intraday_order, account: to, amount, label: format!("{label} (in)"), series: series.id, certainty: series.certainty, tax_rule: None });
+                postings.push(Posting { date: occurrence.due, intraday_order: occurrence.intraday_order, account: series.account, amount: amount.negated(), label: format!("{label} (out)"), series: series.id, certainty: series.certainty, tax_rule: None, fee_rule: None });
+                postings.push(Posting { date: occurrence.availability, intraday_order: occurrence.intraday_order, account: to, amount, label: format!("{label} (in)"), series: series.id, certainty: series.certainty, tax_rule: None, fee_rule: None });
             }
         }
     }
@@ -608,6 +610,25 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
             series: tax.base_series.unwrap_or(SeriesId::new(0)),
             certainty: Certainty::Contractual,
             tax_rule: Some(tax.rule),
+            fee_rule: None,
+        });
+    }
+    // 1c. Fee postings from user rules (§14.4): each fee enters cash once.
+    let mut rules_applied: Vec<String> = Vec::new();
+    for fee in crate::rules::fee_postings(household, options.through, options.scenario, options.case)?.into_iter().filter(|f| member_ids.contains(&f.account)) {
+        if !rules_applied.contains(&fee.label) {
+            rules_applied.push(fee.label.clone());
+        }
+        postings.push(Posting {
+            date: fee.date,
+            intraday_order: fee.intraday_order,
+            account: fee.account,
+            amount: fee.amount,
+            label: fee.label,
+            series: fee.base_series,
+            certainty: Certainty::Contractual,
+            tax_rule: None,
+            fee_rule: Some(fee.rule),
         });
     }
     postings.sort_by_key(|p| (p.date, p.intraday_order, p.series, p.account));
@@ -699,7 +720,7 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
         let Some(series) = household.series_by_id(*series_id) else { continue };
         let mut sum = Money::zero(currency);
         let mut count = 0usize;
-        for posting in postings.iter().filter(|p| p.series == *series_id && p.tax_rule.is_none()) {
+        for posting in postings.iter().filter(|p| p.series == *series_id && p.tax_rule.is_none() && p.fee_rule.is_none()) {
             let share = members.iter().find(|(id, _)| *id == posting.account).map(|(_, s)| *s).unwrap_or(10_000);
             sum = sum.checked_add(posting.amount.share_basis_points(share))?;
             count += 1;
@@ -742,6 +763,24 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
             .certainty(Certainty::Contractual)
             .note("Each tax enters cash once as a posting on its cash date (§12.3, M01); assessment balances payable after the horizon are a tax reserve, not a posting (§12.4).")
             .minus(),
+        );
+    }
+    let fee_total = {
+        let mut total = Money::zero(currency);
+        for posting in postings.iter().filter(|p| p.fee_rule.is_some()) {
+            let share = members.iter().find(|(id, _)| *id == posting.account).map(|(_, s)| *s).unwrap_or(10_000);
+            total = total.checked_add(posting.amount.share_basis_points(share))?;
+        }
+        total
+    };
+    if !fee_total.is_zero() {
+        let count = postings.iter().filter(|p| p.fee_rule.is_some()).count();
+        terms.push(
+            ProvNode::input(format!("Fees from user rules ({count} postings, contractual)"), fee_total.abs(), rules_applied.join(" · "))
+                .money_class(MoneyClass::ExpectedFuture)
+                .certainty(Certainty::Contractual)
+                .note("Fee events added by enabled rules in force on each date; conflicts resolved by priority, then scope specificity (§14.4, §14.7).")
+                .minus(),
         );
     }
     let end_node = ProvNode::sum(format!("Conditional projected cash — {} case", options.case.label().to_lowercase()), running, terms)
@@ -813,7 +852,10 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
         included_series: included_series.clone(),
         excluded_accounts,
         rules_applied: {
-            let mut rules = vec!["no user rules evaluated yet (rules engine arrives with M7)".to_string()];
+            let mut rules: Vec<String> = rules_applied.iter().map(|r| format!("user rule: {r}")).collect();
+            if rules.is_empty() {
+                rules.push("no user rule produced a posting in this window".into());
+            }
             rules.extend(tax_rules_applied.iter().map(|r| format!("tax posting: {r}")));
             rules
         },
@@ -934,6 +976,8 @@ mod forecast_tests {
             actuals: Vec::new(),
             links: Vec::new(),
             history: Vec::new(),
+            rules: Vec::new(),
+            rule_tie_break: crate::rules::TieBreak::OldestRule,
         }
     }
 
