@@ -40,6 +40,8 @@ use crate::screens::{
 };
 use atlas_core::ids::ScenarioId;
 use crate::scenario_entry::ScenarioForms;
+use crate::decision_entry::DecisionForm;
+use atlas_core::decision::{Decision, PurchasePlan};
 use atlas_core::ids::RuleId;
 use atlas_core::rules::TieBreak;
 use crate::rules_entry::RuleForm;
@@ -110,6 +112,10 @@ pub struct AtlasApp {
     pub(crate) scenario_case: Case,
     pub(crate) scenarios: Result<ScenariosModel, EngineError>,
     pub(crate) scenario_forms: ScenarioForms,
+    pub(crate) decision_step: usize,
+    pub(crate) decision_plan: PurchasePlan,
+    pub(crate) decision: Option<Result<Decision, EngineError>>,
+    pub(crate) decision_form: DecisionForm,
     /// Where the household is saved, once it has a file (M12).
     pub(crate) file: Option<atlas_store::HouseholdFile>,
     /// Unsaved changes since the last save/load.
@@ -354,6 +360,8 @@ impl AtlasApp {
         let scenario_selection: Vec<ScenarioId> = household.scenarios.first().map(|s| vec![s.id]).unwrap_or_default();
         let scenarios = Self::compute_scenarios(&household, viewer, horizon, Case::Expected, &scenario_selection);
         let scenario_forms = ScenarioForms::new(&household, _window, _cx);
+        let decision_plan = atlas_core::decision::default_plan(&household, household.as_of);
+        let decision_form = DecisionForm::new(&household, &decision_plan, _window, _cx);
         let lifecycle_form = crate::lifecycle::LifecycleForm::new(_window, _cx);
         let entry_forms = crate::entry::EntryForms::new(&household, _window, _cx);
         let file = resolved.file;
@@ -417,6 +425,10 @@ impl AtlasApp {
             scenario_case: Case::Expected,
             scenarios,
             scenario_forms,
+            decision_step: 0,
+            decision_plan,
+            decision: None,
+            decision_form,
             file,
             dirty: false,
             owner,
@@ -433,6 +445,7 @@ impl AtlasApp {
         self.tax_form = TaxRuleForm::new(&self.household, window, cx);
         self.rule_form = RuleForm::new(&self.household, window, cx);
         self.scenario_forms = ScenarioForms::new(&self.household, window, cx);
+        self.decision_form = DecisionForm::new(&self.household, &self.decision_plan, window, cx);
         self.entry_forms = crate::entry::EntryForms::new(&self.household, window, cx);
         let mut subscriptions: Vec<Subscription> = self
             .timeline_controls
@@ -986,6 +999,22 @@ impl AtlasApp {
         self.refresh_taxes();
         self.refresh_rules();
         self.refresh_scenarios();
+        if self.decision.is_some() {
+            self.evaluate_decision();
+        }
+    }
+
+    /// The evaluated decision, if the result step has been reached.
+    pub fn decision(&self) -> Option<&Decision> {
+        self.decision.as_ref().and_then(|d| d.as_ref().ok())
+    }
+
+    pub fn decision_plan(&self) -> &PurchasePlan {
+        &self.decision_plan
+    }
+
+    pub fn decision_step(&self) -> usize {
+        self.decision_step
     }
 
     // ----- scenarios (§18, M8) -----------------------------------------------------
@@ -1591,6 +1620,7 @@ impl AtlasApp {
                 }
                 Err(err) => self.render_engine_failure(Section::Scenarios, err, cx),
             },
+            Section::Decisions => screens::decisions::render(self.decision_step, &self.decision_form, self.decision.as_ref(), &self.household, &self.viewer_name(), cx).into_any_element(),
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
             other => screens::placeholder::render(other, cx).into_any_element(),
         }

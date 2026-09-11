@@ -65,6 +65,31 @@ tax rules) and account detail has **Reconcile…** and **Delete**.
 - Useful flags for scripts and tests: `--new`, `--sample`, `--household FILE`, `--as-of DATE`,
   `--viewer <person id>`, `--owner NAME`, `--take-over`.
 
+## Decisions (M9, §13, §19, §20, §26)
+
+**Decisions** is a step-by-step builder, as asked: *what* (price, purchase date, purchase window,
+reserve to keep, objective) → *down payment* (amount, grid range, the personal accounts in
+funding order with optional floors, company salary routes) → *recurring payment* (annuity
+months, rate, first instalment, paying account) → *other costs* (one-off and monthly running
+costs) → **result**.
+
+- The result shows the baseline-vs-decision graph, the §19.1 affordability metrics
+  (immediate cash after purchase — with its chain — lowest cash and its date in the expected
+  and conservative case, reserve remaining, future shortfalls, monthly repayment, financing
+  cost, free cash flow, recovery time, taxes/fees triggered, goals delayed, company cash
+  consequences).
+- **Funding strategies** in the §13.5 format: every candidate with gross, net, fees,
+  withholding, ending balances, reserve constraints, violations and caveats; gross-up finds the
+  smallest gross that delivers the net after recomputed fees and withholding (M25, E02, V014);
+  company routes carry the E07 ceiling and the M27 legal-capacity caveat and are rejected —
+  never merely "cheapest tax" — when they break a reserve. The status always reads *best among
+  the enumerated candidates*, never a global optimum.
+- **Purchase month × down payment grid** (§19.2, E03) under the conservative case, the best
+  cell under the objective marked; goal trade-offs (§20) from the household's goals; the
+  conditional statement (§19.3) with every ranged assumption; the §26 recommendation contract.
+- **Save as scenario** turns the plan into a scenario with its events, ready for the Scenarios
+  comparison and the timeline.
+
 ## Scenarios (M8, §18)
 
 A scenario is an **overlay** over the baseline: the series, funding rules and assumptions tagged

@@ -5,6 +5,7 @@
 pub mod accounts;
 pub mod assumptions;
 pub mod companies;
+pub mod decisions;
 pub mod entities;
 pub mod household;
 pub mod liquidity;

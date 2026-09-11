@@ -15,11 +15,13 @@
 //! | [`entry`] | data-entry dialogs for every object (M12) |
 //! | [`rules_entry`] | the rule editor dialog (M7) |
 //! | [`scenario_entry`] | scenario change and composition dialogs (M8) |
+//! | [`decision_entry`] | the decision builder's form state and steps (M9) |
 //! | [`alerting`] | failure reporting to the DevBench notify endpoint |
 //! | [`launch`] | command-line options and theme selection |
 
 pub mod alerting;
 pub mod app;
+pub mod decision_entry;
 pub mod entry;
 pub mod launch;
 pub mod lifecycle;
