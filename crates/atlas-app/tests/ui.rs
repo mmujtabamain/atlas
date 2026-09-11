@@ -20,9 +20,11 @@ fn let_dialog_settle() {
     std::thread::sleep(std::time::Duration::from_millis(400));
 }
 
-/// Scrolls the main column so content below the fold becomes visible.
+/// Scrolls the main column so content below the fold becomes visible. The
+/// wheel event is dispatched at the anchor's centre, so the anchor must be an
+/// element that is currently on screen (a filter control, a figure …).
 fn scroll_down(window: &mut gpui_kit::Window, anchor: &'static str, cx: &mut gpui_kit::App) {
-    window.scroll(anchor, ScrollDelta::Pixels(point(px(0.), px(-3000.))), cx);
+    window.scroll(anchor, ScrollDelta::Pixels(point(px(0.), px(-12000.))), cx);
     window.render_frame(cx);
 }
 
@@ -285,5 +287,90 @@ fn paying_and_releasing_an_earmark_keeps_free_cash(cx: &mut TestAppContext) {
         let model = app.liquidity().unwrap();
         assert_eq!(model.figures[0].calc.money(), fixtures::pkr(4_100_000));
         assert_eq!(model.figures[2].calc.money(), fixtures::pkr(2_650_000));
+    });
+}
+
+#[test]
+fn timeline_filters_narrow_the_occurrences() {
+    use atlas_app::screens::timeline::{TimelineFilter, TimelineModel};
+    use atlas_core::authz::Viewer;
+    use atlas_core::ids::EntityRef;
+    use atlas_core::timeline::OccurrenceStatus;
+    let household = fixtures::plan_household();
+    let viewer = Viewer::person(fixtures::ids::PERSON_A);
+    let all = TimelineFilter { entity: None, account: None, certainty: None, status: None, scenario: None, through: fixtures::default_horizon() };
+    let baseline = TimelineModel::compute(&household, viewer, all.clone()).unwrap();
+    assert!(baseline.occurrences.windows(2).all(|w| w[0].sort_key() <= w[1].sort_key()));
+
+    let only_b = TimelineModel::compute(&household, viewer, TimelineFilter { entity: Some(EntityRef::Person(fixtures::ids::PERSON_B)), ..all.clone() }).unwrap();
+    assert!(!only_b.occurrences.is_empty());
+    assert!(only_b.occurrences.iter().all(|o| o.entity == EntityRef::Person(fixtures::ids::PERSON_B)));
+
+    let partial = TimelineModel::compute(&household, viewer, TimelineFilter { status: Some(OccurrenceStatus::PartiallyFulfilled), ..all.clone() }).unwrap();
+    assert_eq!(partial.occurrences.len(), 1);
+    assert_eq!(partial.occurrences[0].remaining_expected(), fixtures::pkr(200_000));
+
+    let with_car = TimelineModel::compute(&household, viewer, TimelineFilter { scenario: Some(fixtures::ids::BUY_CAR), ..all.clone() }).unwrap();
+    assert_eq!(with_car.occurrences.len(), baseline.occurrences.len() + 1);
+
+    // Person B never sees Person A's private account series (V062).
+    let b_view = TimelineModel::compute(&household, Viewer::person(fixtures::ids::PERSON_B), all).unwrap();
+    assert!(b_view.occurrences.iter().all(|o| o.account != fixtures::ids::PERSON_A_CURRENT));
+    assert!(b_view.hidden_series > 0);
+}
+
+#[gpui_kit::test]
+fn timeline_scenario_toggle_and_series_editor(cx: &mut TestAppContext) {
+    let launch = Launch { section: Section::Timeline, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+
+    let baseline_count = cx.update(|cx| app.read(cx).timeline().unwrap().occurrences.len());
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-timeline").visible());
+        window.click("timeline-buy-car", cx);
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        assert_eq!(app.timeline_filter().scenario, Some(fixtures::ids::BUY_CAR));
+        assert_eq!(app.timeline().unwrap().occurrences.len(), baseline_count + 1, "the car down payment joins the timeline");
+    });
+
+    // Edit the rent series: raise the expected amount for the whole series.
+    cx.update_window(window, |_, window, cx| {
+        scroll_down(window, "timeline-buy-car", cx);
+        window.click("edit-series-5", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("save-series").visible());
+        window.click("series-amount", cx);
+        window.press("ctrl-a", cx);
+        window.input("190,000", cx);
+        assert_eq!(window.find("series-amount").value(), Some("190,000"));
+        window.click("save-series", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let rent = app.household().series_by_id(fixtures::ids::RENT).unwrap();
+        assert_eq!(rent.amount.expected(), fixtures::pkr(190_000));
+        // Ranges widen to include the new expected value; the household chain follows.
+        assert_eq!(rent.amount.low(), fixtures::pkr(180_000));
+        assert_eq!(rent.amount.high(), fixtures::pkr(200_000));
+        let overview = app.overview().unwrap();
+        assert_eq!(overview.conditional.calc.money(), fixtures::pkr(6_195_000 - 4 * 10_000));
     });
 }
