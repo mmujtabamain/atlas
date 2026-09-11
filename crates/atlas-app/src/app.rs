@@ -25,7 +25,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::alerting::{self, Level};
-use crate::launch::Launch;
+use crate::launch::{Launch, Start};
 use crate::screens::{
     self, Section,
     entities::EntityModels,
@@ -60,42 +60,50 @@ use gpui_kit::component::{
 };
 
 pub struct AtlasApp {
-    household: Household,
-    viewer: Viewer,
-    section: Section,
-    horizon: NaiveDate,
-    sidebar_collapsed: bool,
+    pub(crate) household: Household,
+    pub(crate) viewer: Viewer,
+    pub(crate) section: Section,
+    pub(crate) horizon: NaiveDate,
+    pub(crate) sidebar_collapsed: bool,
     /// Derived once per state change; screens only read it.
-    overview: Result<HouseholdOverview, EngineError>,
-    entities: Result<EntityModels, EngineError>,
-    liquidity: Result<LiquidityModel, EngineError>,
-    boundary: Boundary,
-    selected_person: Option<PersonId>,
-    selected_company: Option<CompanyId>,
-    selected_account: Option<AccountId>,
-    reservation_form: ReservationForm,
-    timeline_filter: TimelineFilter,
-    timeline: Result<TimelineModel, EngineError>,
-    timeline_controls: TimelineControls,
-    series_form: SeriesForm,
-    projection_boundary: Boundary,
-    projection_case: Case,
-    projection_scenario: bool,
-    projection: Result<ProjectionModel, EngineError>,
-    derivation_series: Option<SeriesId>,
-    derivation: Derivation,
-    sensitivity_boundary: Boundary,
-    sensitivity_scenario: bool,
-    assumptions: Result<AssumptionsModel, EngineError>,
-    tax_scenario: bool,
+    pub(crate) overview: Result<HouseholdOverview, EngineError>,
+    pub(crate) entities: Result<EntityModels, EngineError>,
+    pub(crate) liquidity: Result<LiquidityModel, EngineError>,
+    pub(crate) boundary: Boundary,
+    pub(crate) selected_person: Option<PersonId>,
+    pub(crate) selected_company: Option<CompanyId>,
+    pub(crate) selected_account: Option<AccountId>,
+    pub(crate) reservation_form: ReservationForm,
+    pub(crate) timeline_filter: TimelineFilter,
+    pub(crate) timeline: Result<TimelineModel, EngineError>,
+    pub(crate) timeline_controls: TimelineControls,
+    pub(crate) series_form: SeriesForm,
+    pub(crate) projection_boundary: Boundary,
+    pub(crate) projection_case: Case,
+    pub(crate) projection_scenario: bool,
+    pub(crate) projection: Result<ProjectionModel, EngineError>,
+    pub(crate) derivation_series: Option<SeriesId>,
+    pub(crate) derivation: Derivation,
+    pub(crate) sensitivity_boundary: Boundary,
+    pub(crate) sensitivity_scenario: bool,
+    pub(crate) assumptions: Result<AssumptionsModel, EngineError>,
+    pub(crate) tax_scenario: bool,
     e05_amount: Money,
     e05_split: bool,
     e05_schedule: E05Schedule,
-    taxes: Result<TaxModel, EngineError>,
-    tax_controls: TaxControls,
-    tax_form: TaxRuleForm,
-    tax_form_effective_from_override: Option<NaiveDate>,
-    _subscriptions: Vec<Subscription>,
+    pub(crate) taxes: Result<TaxModel, EngineError>,
+    pub(crate) tax_controls: TaxControls,
+    pub(crate) tax_form: TaxRuleForm,
+    pub(crate) tax_form_effective_from_override: Option<NaiveDate>,
+    /// Where the household is saved, once it has a file (M12).
+    pub(crate) file: Option<atlas_store::HouseholdFile>,
+    /// Unsaved changes since the last save/load.
+    pub(crate) dirty: bool,
+    /// Lock owner name for the household file.
+    pub(crate) owner: String,
+    pub(crate) lifecycle_form: crate::lifecycle::LifecycleForm,
+    pub(crate) entry_forms: crate::entry::EntryForms,
+    pub(crate) _subscriptions: Vec<Subscription>,
 }
 
 /// Retained controls of the Taxes screen.
@@ -292,9 +300,25 @@ impl AtlasApp {
     pub fn new(launch: &Launch, _window: &mut Window, _cx: &mut Context<Self>) -> Self {
         let _window: &mut Window = _window;
         let _cx: &mut Context<Self> = _cx;
-        let household = fixtures::plan_household();
-        let viewer = Viewer::person(if launch.viewer == 'b' { fixtures::ids::PERSON_B } else { fixtures::ids::PERSON_A });
-        let horizon = fixtures::default_horizon();
+        let owner = launch.owner.clone();
+        let resolved = Self::resolve_start(launch, &owner);
+        let household = resolved.household;
+        let viewer = Viewer::person(match launch.viewer_id {
+            Some(id) => PersonId::new(id),
+            None if launch.viewer == 'b' => household.people.get(1).map(|p| p.id).unwrap_or(fixtures::ids::PERSON_B),
+            None => household.people.first().map(|p| p.id).unwrap_or(fixtures::ids::PERSON_A),
+        });
+        let horizon = household.as_of.checked_add_months(Months::new(12)).unwrap_or(fixtures::default_horizon()).max(fixtures::default_horizon().min(household.as_of.checked_add_months(Months::new(12)).unwrap_or(household.as_of)));
+        let horizon = if launch.start == Start::Sample { fixtures::default_horizon() } else { horizon };
+        for notice in &resolved.notices {
+            log::warn!("{notice}");
+        }
+        let notices = resolved.notices.clone();
+        _cx.defer_in(_window, move |_, window, cx| {
+            for notice in notices {
+                window.push_notification(notice, cx);
+            }
+        });
         let overview = Self::compute_overview(&household, viewer, horizon);
         let entities = Self::compute_entities(&household, viewer);
         let boundary = Boundary::Household;
@@ -310,6 +334,9 @@ impl AtlasApp {
         let taxes = Self::compute_taxes(&household, viewer, horizon, false, e05_amount, true, E05Schedule::PlanExample);
         let tax_controls = TaxControls { e05_amount: _cx.new(|cx| InputState::new(_window, cx).default_value("100,000")) };
         let tax_form = TaxRuleForm::new(&household, _window, _cx);
+        let lifecycle_form = crate::lifecycle::LifecycleForm::new(_window, _cx);
+        let entry_forms = crate::entry::EntryForms::new(&household, _window, _cx);
+        let file = resolved.file;
         let mut subscriptions: Vec<Subscription> = timeline_controls
             .all()
             .iter()
@@ -362,8 +389,39 @@ impl AtlasApp {
             tax_controls,
             tax_form,
             tax_form_effective_from_override: None,
+            file,
+            dirty: false,
+            owner,
+            lifecycle_form,
+            entry_forms,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Rebuilds every form whose option lists snapshot household data.
+    pub fn rebuild_forms(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reservation_form = ReservationForm::new(&self.household, self.viewer, window, cx);
+        self.timeline_controls = TimelineControls::new(&self.household, self.viewer, window, cx);
+        self.tax_form = TaxRuleForm::new(&self.household, window, cx);
+        self.entry_forms = crate::entry::EntryForms::new(&self.household, window, cx);
+        let mut subscriptions: Vec<Subscription> = self
+            .timeline_controls
+            .all()
+            .iter()
+            .map(|state| {
+                cx.subscribe_in(state, window, |this, _, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+                    let SelectEvent::Confirm(_) = event;
+                    this.apply_timeline_filters(cx);
+                })
+            })
+            .collect();
+        subscriptions.push(cx.subscribe_in(&self.tax_controls.e05_amount, window, |this, state, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                let text = state.read(cx).value().to_string();
+                this.set_e05_amount_text(&text, cx);
+            }
+        }));
+        self._subscriptions = subscriptions;
     }
 
     fn compute_taxes(household: &Household, viewer: Viewer, through: NaiveDate, scenario: bool, e05_amount: Money, e05_split: bool, e05_schedule: E05Schedule) -> Result<TaxModel, EngineError> {
@@ -564,6 +622,7 @@ impl AtlasApp {
         };
         let pack = self.household.add_user_tax_rule(rule);
         log::info!("user tax rule “{name}” added to {pack}");
+        self.mark_dirty();
         self.refresh_derived();
         cx.notify();
         Ok(format!("Rule “{name}” added to {pack} (unverified); forecasts recomputed."))
@@ -631,7 +690,8 @@ impl AtlasApp {
         match self.household.accept_assumption(id, self.household.as_of) {
             Ok(()) => {
                 log::info!("assumption {id} accepted on {}", self.household.as_of);
-                self.refresh_derived();
+                self.mark_dirty();
+        self.refresh_derived();
                 window.push_notification(format!("Assumption #{} accepted on {}", id.raw(), self.household.as_of.format("%d %b %Y")), cx);
             }
             Err(err) => {
@@ -648,7 +708,8 @@ impl AtlasApp {
         match derive(&self.household, series, self.derivation).and_then(|d| apply_derived(&mut self.household, &d, assumption).map(|_| d)) {
             Ok(derived) => {
                 log::info!("derivation applied to {assumption}: {}", derived.statement);
-                self.refresh_derived();
+                self.mark_dirty();
+        self.refresh_derived();
                 window.push_notification(format!("Assumption #{} now reads: {} — accept it to use it.", assumption.raw(), derived.amount.describe()), cx);
             }
             Err(err) => {
@@ -854,6 +915,7 @@ impl AtlasApp {
         }
         let name = series.name.clone();
         log::info!("series {id} edited: {}", applied.join("; "));
+        self.mark_dirty();
         self.refresh_derived();
         cx.notify();
         Ok(format!("“{name}”: {}", applied.join("; ")))
@@ -884,7 +946,7 @@ impl AtlasApp {
     }
 
     /// Recomputes every derived model after the household or viewer changed.
-    fn refresh_derived(&mut self) {
+    pub(crate) fn refresh_derived(&mut self) {
         self.overview = Self::compute_overview(&self.household, self.viewer, self.horizon);
         self.entities = Self::compute_entities(&self.household, self.viewer);
         self.liquidity = Self::compute_liquidity(&self.household, self.viewer, self.boundary, self.horizon);
@@ -1040,7 +1102,8 @@ impl AtlasApp {
         match self.household.add_reservation(reservation) {
             Ok(id) => {
                 log::info!("reservation {id} added: {name} {} on {account_id}", amount.format());
-                self.refresh_derived();
+                self.mark_dirty();
+        self.refresh_derived();
                 cx.notify();
                 Ok(format!("Reserved {} for “{name}” — ledger cash unchanged, free cash reduced (§17)", amount.format()))
             }
@@ -1098,7 +1161,8 @@ impl AtlasApp {
         match self.household.pay_and_release(id, self.household.as_of) {
             Ok(balance) => {
                 log::info!("reservation {id} paid and released; new settled balance {}", balance.format());
-                self.refresh_derived();
+                self.mark_dirty();
+        self.refresh_derived();
                 cx.notify();
                 Ok(format!("“{name}” paid and released; settled balance now {}", balance.format()))
             }
@@ -1168,7 +1232,10 @@ impl AtlasApp {
     }
 
     fn viewer_name(&self) -> String {
-        self.household.entity_name(EntityRef::Person(self.viewer.person))
+        match self.household.person(self.viewer.person) {
+            Some(person) => person.name.clone(),
+            None => "no one yet".to_string(),
+        }
     }
 
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1188,7 +1255,7 @@ impl AtlasApp {
                     .gap_3()
                     .child(Icon::new(IconName::Wallet).small())
                     .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer"))
-                    .child(Tag::secondary().xsmall().outline().child("M6 taxes")),
+                    .child(Tag::secondary().xsmall().outline().child("M12 real data")),
             )
             .child(
                 h_flex()
@@ -1200,15 +1267,16 @@ impl AtlasApp {
                         "reconciled {}",
                         self.household.as_of.format("%d %b %Y")
                     )))
+                    .child(self.render_household_menu(cx))
                     .child(
-                        h_flex()
-                            .id("viewer")
-                            .test_support()
-                            .gap_1()
-                            .items_center()
-                            .text_xs()
-                            .child(Icon::new(IconName::Eye).xsmall())
-                            .child(format!("Viewing as {}", self.viewer_name())),
+                        Button::new("viewer")
+                            .small()
+                            .ghost()
+                            .compact()
+                            .icon(IconName::Eye)
+                            .label(format!("Viewing as {}", self.viewer_name()))
+                            .tooltip("Change who is looking")
+                            .on_click(cx.listener(|this, _, window, cx| this.open_viewer_picker(window, cx))),
                     )
                     .child(
                         Button::new("theme")
@@ -1374,6 +1442,13 @@ impl AtlasApp {
                 self.household.reservations.len(),
                 self.household.policies.len()
             )))
+            .right(div().text_color(muted).child(match (&self.file, self.dirty) {
+                (Some(file), true) => format!("{} • unsaved", file.path().display()),
+                (Some(file), false) => format!("{}", file.path().display()),
+                (None, true) => "not saved yet • unsaved changes — Household ▸ Save as…".to_string(),
+                (None, false) => "in memory — Household ▸ Save as… to keep it".to_string(),
+            }))
+            .right(Separator::vertical().h_3())
             .right(div().text_color(muted).child(alerting::status_label()))
             .right(Separator::vertical().h_3())
             .right(div().text_color(muted).child(format!("atlas-core {}", env!("CARGO_PKG_VERSION"))))

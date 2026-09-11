@@ -14,7 +14,8 @@ data model, not a later feature (§7.1).
 | Path | What |
 |---|---|
 | `crates/atlas-core` | Engine: money (integer minor units), household model, reservations, timeline, forecast, provenance graph, authorization. No UI, no I/O. |
-| `crates/atlas-app` | The gpui-kit window: shell, screens, the explain sheet, failure alerting. Binary `atlas`. |
+| `crates/atlas-store` | Persistence: one SQLite file per household, backups, lock file. |
+| `crates/atlas-app` | The gpui-kit window: shell, screens, the explain sheet, data entry, failure alerting. Binary `atlas`. |
 | `docs/ui-implementation-plan.md` | Milestones M0–M11 and their tasks (mirrored on the DevBench board). |
 | `scripts/shoot.sh` | Headless screenshots of every screen (Linux box). |
 | `plan.md` | The requirements document this repo implements. |
@@ -39,6 +40,30 @@ system libraries through `.cargo/config.toml` and the `.sysroot` symlink into
 `../gpui-lab/.sysroot` (built by `gpui-lab/scripts/setup-linux-sysroot.sh`). Keep
 `~/.cargo/config.toml` at `jobs = 2` (2 GiB memory cgroup). Screenshots:
 `scripts/shoot.sh [scenario]`, then `devbench media put shots/<name>.png`.
+
+## Your data (M12)
+
+The app starts with the fictitious sample household. **Household ▸ New household…** creates an
+empty one (name, base currency — USD by default — reconciliation date, first person); every
+screen then has a **New …** button (people, companies, accounts with the §7 properties, event
+series with any recurrence, assumptions, scenarios, actual transactions with reconciliation,
+tax rules) and account detail has **Reconcile…** and **Delete**.
+
+- **Household ▸ Save as…** writes one SQLite file, `<name>.atlas.sqlite`, wherever you choose
+  (default `~/Documents/Atlas/`). **Save** rewrites it in one transaction after copying the
+  previous version into `backups/` (20 kept). Open it again with **Household ▸ Open…** or
+  `atlas --household /path/to/ours.atlas.sqlite`.
+- **One editor at a time.** A sidecar `.lock` file names who has the household open; opening a
+  file someone else holds says so, and `--take-over` (or the notification) lets you proceed
+  when they are done. Two people on the same Mac take turns; nothing syncs.
+- **Who is looking?** The picker (title bar, or **Household ▸ Who is looking?…**) sets the
+  viewer; every screen filters through that person's access policies (§7). The demo identifies
+  people by choice, without a secret.
+- Every created object gets an access policy with its creator as owner (F162): personal objects
+  default to *Fully shared*, company accounts to *Shared summary* and excluded from household
+  calculations (§8.5).
+- Useful flags for scripts and tests: `--new`, `--sample`, `--household FILE`, `--as-of DATE`,
+  `--viewer <person id>`, `--owner NAME`, `--take-over`.
 
 ## Monitoring
 
