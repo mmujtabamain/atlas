@@ -109,8 +109,8 @@ impl AssumptionsModel {
             assumptions: ConditionalStatement::assumption_texts(&forecast.assumptions.iter().filter(|a| a.private_to.is_none_or(|p| p == viewer.person)).cloned().collect::<Vec<_>>()),
             excluded_shocks: vec![
                 "unplanned expenses beyond the one-off limit below".into(),
-                "several assumptions failing together (joint stress arrives with M14)".into(),
-                "tax and rule changes (M6, M7)".into(),
+                "several assumptions failing together (one-at-a-time breakpoints only, §10.8)".into(),
+                "changes to the effective tax packs or user rules".into(),
             ],
         };
         Ok(AssumptionsModel {
@@ -392,7 +392,7 @@ fn render_sensitivity(model: &AssumptionsModel, household: &Household, cx: &mut 
             .child(Alert::warning("joint-caveat", report.caveat).title("Single-assumption limits only"))
             .child(
                 h_flex().gap_2().items_center().child(labels::strength_tag(report.coverage)).child(div().text_xs().text_color(theme.muted_foreground).child(
-                    "Bisection is exact to the minor unit and valid because the lowest balance is monotone in one amount or arrival date in this additive cash model; threshold taxes and rules (M6, M7) will require enumeration and say so.",
+                    "Bisection is exact to the minor unit and valid because the lowest balance is monotone in one amount or arrival date in this additive cash model; with threshold taxes or fee rules in the window the breakpoint is verified by re-running the forecast at the found value.",
                 )),
             ),
     )

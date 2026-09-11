@@ -156,7 +156,7 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
                                     .child(labels::strength_tag(model.extractable.calc.node().result_strength())),
                             )
                             .child(div().text_xs().text_color(theme.muted_foreground).child(
-                                "The ceiling is a cash constraint before extraction costs, not lawfully distributable cash. Each route — salary, permitted dividend, documented reimbursement, genuine shareholder-loan repayment — is modelled with its own legal capacity in M9 (M27).",
+                                "The ceiling is a cash constraint before extraction costs, not lawfully distributable cash. Each route — salary, permitted dividend, documented reimbursement, genuine shareholder-loan repayment — is a separate route on the Decisions screen, each with the legal-capacity caveat (M27).",
                             )),
                     ),
             ),
@@ -172,22 +172,22 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
                     .child(
                         TableHeader::new().child(
                             TableRow::new()
-                                .child(TableHead::new().w_64().child("Account"))
-                                .child(TableHead::new().w_40().child("Kind"))
-                                .child(TableHead::new().w_40().child("Institution"))
-                                .child(TableHead::new().w_32().text_right().child("Settled"))
-                                .child(TableHead::new().child("Earmarks")),
+                                .child(TableHead::new().w_64().flex_shrink_0().child("Account"))
+                                .child(TableHead::new().w_40().flex_shrink_0().child("Kind"))
+                                .child(TableHead::new().w_40().flex_shrink_0().child("Institution"))
+                                .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Settled"))
+                                .child(TableHead::new().min_w_0().child("Earmarks")),
                         ),
                     )
                     .child(TableBody::new().children(household.company_accounts(company.id).enumerate().map(|(index, account)| {
                         let earmarks: Vec<String> = household.active_reservations_on(account.id).map(|r| format!("{} {}", r.name, r.amount.format())).collect();
                         TableRow::new()
                             .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                            .child(TableCell::new().w_64().child(account.name.clone()))
-                            .child(muted_cell(account.kind.label(), cx).w_40())
-                            .child(muted_cell(account.institution.clone(), cx).w_40())
-                            .child(money_cell(account.settled_balance, cx).w_32())
-                            .child(muted_cell(if earmarks.is_empty() { "—".to_string() } else { earmarks.join(" · ") }, cx))
+                            .child(TableCell::new().w_64().flex_shrink_0().overflow_hidden().text_ellipsis().child(account.name.clone()))
+                            .child(muted_cell(account.kind.label(), cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(muted_cell(account.institution.clone(), cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(money_cell(account.settled_balance, cx).w_32().flex_shrink_0())
+                            .child(muted_cell(if earmarks.is_empty() { "—".to_string() } else { earmarks.join(" · ") }, cx).min_w_0().overflow_hidden().text_ellipsis())
                     }))),
             ),
         )
@@ -199,11 +199,11 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
                     .child(
                         TableHeader::new().child(
                             TableRow::new()
-                                .child(TableHead::new().w_64().child("Employee"))
-                                .child(TableHead::new().w_32().text_right().child("Monthly gross"))
-                                .child(TableHead::new().w_32().child("Start"))
-                                .child(TableHead::new().w_32().child("End"))
-                                .child(TableHead::new().child("Household link (§8.4)")),
+                                .child(TableHead::new().w_64().flex_shrink_0().child("Employee"))
+                                .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Monthly gross"))
+                                .child(TableHead::new().w_32().flex_shrink_0().child("Start"))
+                                .child(TableHead::new().w_32().flex_shrink_0().child("End"))
+                                .child(TableHead::new().min_w_0().child("Household link (§8.4)")),
                         ),
                     )
                     .child(TableBody::new().children(company.employees.iter().enumerate().map(|(index, employee)| {
@@ -213,11 +213,11 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
                         };
                         TableRow::new()
                             .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                            .child(TableCell::new().w_64().child(employee.name.clone()))
-                            .child(money_cell(employee.monthly_gross, cx).w_32())
-                            .child(muted_cell(employee.start.format("%d %b %Y").to_string(), cx).w_32())
-                            .child(muted_cell(employee.end.map(|d| d.format("%d %b %Y").to_string()).unwrap_or_else(|| "open".into()), cx).w_32())
-                            .child(muted_cell(link, cx))
+                            .child(TableCell::new().w_64().flex_shrink_0().overflow_hidden().text_ellipsis().child(employee.name.clone()))
+                            .child(money_cell(employee.monthly_gross, cx).w_32().flex_shrink_0())
+                            .child(muted_cell(employee.start.format("%d %b %Y").to_string(), cx).w_32().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(muted_cell(employee.end.map(|d| d.format("%d %b %Y").to_string()).unwrap_or_else(|| "open".into()), cx).w_32().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(muted_cell(link, cx).min_w_0().overflow_hidden().text_ellipsis())
                     })))
                     .into_any_element()
             }),

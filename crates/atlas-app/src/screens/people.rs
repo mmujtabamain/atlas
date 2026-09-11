@@ -108,7 +108,7 @@ fn render_detail(person: &atlas_core::model::Person, model: &super::entities::Pe
                     .child(DescriptionItem::new("Accounts held").value(if accounts.is_empty() { "—".to_string() } else { accounts.join(" · ") }))
                     .child(DescriptionItem::new("Companies").value(if companies.is_empty() { "—".to_string() } else { companies.join(" · ") }))
                     .child(DescriptionItem::new("Liabilities").value(if liabilities.is_empty() { "—".to_string() } else { liabilities.join(" · ") }))
-                    .child(DescriptionItem::new("Tax attribution").value("Own liability under the DEMO pack (§12.6); estimates arrive with M6")),
+                    .child(DescriptionItem::new("Tax attribution").value(model.tax_text.clone())),
             ),
         )
         .child(
@@ -129,22 +129,22 @@ fn render_detail(person: &atlas_core::model::Person, model: &super::entities::Pe
                     .child(
                         TableHeader::new().child(
                             TableRow::new()
-                                .child(TableHead::new().w_64().child("Series"))
-                                .child(TableHead::new().w_40().text_right().child("Expected per occurrence"))
-                                .child(TableHead::new().child("Recurrence"))
-                                .child(TableHead::new().w_40().child("Certainty"))
-                                .child(TableHead::new().w_48().child("Posts to")),
+                                .child(TableHead::new().w_64().flex_shrink_0().child("Series"))
+                                .child(TableHead::new().w_40().flex_shrink_0().text_right().child("Expected per occurrence"))
+                                .child(TableHead::new().min_w_0().child("Recurrence"))
+                                .child(TableHead::new().w_32().flex_shrink_0().child("Certainty"))
+                                .child(TableHead::new().w_48().flex_shrink_0().child("Posts to")),
                         ),
                     )
                     .child(TableBody::new().children(income.iter().enumerate().map(|(index, series)| {
                         let account = household.account(series.account).map(|a| a.name.clone()).unwrap_or_default();
                         TableRow::new()
                             .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                            .child(TableCell::new().w_64().child(series.name.clone()))
-                            .child(money_cell(series.amount.expected(), cx).w_40())
-                            .child(muted_cell(series.recurrence.describe(), cx))
-                            .child(TableCell::new().w_40().child(labels::certainty_tag(series.certainty)))
-                            .child(muted_cell(account, cx).w_48())
+                            .child(TableCell::new().w_64().flex_shrink_0().overflow_hidden().text_ellipsis().child(series.name.clone()))
+                            .child(money_cell(series.amount.expected(), cx).w_40().flex_shrink_0())
+                            .child(muted_cell(series.recurrence.describe(), cx).min_w_0().overflow_hidden().text_ellipsis())
+                            .child(TableCell::new().w_32().flex_shrink_0().child(h_flex().child(labels::certainty_tag(series.certainty))))
+                            .child(muted_cell(account, cx).w_48().flex_shrink_0().overflow_hidden().text_ellipsis())
                     })))
                     .into_any_element()
             }),

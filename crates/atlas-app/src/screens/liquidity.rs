@@ -183,7 +183,7 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
                 .id("runway")
                 .title("Runway against hard floors (M13)")
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "Per-person and per-company dated paths arrive with M4 (board #2757); the household path is analysed on the Household boundary.",
+                    "No dated path could be analysed for this boundary; the Projections screen shows every boundary's path.",
                 ))
                 .into_any_element(),
         })

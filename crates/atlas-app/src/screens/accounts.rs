@@ -215,12 +215,12 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                         .child(
                             TableHeader::new().child(
                                 TableRow::new()
-                                    .child(TableHead::new().w_48().child("Reservation"))
-                                    .child(TableHead::new().w_32().text_right().child("Amount"))
-                                    .child(TableHead::new().w_56().child("Coverage"))
-                                    .child(TableHead::new().w_48().child("Hardness"))
-                                    .child(TableHead::new().child("Purpose"))
-                                    .child(TableHead::new().w_32().child("Status")),
+                                    .child(TableHead::new().w_40().flex_shrink_0().child("Reservation"))
+                                    .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Amount"))
+                                    .child(TableHead::new().w_40().flex_shrink_0().child("Coverage"))
+                                    .child(TableHead::new().w_40().flex_shrink_0().child("Hardness"))
+                                    .child(TableHead::new().min_w_0().child("Purpose"))
+                                    .child(TableHead::new().w_20().flex_shrink_0().child("Status")),
                             ),
                         )
                         .child(TableBody::new().children(reservations.iter().enumerate().map(|(index, r)| {
@@ -231,12 +231,12 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                             };
                             TableRow::new()
                                 .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                                .child(TableCell::new().w_48().child(r.name.clone()))
-                                .child(money_cell(r.amount, cx).w_32())
-                                .child(muted_cell(coverage, cx).w_56())
-                                .child(muted_cell(r.hardness.label(), cx).w_48())
-                                .child(muted_cell(r.purpose.clone(), cx))
-                                .child(muted_cell(r.released_on.map(|d| format!("released {}", d.format("%d %b %Y"))).unwrap_or_else(|| "active".into()), cx).w_32())
+                                .child(TableCell::new().w_40().flex_shrink_0().overflow_hidden().text_ellipsis().child(r.name.clone()))
+                                .child(money_cell(r.amount, cx).w_32().flex_shrink_0())
+                                .child(muted_cell(coverage, cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis())
+                                .child(muted_cell(r.hardness.label(), cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis())
+                                .child(muted_cell(r.purpose.clone(), cx).min_w_0().overflow_hidden().text_ellipsis())
+                                .child(muted_cell(r.released_on.map(|d| format!("released {}", d.format("%d %b %Y"))).unwrap_or_else(|| "active".into()), cx).w_20().flex_shrink_0().overflow_hidden().text_ellipsis())
                         })))
                         .into_any_element()
                 }),
@@ -249,12 +249,12 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                         .child(
                             TableHeader::new().child(
                                 TableRow::new()
-                                    .child(TableHead::new().w_64().child("Series"))
-                                    .child(TableHead::new().w_24().child("Direction"))
-                                    .child(TableHead::new().w_40().text_right().child("Expected"))
-                                    .child(TableHead::new().child("Recurrence"))
-                                    .child(TableHead::new().w_40().child("Certainty"))
-                                    .child(TableHead::new().w_56().child("Role for this account")),
+                                    .child(TableHead::new().w_56().flex_shrink_0().child("Series"))
+                                    .child(TableHead::new().w_24().flex_shrink_0().child("Direction"))
+                                    .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Expected"))
+                                    .child(TableHead::new().min_w_0().child("Recurrence"))
+                                    .child(TableHead::new().w_32().flex_shrink_0().child("Certainty"))
+                                    .child(TableHead::new().w_40().flex_shrink_0().child("Role for this account")),
                             ),
                         )
                         .child(TableBody::new().children(model.series.iter().enumerate().filter_map(|(index, (id, touch))| {
@@ -262,12 +262,12 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                             Some(
                                 TableRow::new()
                                     .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                                    .child(TableCell::new().w_64().child(series.name.clone()))
-                                    .child(muted_cell(series.direction.label(), cx).w_24())
-                                    .child(money_cell(series.amount.expected(), cx).w_40())
-                                    .child(muted_cell(series.recurrence.describe(), cx))
-                                    .child(TableCell::new().w_40().child(labels::certainty_tag(series.certainty)))
-                                    .child(muted_cell(touch.label(), cx).w_56()),
+                                    .child(TableCell::new().w_56().flex_shrink_0().overflow_hidden().text_ellipsis().child(series.name.clone()))
+                                    .child(muted_cell(series.direction.label(), cx).w_24().flex_shrink_0().overflow_hidden().text_ellipsis())
+                                    .child(money_cell(series.amount.expected(), cx).w_32().flex_shrink_0())
+                                    .child(muted_cell(series.recurrence.describe(), cx).min_w_0().overflow_hidden().text_ellipsis())
+                                    .child(TableCell::new().w_32().flex_shrink_0().child(h_flex().child(labels::certainty_tag(series.certainty))))
+                                    .child(muted_cell(touch.label(), cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis()),
                             )
                         })))
                         .into_any_element()

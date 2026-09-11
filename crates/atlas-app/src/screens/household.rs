@@ -186,10 +186,10 @@ fn render_people(household: &Household, cx: &App) -> impl IntoElement {
             .child(
                 TableHeader::new().child(
                     TableRow::new()
-                        .child(TableHead::new().w_48().child("Person"))
-                        .child(TableHead::new().w_40().child("Household role"))
-                        .child(TableHead::new().child("Accounts held (share)"))
-                        .child(TableHead::new().w_56().child("Companies owned")),
+                        .child(TableHead::new().w_48().flex_shrink_0().child("Person"))
+                        .child(TableHead::new().w_40().flex_shrink_0().child("Household role"))
+                        .child(TableHead::new().min_w_0().child("Accounts held (share)"))
+                        .child(TableHead::new().w_56().flex_shrink_0().child("Companies owned")),
                 ),
             )
             .child(TableBody::new().children(household.people.iter().enumerate().map(|(index, person)| {
@@ -206,10 +206,10 @@ fn render_people(household: &Household, cx: &App) -> impl IntoElement {
                     .collect();
                 TableRow::new()
                     .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                    .child(TableCell::new().w_48().child(person.name.clone()))
-                    .child(TableCell::new().w_40().child(Tag::secondary().xsmall().outline().child(person.role.label())))
-                    .child(muted_cell(if accounts.is_empty() { "—".to_string() } else { accounts.join(" · ") }, cx))
-                    .child(muted_cell(if companies.is_empty() { "—".to_string() } else { companies.join(" · ") }, cx).w_56())
+                    .child(TableCell::new().w_48().flex_shrink_0().overflow_hidden().text_ellipsis().child(person.name.clone()))
+                    .child(TableCell::new().w_40().flex_shrink_0().overflow_hidden().text_ellipsis().child(Tag::secondary().xsmall().outline().child(person.role.label())))
+                    .child(muted_cell(if accounts.is_empty() { "—".to_string() } else { accounts.join(" · ") }, cx).min_w_0().overflow_hidden().text_ellipsis())
+                    .child(muted_cell(if companies.is_empty() { "—".to_string() } else { companies.join(" · ") }, cx).w_56().flex_shrink_0().overflow_hidden().text_ellipsis())
             }))),
     )
 }
@@ -227,11 +227,11 @@ fn render_companies(household: &Household, viewer: Viewer, cx: &App) -> impl Int
                     .child(
                         TableHeader::new().child(
                             TableRow::new()
-                                .child(TableHead::new().w_48().child("Company"))
-                                .child(TableHead::new().w_40().child("Owners"))
-                                .child(TableHead::new().w_24().text_right().child("Employees"))
-                                .child(TableHead::new().child("Constraints (§8.6)"))
-                                .child(TableHead::new().w_40().text_right().child("Business cash")),
+                                .child(TableHead::new().w_48().flex_shrink_0().child("Company"))
+                                .child(TableHead::new().w_40().flex_shrink_0().child("Owners"))
+                                .child(TableHead::new().w_24().flex_shrink_0().text_right().child("Employees"))
+                                .child(TableHead::new().min_w_0().child("Constraints (§8.6)"))
+                                .child(TableHead::new().w_40().flex_shrink_0().text_right().child("Business cash")),
                         ),
                     )
                     .child(TableBody::new().children(household.companies.iter().enumerate().map(|(index, company)| {
@@ -245,16 +245,16 @@ fn render_companies(household: &Household, viewer: Viewer, cx: &App) -> impl Int
                         let disclosure = household.disclosure_for(viewer, ObjectRef::Company(company.id));
                         let cash_cell = match disclosure {
                             Disclosure::Full | Disclosure::SelectedFields | Disclosure::BalanceOnly => {
-                                money_cell(cash, cx).w_40().text_color(theme.muted_foreground)
+                                money_cell(cash, cx).w_40().flex_shrink_0().text_color(theme.muted_foreground)
                             }
-                            _ => muted_cell("not disclosed (§8.7)", cx).w_40().text_right(),
+                            _ => muted_cell("not disclosed (§8.7)", cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis().text_right(),
                         };
                         TableRow::new()
                             .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                            .child(TableCell::new().w_48().child(company.name.clone()))
-                            .child(muted_cell(owners.join(" · "), cx).w_40())
-                            .child(TableCell::new().w_24().text_right().child(company.employees.len().to_string()))
-                            .child(muted_cell(company.constraints.iter().map(|c| c.describe()).collect::<Vec<_>>().join(" · "), cx))
+                            .child(TableCell::new().w_48().flex_shrink_0().overflow_hidden().text_ellipsis().child(company.name.clone()))
+                            .child(muted_cell(owners.join(" · "), cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(TableCell::new().w_24().flex_shrink_0().overflow_hidden().text_ellipsis().text_right().child(company.employees.len().to_string()))
+                            .child(muted_cell(company.constraints.iter().map(|c| c.describe()).collect::<Vec<_>>().join(" · "), cx).min_w_0().overflow_hidden().text_ellipsis())
                             .child(cash_cell)
                     }))),
             ),
@@ -283,15 +283,15 @@ fn render_accounts(household: &Household, viewer: Viewer, cx: &App) -> impl Into
                     .child(
                         TableHeader::new().child(
                             TableRow::new()
-                                .child(TableHead::new().w_56().child("Account"))
-                                .child(TableHead::new().w_32().child("Kind"))
-                                .child(TableHead::new().w_48().child("Holder (shares)"))
-                                .child(TableHead::new().w_40().child("Liquidity"))
-                                .child(TableHead::new().w_32().text_right().child("Settled"))
-                                .child(TableHead::new().w_32().text_right().child("Reserved"))
-                                .child(TableHead::new().w_32().text_right().child("Free"))
-                                .child(TableHead::new().w_32().child("Visibility"))
-                                .child(TableHead::new().child("Calculation access")),
+                                .child(TableHead::new().w_56().flex_shrink_0().child("Account"))
+                                .child(TableHead::new().w_32().flex_shrink_0().child("Kind"))
+                                .child(TableHead::new().w_48().flex_shrink_0().child("Holder (shares)"))
+                                .child(TableHead::new().w_40().flex_shrink_0().child("Liquidity"))
+                                .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Settled"))
+                                .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Reserved"))
+                                .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Free"))
+                                .child(TableHead::new().w_32().flex_shrink_0().child("Visibility"))
+                                .child(TableHead::new().min_w_0().child("Calculation access")),
                         ),
                     )
                     .child(TableBody::new().children(visible.iter().enumerate().map(|(index, account)| {
@@ -300,30 +300,30 @@ fn render_accounts(household: &Household, viewer: Viewer, cx: &App) -> impl Into
                         let liquidity = account_liquidity(household, account.id).ok();
                         let derived_visible = matches!(disclosure, Disclosure::Full | Disclosure::SelectedFields);
                         let reserved_cell = match (&liquidity, derived_visible) {
-                            (Some(l), true) => money_cell(l.reserved.money(), cx).w_32(),
-                            _ => muted_cell("not disclosed", cx).w_32().text_right(),
+                            (Some(l), true) => money_cell(l.reserved.money(), cx).w_32().flex_shrink_0(),
+                            _ => muted_cell("not disclosed", cx).w_32().flex_shrink_0().overflow_hidden().text_ellipsis().text_right(),
                         };
                         let free_cell = match (&liquidity, derived_visible) {
-                            (Some(l), true) => money_cell(l.free.money(), cx).w_32(),
-                            _ => muted_cell("not disclosed", cx).w_32().text_right(),
+                            (Some(l), true) => money_cell(l.free.money(), cx).w_32().flex_shrink_0(),
+                            _ => muted_cell("not disclosed", cx).w_32().flex_shrink_0().overflow_hidden().text_ellipsis().text_right(),
                         };
                         TableRow::new()
                             .when(index % 2 == 1, |row| row.bg(theme.table_even))
                             .child(
-                                TableCell::new().w_56().child(
+                                TableCell::new().w_56().flex_shrink_0().overflow_hidden().text_ellipsis().child(
                                     v_flex()
                                         .child(account.name.clone())
                                         .child(div().text_xs().text_color(theme.muted_foreground).child(account.institution.clone())),
                                 ),
                             )
-                            .child(muted_cell(account.kind.label(), cx).w_32())
-                            .child(muted_cell(household.holder_description(account), cx).w_48())
-                            .child(muted_cell(account.liquidity.describe(), cx).w_40())
-                            .child(money_cell(account.settled_balance, cx).w_32())
+                            .child(muted_cell(account.kind.label(), cx).w_32().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(muted_cell(household.holder_description(account), cx).w_48().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(muted_cell(account.liquidity.describe(), cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(money_cell(account.settled_balance, cx).w_32().flex_shrink_0())
                             .child(reserved_cell)
                             .child(free_cell)
-                            .child(TableCell::new().w_32().child(labels::disclosure_tag(disclosure)))
-                            .child(muted_cell(policy.map(|p| p.calculation_access.label()).unwrap_or("no policy — excluded (F162)"), cx))
+                            .child(TableCell::new().w_32().flex_shrink_0().overflow_hidden().text_ellipsis().child(labels::disclosure_tag(disclosure)))
+                            .child(muted_cell(policy.map(|p| p.calculation_access.label()).unwrap_or("no policy — excluded (F162)"), cx).min_w_0().overflow_hidden().text_ellipsis())
                     }))),
             )
             .when(hidden_count > 0, |this| {
