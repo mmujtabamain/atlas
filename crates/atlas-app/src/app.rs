@@ -33,7 +33,10 @@ use crate::screens::{
     liquidity::LiquidityModel,
     timeline::{TimelineFilter, TimelineModel},
     projections::ProjectionModel,
+    assumptions::AssumptionsModel,
 };
+use atlas_core::assumptions::{Derivation, apply_derived, derive};
+use atlas_core::ids::AssumptionId;
 use atlas_core::forecast::Case;
 use atlas_core::timeline::{AmountSpec, Exception, ExceptionKind, OccurrenceStatus};
 use atlas_core::vocab::Certainty;
@@ -76,6 +79,11 @@ pub struct AtlasApp {
     projection_case: Case,
     projection_scenario: bool,
     projection: Result<ProjectionModel, EngineError>,
+    derivation_series: Option<SeriesId>,
+    derivation: Derivation,
+    sensitivity_boundary: Boundary,
+    sensitivity_scenario: bool,
+    assumptions: Result<AssumptionsModel, EngineError>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -241,6 +249,7 @@ impl AtlasApp {
         let timeline_controls = TimelineControls::new(&household, viewer, _window, _cx);
         let series_form = SeriesForm::new(_window, _cx);
         let projection = Self::compute_projection(&household, viewer, Boundary::Household, Case::Expected, None, horizon);
+        let assumptions = Self::compute_assumptions(&household, viewer, None, Derivation::ALL[0], Boundary::Household, false, horizon);
         let subscriptions = timeline_controls
             .all()
             .iter()
@@ -274,8 +283,103 @@ impl AtlasApp {
             projection_case: Case::Expected,
             projection_scenario: false,
             projection,
+            derivation_series: None,
+            derivation: Derivation::ALL[0],
+            sensitivity_boundary: Boundary::Household,
+            sensitivity_scenario: false,
+            assumptions,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn compute_assumptions(
+        household: &Household,
+        viewer: Viewer,
+        derivation_series: Option<SeriesId>,
+        derivation: Derivation,
+        boundary: Boundary,
+        scenario: bool,
+        horizon: NaiveDate,
+    ) -> Result<AssumptionsModel, EngineError> {
+        let result = AssumptionsModel::compute(household, viewer, derivation_series, derivation, boundary, scenario, horizon);
+        if let Err(err) = &result {
+            alerting::report(Level::Error, format!("assumptions model failed: {err}"));
+        }
+        result
+    }
+
+    fn refresh_assumptions(&mut self) {
+        self.assumptions = Self::compute_assumptions(
+            &self.household,
+            self.viewer,
+            self.derivation_series,
+            self.derivation,
+            self.sensitivity_boundary,
+            self.sensitivity_scenario,
+            self.horizon,
+        );
+    }
+
+    /// The derived assumptions model, if the engine could compute it.
+    pub fn assumptions(&self) -> Option<&AssumptionsModel> {
+        self.assumptions.as_ref().ok()
+    }
+
+    pub fn select_derivation_series(&mut self, series: SeriesId, cx: &mut Context<Self>) {
+        self.derivation_series = Some(series);
+        self.refresh_assumptions();
+        cx.notify();
+    }
+
+    pub fn select_derivation(&mut self, derivation: Derivation, cx: &mut Context<Self>) {
+        self.derivation = derivation;
+        self.refresh_assumptions();
+        cx.notify();
+    }
+
+    pub fn select_sensitivity_boundary(&mut self, boundary: Boundary, cx: &mut Context<Self>) {
+        self.sensitivity_boundary = boundary;
+        self.refresh_assumptions();
+        cx.notify();
+    }
+
+    pub fn set_sensitivity_scenario(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.sensitivity_scenario = on;
+        self.refresh_assumptions();
+        cx.notify();
+    }
+
+    /// §2.5 — records acceptance of an assumption today.
+    pub fn accept_assumption(&mut self, id: AssumptionId, window: &mut Window, cx: &mut Context<Self>) {
+        match self.household.accept_assumption(id, self.household.as_of) {
+            Ok(()) => {
+                log::info!("assumption {id} accepted on {}", self.household.as_of);
+                self.refresh_derived();
+                window.push_notification(format!("Assumption #{} accepted on {}", id.raw(), self.household.as_of.format("%d %b %Y")), cx);
+            }
+            Err(err) => {
+                alerting::report(Level::Warning, format!("accept_assumption failed: {err}"));
+                window.push_notification(err.to_string(), cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// §10.7 — applies the current derivation to an assumption; it then needs acceptance.
+    pub fn apply_derivation(&mut self, assumption: AssumptionId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(series) = self.derivation_series.or_else(|| self.assumptions.as_ref().ok().map(|m| m.derivation_series)) else { return };
+        match derive(&self.household, series, self.derivation).and_then(|d| apply_derived(&mut self.household, &d, assumption).map(|_| d)) {
+            Ok(derived) => {
+                log::info!("derivation applied to {assumption}: {}", derived.statement);
+                self.refresh_derived();
+                window.push_notification(format!("Assumption #{} now reads: {} — accept it to use it.", assumption.raw(), derived.amount.describe()), cx);
+            }
+            Err(err) => {
+                alerting::report(Level::Warning, format!("apply_derivation failed: {err}"));
+                window.push_notification(err.to_string(), cx);
+            }
+        }
+        cx.notify();
     }
 
     fn compute_projection(household: &Household, viewer: Viewer, boundary: Boundary, case: Case, scenario: Option<atlas_core::ids::ScenarioId>, through: NaiveDate) -> Result<ProjectionModel, EngineError> {
@@ -509,6 +613,7 @@ impl AtlasApp {
         self.liquidity = Self::compute_liquidity(&self.household, self.viewer, self.boundary, self.horizon);
         self.timeline = Self::compute_timeline(&self.household, self.viewer, self.timeline_filter.clone());
         self.refresh_projection();
+        self.refresh_assumptions();
     }
 
     /// The derived liquidity model, if the engine could compute it.
@@ -805,7 +910,7 @@ impl AtlasApp {
                     .gap_3()
                     .child(Icon::new(IconName::Wallet).small())
                     .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer"))
-                    .child(Tag::secondary().xsmall().outline().child("M4 projections")),
+                    .child(Tag::secondary().xsmall().outline().child("M5 assumptions")),
             )
             .child(
                 h_flex()
@@ -946,6 +1051,13 @@ impl AtlasApp {
                     screens::projections::render(&model, &self.household, self.viewer, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Projections, err, cx),
+            },
+            Section::Assumptions => match &self.assumptions {
+                Ok(model) => {
+                    let model = model.clone();
+                    screens::assumptions::render(&model, &self.household, self.viewer, cx).into_any_element()
+                }
+                Err(err) => self.render_engine_failure(Section::Assumptions, err, cx),
             },
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
             other => screens::placeholder::render(other, cx).into_any_element(),
