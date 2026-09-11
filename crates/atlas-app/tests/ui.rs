@@ -331,6 +331,7 @@ fn timeline_scenario_toggle_and_series_editor(cx: &mut TestAppContext) {
     let window = handle.into();
 
     let baseline_count = cx.update(|cx| app.read(cx).timeline().unwrap().occurrences.len());
+    let conditional_before = cx.update(|cx| app.read(cx).overview().unwrap().conditional.calc.money());
 
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
@@ -376,7 +377,8 @@ fn timeline_scenario_toggle_and_series_editor(cx: &mut TestAppContext) {
         assert_eq!(rent.amount.low(), fixtures::pkr(180_000));
         assert_eq!(rent.amount.high(), fixtures::pkr(200_000));
         let overview = app.overview().unwrap();
-        assert_eq!(overview.conditional.calc.money(), fixtures::pkr(6_195_000 - 4 * 10_000));
+        // Four rent payments in the window, each 10,000 higher.
+        assert_eq!(overview.conditional.calc.money(), conditional_before - fixtures::pkr(4 * 10_000));
     });
 }
 
@@ -478,5 +480,75 @@ fn assumptions_accept_and_derive_through_the_ui(cx: &mut TestAppContext) {
         assert_eq!(salary.accepted_on, None, "a re-derived assumption must be accepted again (§2.5)");
         assert!(salary.source.describe().contains("arithmetic mean"));
         assert_eq!(app.household().series_by_id(fixtures::ids::SALARY_A).unwrap().amount.expected(), fixtures::pkr(500_000));
+    });
+}
+
+#[gpui_kit::test]
+fn taxes_e05_and_user_rule_dialog(cx: &mut TestAppContext) {
+    let launch = Launch { section: Section::Taxes, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+
+    cx.update(|cx| {
+        let model = app.read(cx).taxes().unwrap();
+        // E05 through the screen model: 22,000 vs 14,000 incremental.
+        assert_eq!(model.e05_strategies[0].incremental.money(), fixtures::pkr(22_000));
+        assert_eq!(model.e05_strategies[1].incremental.money(), fixtures::pkr(14_000));
+        assert!(model.assessment.packs_used.iter().any(|p| p.contains("unverified")));
+    });
+
+    let packs_before = cx.update(|cx| app.read(cx).household().tax_packs.len());
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-taxes").visible());
+        window.click("new-tax-rule", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("save-tax-rule").visible());
+        // Missing name and rate: rejected, dialog stays open.
+        window.click("save-tax-rule", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "validation kept the dialog open");
+        window.click("tax-rule-name", cx);
+        window.input("Municipal levy", cx);
+        window.click("tax-rule-rate", cx);
+        window.input("2.5", cx);
+    })
+    .unwrap();
+    // The effective-from date comes from a DatePicker; set it through the household's
+    // own API path would bypass the form, so give the form a date via the picker state.
+    cx.update(|cx| {
+        app.update(cx, |app, cx| app.set_tax_form_effective_from(fixtures::as_of(), cx));
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("save-tax-rule", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx), "the rule was accepted");
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let household = app.household();
+        assert_eq!(household.tax_packs.len(), packs_before + 1, "a user pack was created");
+        let pack = household.tax_packs.last().unwrap();
+        assert!(!pack.verified);
+        assert_eq!(pack.rules[0].name, "Municipal levy");
+        // 2.5% flat on the "Card spending" category (first category alphabetically).
+        assert!(matches!(pack.rules[0].kind, atlas_core::model::TaxKind::FlatRate { rate_basis_points: 250 }));
+        let model = app.taxes().unwrap();
+        assert!(model.assessment.events.iter().any(|e| e.rule_name == "Municipal levy"), "the new rule produces events");
     });
 }
