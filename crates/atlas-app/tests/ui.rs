@@ -552,3 +552,147 @@ fn taxes_e05_and_user_rule_dialog(cx: &mut TestAppContext) {
         assert!(model.assessment.events.iter().any(|e| e.rule_name == "Municipal levy"), "the new rule produces events");
     });
 }
+
+#[gpui_kit::test]
+fn real_data_new_household_entry_save_and_reopen(cx: &mut TestAppContext) {
+    use atlas_app::launch::Start;
+    let dir = std::env::temp_dir().join(format!("atlas-ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("ours.atlas.sqlite");
+
+    let launch = Launch { start: Start::Empty, section: Section::People, as_of: Some(fixtures::as_of()), owner: "tester".into(), ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+
+    // 1. A person.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-people").visible());
+        window.click("new-person", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("entry-person-name", cx);
+        window.input("Ada", cx);
+        window.click("entry-save-person", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        assert_eq!(app.household().people.len(), 1);
+        assert_eq!(app.household().people[0].name, "Ada");
+        assert_eq!(app.viewer().person, app.household().people[0].id, "the first person becomes the viewer");
+        assert!(app.is_dirty());
+    });
+
+    // 2. An account with an opening balance.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.clear_notifications(cx);
+        window.within("main-sidebar").click("0-0-3", cx);
+        assert!(window.find("screen-accounts").visible());
+        window.click("new-account", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("entry-account-name", cx);
+        window.input("Joint current", cx);
+        window.click("entry-account-balance", cx);
+        window.input("12,500", cx);
+        window.click("entry-save-account", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let household = app.household();
+        assert_eq!(household.accounts.len(), 1);
+        assert_eq!(household.accounts[0].settled_balance, atlas_core::Money::from_major(12_500, atlas_core::Currency::USD));
+        let account = household.accounts[0].id;
+        assert_eq!(household.disclosure_for(app.viewer(), atlas_core::ids::ObjectRef::Account(account)), Disclosure::Full, "F162: the creator sees what they created");
+        assert_eq!(app.overview().unwrap().money[0].calc.money(), atlas_core::Money::from_major(12_500, atlas_core::Currency::USD));
+    });
+
+    // 3. A monthly salary series.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.clear_notifications(cx);
+        window.within("main-sidebar").click("1-0-1", cx);
+        assert!(window.find("screen-timeline").visible());
+        window.click("new-series", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("entry-series-name", cx);
+        window.input("Salary", cx);
+        window.click("entry-series-amount", cx);
+        window.input("4,000", cx);
+        window.click("entry-save-series", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    let end_before_save = cx.update(|cx| {
+        let app = app.read(cx);
+        assert_eq!(app.household().series.len(), 1);
+        assert_eq!(app.household().series[0].name, "Salary");
+        let end = app.overview().unwrap().conditional.calc.money();
+        assert!(end.minor() > atlas_core::Money::from_major(12_500, atlas_core::Currency::USD).minor(), "the expense-free salary raises the projection: {}", end.format());
+        end
+    });
+
+    // 4. Save as… to a file.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.clear_notifications(cx);
+        app.update(cx, |app, cx| app.open_save_as(window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    let path_text = path.display().to_string();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("save-as-path", cx);
+        window.press("ctrl-a", cx);
+        window.input(&path_text, cx);
+        window.click("confirm-save-as", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        assert!(!app.is_dirty());
+        assert_eq!(app.file_path(), Some(path.clone()));
+    });
+    assert!(path.exists(), "the SQLite file was written");
+
+    // 5. Reopen from the file in a fresh app: same household, same figures.
+    let launch = Launch { start: Start::File(path.clone()), owner: "tester".into(), take_over: true, ..Launch::default() };
+    let (handle2, app2) = open_app(cx, launch);
+    cx.update_window(handle2.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-household").visible());
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let reopened = app2.read(cx);
+        assert_eq!(reopened.household().people[0].name, "Ada");
+        assert_eq!(reopened.household().accounts[0].name, "Joint current");
+        assert_eq!(reopened.household().series[0].name, "Salary");
+        assert_eq!(reopened.overview().unwrap().conditional.calc.money(), end_before_save);
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
