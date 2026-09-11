@@ -13,10 +13,6 @@ use crate::{EngineError, EngineResult};
 use chrono::NaiveDate;
 
 impl Household {
-    fn next_policy_id(&self) -> PolicyId {
-        PolicyId::new(self.policies.iter().map(|p| p.id.raw()).max().unwrap_or(0) + 1)
-    }
-
     pub fn next_person_id(&self) -> PersonId {
         PersonId::new(self.people.iter().map(|p| p.id.raw()).max().unwrap_or(0) + 1)
     }

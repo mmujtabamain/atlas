@@ -57,6 +57,10 @@ define_id!(/// A goal or proposed decision (§5.12).
     GoalId, "goal");
 define_id!(/// An actual transaction (§5.7).
     TransactionId, "txn");
+define_id!(/// A scoped access grant (§5.14).
+    GrantId, "grant");
+define_id!(/// An immutable privacy audit record (§5.18).
+    AuditId, "audit");
 
 /// The legal/economic entity money belongs to or an event is attributed to.
 /// A company is never "just another personal account" (§5.3, §12.6).

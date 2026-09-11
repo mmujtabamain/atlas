@@ -38,7 +38,7 @@ pub enum StoreError {
 pub type StoreResult<T> = Result<T, StoreError>;
 
 /// Entity tables, in save order.
-const TABLES: [&str; 14] = [
+const TABLES: [&str; 16] = [
     "people",
     "companies",
     "accounts",
@@ -53,6 +53,8 @@ const TABLES: [&str; 14] = [
     "history",
     "rules",
     "goals",
+    "grants",
+    "audit",
 ];
 
 /// Rolling backups kept per household.
@@ -160,7 +162,9 @@ impl HouseholdFile {
              CREATE TABLE IF NOT EXISTS links (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS history (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS rules (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS goals (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);",
+             CREATE TABLE IF NOT EXISTS goals (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS grants (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);",
         )?;
         for table in TABLES {
             tx.execute(&format!("DELETE FROM {table}"), [])?;
@@ -189,6 +193,8 @@ impl HouseholdFile {
         insert_all(&tx, "history", household.history.iter().enumerate().map(|(i, h)| (i as i64 + 1, h)))?;
         insert_all(&tx, "rules", household.rules.iter().map(|r| (r.id.raw() as i64, r)))?;
         insert_all(&tx, "goals", household.goals.iter().map(|g| (g.id.raw() as i64, g)))?;
+        insert_all(&tx, "grants", household.grants.iter().map(|g| (g.id.raw() as i64, g)))?;
+        insert_all(&tx, "audit", household.audit.iter().map(|a| (a.id.raw() as i64, a)))?;
         tx.commit()?;
         log::info!(
             "saved {} to {} ({} people, {} accounts, {} series, {} policies)",
@@ -239,6 +245,8 @@ impl HouseholdFile {
         // Tables added after the first files were written are optional on read (M7 rules).
         household.rules = load_optional(&connection, "rules")?;
         household.goals = load_optional(&connection, "goals")?;
+        household.grants = load_optional(&connection, "grants")?;
+        household.audit = load_optional(&connection, "audit")?;
         log::info!("loaded {} from {} ({} accounts, {} series)", household.name, self.path.display(), household.accounts.len(), household.series.len());
         Ok(household)
     }

@@ -644,6 +644,10 @@ pub struct Household {
     pub rule_tie_break: crate::rules::TieBreak,
     /// §20 — goals competing for the same money.
     pub goals: Vec<Goal>,
+    /// §5.14 / §7.4 — purpose-specific grants.
+    pub grants: Vec<crate::authz::AccessGrant>,
+    /// §5.18 — the immutable privacy audit log.
+    pub audit: Vec<crate::authz::PrivacyAuditEvent>,
 }
 
 impl Default for Household {
@@ -674,6 +678,8 @@ impl Household {
             rules: Vec::new(),
             rule_tie_break: crate::rules::TieBreak::OldestRule,
             goals: Vec::new(),
+            grants: Vec::new(),
+            audit: Vec::new(),
         }
     }
 

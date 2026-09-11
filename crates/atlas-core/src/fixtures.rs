@@ -808,7 +808,8 @@ pub fn plan_household() -> Household {
     private_account_policy.restricted_disclosure = Disclosure::Aggregate;
     private_account_policy.version = 2;
     private_account_policy.previous = Some("fully private (v1)".into());
-    private_account_policy.purposes = vec!["household forecasts".into(), "scenario: Buy car".into()];
+    // Every explicitly modelled purpose (§7.4); a purpose-scoped policy is exercised in the tests (V067).
+    private_account_policy.purposes = Vec::new();
 
     let mut alpha_policy = preset_policy(9, ObjectRef::Company(ALPHA), vec![a], VisibilityPreset::SharedSummary, CalculationAccess::Excluded);
     // §8.7: household members know the company exists and see a planning-safe
@@ -857,6 +858,16 @@ pub fn plan_household() -> Household {
             Goal { id: GoalId::new(1), name: "House down payment".into(), amount: pkr(3_000_000), target_on: d(2027, 6, 30), priority: 1, private_to: None },
             Goal { id: GoalId::new(2), name: "Education fund".into(), amount: pkr(600_000), target_on: d(2027, 3, 31), priority: 2, private_to: None },
         ],
+        grants: Vec::new(),
+        audit: vec![crate::authz::PrivacyAuditEvent {
+            id: AuditId::new(1),
+            at: policy_changed_at(),
+            actor: a,
+            object: None,
+            kind: crate::authz::AuditKind::PolicyChanged { from_version: 0, to_version: 1 },
+            summary: "fixture policies 1–16 set with their presets (§7.2); every object has a policy, none inherited from a missing one".into(),
+            policy_version: Some(1),
+        }],
         history: vec![
             HistoricalPayment { series: SALARY_A, date: d(2026, 3, 31), amount: pkr(500_000) },
             HistoricalPayment { series: SALARY_A, date: d(2026, 4, 30), amount: pkr(480_000) },
@@ -987,6 +998,8 @@ pub fn e03_household(down_payment: Money, purchase_on: NaiveDate) -> Household {
         rules: Vec::new(),
         rule_tie_break: crate::rules::TieBreak::OldestRule,
         goals: Vec::new(),
+        grants: Vec::new(),
+        audit: Vec::new(),
     }
 }
 
