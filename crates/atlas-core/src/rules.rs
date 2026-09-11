@@ -338,90 +338,126 @@ pub fn evaluate(household: &Household, through: NaiveDate, scenario: Option<Scen
         if amount.is_zero() {
             continue;
         }
-        let mut category = series.category.clone();
-        // Classification rules first: they can change the category later rules see.
-        for kind in ["classification", "fee"] {
-            let mut applicable: Vec<&Rule> = household
-                .rules
-                .iter()
-                .filter(|r| r.enabled && r.action.kind() == kind && r.trigger != Trigger::Funding)
-                .filter(|r| r.is_effective_on(occurrence.due))
-                .filter(|r| r.scenario.is_none() || r.scenario == scenario)
-                .filter(|r| r.trigger.matches(series.direction))
-                .filter(|r| r.scope.matches(household, occurrence, &category))
-                .filter(|r| r.conditions.iter().all(|c| c.holds(household, occurrence, amount, &category)))
-                .collect();
-            if applicable.is_empty() {
-                continue;
-            }
-            applicable.sort_by(|a, b| {
-                b.priority
-                    .cmp(&a.priority)
-                    .then(b.scope.specificity().cmp(&a.scope.specificity()))
-                    .then_with(|| match tie_break {
-                        TieBreak::OldestRule => a.id.cmp(&b.id),
-                        TieBreak::NewestVersion => b.history.last().map(|h| h.changed_on).cmp(&a.history.last().map(|h| h.changed_on)),
-                    })
-            });
-            let winner = applicable[0];
-            let mut candidates = Vec::new();
-            for (index, rule) in applicable.iter().enumerate() {
-                let outcome = if index == 0 {
-                    "chosen".to_string()
-                } else if rule.priority < winner.priority {
-                    format!("lower priority ({} < {})", rule.priority, winner.priority)
-                } else if rule.scope.specificity() < winner.scope.specificity() {
-                    format!("less specific scope ({} < {})", rule.scope.specificity(), winner.scope.specificity())
-                } else {
-                    format!("tie-break: {}", tie_break.label())
-                };
-                candidates.push(Candidate { rule: rule.id, name: rule.name.clone(), priority: rule.priority, specificity: rule.scope.specificity(), outcome });
-            }
-            let resolution = if applicable.len() == 1 {
-                "only applicable rule".to_string()
-            } else if applicable[1].priority < winner.priority {
-                "explicit priority".to_string()
-            } else if applicable[1].scope.specificity() < winner.scope.specificity() {
-                "scope specificity".to_string()
-            } else {
-                format!("tie-break policy: {}", tie_break.label())
-            };
-            evaluation.decisions.push(RuleDecision {
-                occurrence_label: occurrence.label.clone(),
-                date: occurrence.due,
-                account: occurrence.account,
-                action_kind: kind,
-                candidates,
-                chosen: Some(winner.id),
-                resolution,
-            });
-            match &winner.action {
-                RuleAction::Classify { category: new_category } => {
-                    evaluation.classifications.push((occurrence.label.clone(), occurrence.due, category.clone(), new_category.clone()));
-                    category = new_category.clone();
-                }
-                RuleAction::AddFee { basis_points, fixed, label } => {
-                    let mut fee = amount.share_basis_points(*basis_points);
-                    if let Some(fixed) = fixed {
-                        fee = fee.checked_add(*fixed)?;
-                    }
-                    if fee.is_positive() {
-                        evaluation.fees.push(FeePosting {
-                            date: occurrence.due,
-                            account: occurrence.account,
-                            amount: fee.negated(),
-                            label: format!("Fee: {label} ({})", winner.name),
-                            rule: winner.id,
-                            base_series: occurrence.series,
-                            intraday_order: occurrence.intraday_order + 1,
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
+        apply_rules_to(&mut evaluation, household, occurrence, series.direction, amount, &series.category, scenario, tie_break)?;
     }
     Ok(evaluation)
+}
+
+/// Runs the classification and fee rules over one occurrence, recording every
+/// decision (§14.7) and any fee posting (§14.4).
+#[allow(clippy::too_many_arguments)]
+fn apply_rules_to(evaluation: &mut RuleEvaluation, household: &Household, occurrence: &Occurrence, direction: Direction, amount: Money, category: &str, scenario: Option<ScenarioId>, tie_break: TieBreak) -> EngineResult<()> {
+    let mut category = category.to_string();
+    // Classification rules first: they can change the category later rules see.
+    for kind in ["classification", "fee"] {
+        let mut applicable: Vec<&Rule> = household
+            .rules
+            .iter()
+            .filter(|r| r.enabled && r.action.kind() == kind && r.trigger != Trigger::Funding)
+            .filter(|r| r.is_effective_on(occurrence.due))
+            .filter(|r| r.scenario.is_none() || r.scenario == scenario)
+            .filter(|r| r.trigger.matches(direction))
+            .filter(|r| r.scope.matches(household, occurrence, &category))
+            .filter(|r| r.conditions.iter().all(|c| c.holds(household, occurrence, amount, &category)))
+            .collect();
+        if applicable.is_empty() {
+            continue;
+        }
+        applicable.sort_by(|a, b| {
+            b.priority
+                .cmp(&a.priority)
+                .then(b.scope.specificity().cmp(&a.scope.specificity()))
+                .then_with(|| match tie_break {
+                    TieBreak::OldestRule => a.id.cmp(&b.id),
+                    TieBreak::NewestVersion => b.history.last().map(|h| h.changed_on).cmp(&a.history.last().map(|h| h.changed_on)),
+                })
+        });
+        let winner = applicable[0];
+        let mut candidates = Vec::new();
+        for (index, rule) in applicable.iter().enumerate() {
+            let outcome = if index == 0 {
+                "chosen".to_string()
+            } else if rule.priority < winner.priority {
+                format!("lower priority ({} < {})", rule.priority, winner.priority)
+            } else if rule.scope.specificity() < winner.scope.specificity() {
+                format!("less specific scope ({} < {})", rule.scope.specificity(), winner.scope.specificity())
+            } else {
+                format!("tie-break: {}", tie_break.label())
+            };
+            candidates.push(Candidate { rule: rule.id, name: rule.name.clone(), priority: rule.priority, specificity: rule.scope.specificity(), outcome });
+        }
+        let resolution = if applicable.len() == 1 {
+            "only applicable rule".to_string()
+        } else if applicable[1].priority < winner.priority {
+            "explicit priority".to_string()
+        } else if applicable[1].scope.specificity() < winner.scope.specificity() {
+            "scope specificity".to_string()
+        } else {
+            format!("tie-break policy: {}", tie_break.label())
+        };
+        evaluation.decisions.push(RuleDecision {
+            occurrence_label: occurrence.label.clone(),
+            date: occurrence.due,
+            account: occurrence.account,
+            action_kind: kind,
+            candidates,
+            chosen: Some(winner.id),
+            resolution,
+        });
+        match &winner.action {
+            RuleAction::Classify { category: new_category } => {
+                evaluation.classifications.push((occurrence.label.clone(), occurrence.due, category.clone(), new_category.clone()));
+                category = new_category.clone();
+            }
+            RuleAction::AddFee { basis_points, fixed, label } => {
+                let mut fee = amount.share_basis_points(*basis_points);
+                if let Some(fixed) = fixed {
+                    fee = fee.checked_add(*fixed)?;
+                }
+                if fee.is_positive() {
+                    evaluation.fees.push(FeePosting {
+                        date: occurrence.due,
+                        account: occurrence.account,
+                        amount: fee.negated(),
+                        label: format!("Fee: {label} ({})", winner.name),
+                        rule: winner.id,
+                        base_series: occurrence.series,
+                        intraday_order: occurrence.intraday_order + 1,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The fee the rules would add to a hypothetical posting (M9 funding
+/// strategies quote the same fee events the forecast will later post).
+pub fn fee_quote(household: &Household, account: AccountId, direction: Direction, amount: Money, on: NaiveDate, category: &str) -> EngineResult<Vec<FeePosting>> {
+    let occurrence = Occurrence {
+        series: SeriesId::new(0),
+        label: format!("quote: {}", category),
+        sequence: 0,
+        original_due: on,
+        due: on,
+        posting: on,
+        settlement: on,
+        availability: on,
+        intraday_order: 30,
+        amount: crate::timeline::AmountSpec::Exact(amount),
+        fulfilled: Money::zero(amount.currency()),
+        direction,
+        account,
+        linked_account: None,
+        entity: household.account(account).map(|a| a.holder.primary_entity()).unwrap_or(EntityRef::Household),
+        certainty: crate::vocab::Certainty::ScenarioOnly,
+        scenario: None,
+        status: crate::timeline::OccurrenceStatus::Planned,
+    };
+    let mut evaluation = RuleEvaluation::default();
+    apply_rules_to(&mut evaluation, household, &occurrence, direction, amount, category, None, household.rule_tie_break)?;
+    Ok(evaluation.fees)
 }
 
 /// Fee postings for the forecast (each fee enters cash once, M01).
