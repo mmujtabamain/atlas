@@ -10,6 +10,7 @@ pub mod household;
 pub mod liquidity;
 pub mod people;
 pub mod placeholder;
+pub mod rules;
 pub mod projections;
 pub mod settings;
 pub mod taxes;

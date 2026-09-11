@@ -35,7 +35,11 @@ use crate::screens::{
     projections::ProjectionModel,
     assumptions::AssumptionsModel,
     taxes::{E05Schedule, TaxModel},
+    rules::RulesModel,
 };
+use atlas_core::ids::RuleId;
+use atlas_core::rules::TieBreak;
+use crate::rules_entry::RuleForm;
 use atlas_core::model::{TaxKind, TaxRule, TaxTiming, ThresholdBasis};
 use gpui_kit::component::input::InputEvent;
 use atlas_core::assumptions::{Derivation, apply_derived, derive};
@@ -95,6 +99,10 @@ pub struct AtlasApp {
     pub(crate) tax_controls: TaxControls,
     pub(crate) tax_form: TaxRuleForm,
     pub(crate) tax_form_effective_from_override: Option<NaiveDate>,
+    pub(crate) rules_scenario: bool,
+    pub(crate) simulated_rule: Option<RuleId>,
+    pub(crate) rules: Result<RulesModel, EngineError>,
+    pub(crate) rule_form: RuleForm,
     /// Where the household is saved, once it has a file (M12).
     pub(crate) file: Option<atlas_store::HouseholdFile>,
     /// Unsaved changes since the last save/load.
@@ -334,6 +342,8 @@ impl AtlasApp {
         let taxes = Self::compute_taxes(&household, viewer, horizon, false, e05_amount, true, E05Schedule::PlanExample);
         let tax_controls = TaxControls { e05_amount: _cx.new(|cx| InputState::new(_window, cx).default_value("100,000")) };
         let tax_form = TaxRuleForm::new(&household, _window, _cx);
+        let rules = Self::compute_rules(&household, viewer, horizon, false, None);
+        let rule_form = RuleForm::new(&household, _window, _cx);
         let lifecycle_form = crate::lifecycle::LifecycleForm::new(_window, _cx);
         let entry_forms = crate::entry::EntryForms::new(&household, _window, _cx);
         let file = resolved.file;
@@ -389,6 +399,10 @@ impl AtlasApp {
             tax_controls,
             tax_form,
             tax_form_effective_from_override: None,
+            rules_scenario: false,
+            simulated_rule: None,
+            rules,
+            rule_form,
             file,
             dirty: false,
             owner,
@@ -403,6 +417,7 @@ impl AtlasApp {
         self.reservation_form = ReservationForm::new(&self.household, self.viewer, window, cx);
         self.timeline_controls = TimelineControls::new(&self.household, self.viewer, window, cx);
         self.tax_form = TaxRuleForm::new(&self.household, window, cx);
+        self.rule_form = RuleForm::new(&self.household, window, cx);
         self.entry_forms = crate::entry::EntryForms::new(&self.household, window, cx);
         let mut subscriptions: Vec<Subscription> = self
             .timeline_controls
@@ -954,6 +969,103 @@ impl AtlasApp {
         self.refresh_projection();
         self.refresh_assumptions();
         self.refresh_taxes();
+        self.refresh_rules();
+    }
+
+    // ----- rules (§14, M7) ---------------------------------------------------------
+
+    fn compute_rules(household: &Household, viewer: Viewer, through: NaiveDate, scenario: bool, simulated: Option<RuleId>) -> Result<RulesModel, EngineError> {
+        let result = RulesModel::compute(household, viewer, through, scenario, simulated);
+        if let Err(err) = &result {
+            alerting::report(Level::Error, format!("rules model failed: {err}"));
+        }
+        result
+    }
+
+    fn refresh_rules(&mut self) {
+        self.rules = Self::compute_rules(&self.household, self.viewer, self.horizon, self.rules_scenario, self.simulated_rule);
+    }
+
+    /// The derived rules model, if the engine could compute it.
+    pub fn rules(&self) -> Option<&RulesModel> {
+        self.rules.as_ref().ok()
+    }
+
+    pub fn set_rules_scenario(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.rules_scenario != on {
+            self.rules_scenario = on;
+            self.refresh_rules();
+            cx.notify();
+        }
+    }
+
+    pub fn set_rules_tie_break(&mut self, tie_break: TieBreak, cx: &mut Context<Self>) {
+        if self.household.rule_tie_break != tie_break {
+            log::info!("rule tie-break policy: {}", tie_break.slug());
+            self.household.rule_tie_break = tie_break;
+            self.mark_dirty();
+            self.refresh_derived();
+            cx.notify();
+        }
+    }
+
+    pub fn simulate_rule(&mut self, id: RuleId, cx: &mut Context<Self>) {
+        self.simulated_rule = if self.simulated_rule == Some(id) { None } else { Some(id) };
+        self.refresh_rules();
+        cx.notify();
+    }
+
+    pub fn toggle_rule(&mut self, id: RuleId, window: &mut Window, cx: &mut Context<Self>) {
+        let enabled = self.household.rule(id).map(|r| r.enabled).unwrap_or(false);
+        match self.household.set_rule_enabled(id, !enabled) {
+            Ok(()) => {
+                log::info!("rule {id} {}", if enabled { "disabled" } else { "enabled" });
+                self.mark_dirty();
+                self.refresh_derived();
+                window.push_notification(format!("Rule {id} {} (new version recorded); forecasts recomputed.", if enabled { "disabled" } else { "enabled" }), cx);
+            }
+            Err(err) => {
+                alerting::report(Level::Warning, format!("toggling rule {id} failed: {err}"));
+                window.push_notification(format!("Not changed — {err}"), cx);
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn bump_rule_priority(&mut self, id: RuleId, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(priority) = self.household.rule(id).map(|r| r.priority) else { return };
+        match self.household.set_rule_priority(id, priority + delta) {
+            Ok(()) => {
+                log::info!("rule {id} priority {priority} → {}", priority + delta);
+                self.mark_dirty();
+                self.refresh_derived();
+                window.push_notification(format!("Rule {id} priority {priority} → {} (new version recorded).", priority + delta), cx);
+            }
+            Err(err) => {
+                alerting::report(Level::Warning, format!("re-prioritising rule {id} failed: {err}"));
+                window.push_notification(format!("Not changed — {err}"), cx);
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn delete_rule(&mut self, id: RuleId, window: &mut Window, cx: &mut Context<Self>) {
+        match self.household.remove_rule(id) {
+            Ok(()) => {
+                log::info!("rule {id} deleted");
+                if self.simulated_rule == Some(id) {
+                    self.simulated_rule = None;
+                }
+                self.mark_dirty();
+                self.refresh_derived();
+                window.push_notification(format!("Rule {id} deleted; forecasts recomputed."), cx);
+            }
+            Err(err) => {
+                alerting::report(Level::Warning, format!("deleting rule {id} failed: {err}"));
+                window.push_notification(format!("Not deleted — {err}"), cx);
+            }
+        }
+        cx.notify();
     }
 
     /// The derived liquidity model, if the engine could compute it.
@@ -1411,6 +1523,13 @@ impl AtlasApp {
                     screens::taxes::render(&model, &self.tax_controls, &self.household, self.viewer, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Taxes, err, cx),
+            },
+            Section::Rules => match &self.rules {
+                Ok(model) => {
+                    let model = model.clone();
+                    screens::rules::render(&model, &self.household, cx).into_any_element()
+                }
+                Err(err) => self.render_engine_failure(Section::Rules, err, cx),
             },
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
             other => screens::placeholder::render(other, cx).into_any_element(),

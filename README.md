@@ -13,7 +13,7 @@ data model, not a later feature (§7.1).
 
 | Path | What |
 |---|---|
-| `crates/atlas-core` | Engine: money (integer minor units), household model, reservations, timeline, forecast, provenance graph, authorization. No UI, no I/O. |
+| `crates/atlas-core` | Engine: money (integer minor units), household model, reservations, timeline, forecast, provenance graph, authorization, taxes, rules. No UI, no I/O. |
 | `crates/atlas-store` | Persistence: one SQLite file per household, backups, lock file. |
 | `crates/atlas-app` | The gpui-kit window: shell, screens, the explain sheet, data entry, failure alerting. Binary `atlas`. |
 | `docs/ui-implementation-plan.md` | Milestones M0–M11 and their tasks (mirrored on the DevBench board). |
@@ -64,6 +64,31 @@ tax rules) and account detail has **Reconcile…** and **Delete**.
   calculations (§8.5).
 - Useful flags for scripts and tests: `--new`, `--sample`, `--household FILE`, `--as-of DATE`,
   `--viewer <person id>`, `--owner NAME`, `--take-over`.
+
+## Rules (M7, §14)
+
+**Rules** holds the household's deterministic rules: a scope (household, category, account,
+person, company or scenario — more specific wins ties), a trigger (postings of a kind, or
+funding searches), typed conditions (amount above/below, category, account, foreign
+currency, date), one action (a percentage or fixed fee event, a classification, a funding
+preference with a floor, a funding prohibition until a date, or bank selection with a
+fallback), a priority, an effective range and a version history. Rules are saved with the
+household (`rules` table; the tie-break policy in `meta`).
+
+- The **conflict-resolution inspector** lists every decision the rules took in the window:
+  every candidate, the outcome for each loser (lower priority / less specific / tie-break),
+  and what resolved it (§14.7). The tie-break policy is explicit and persisted.
+- **Fee events** become postings of their own right after the posting they belong to, enter
+  the projection once and appear in its §2.1 chain as *Fees from user rules*; the forecast
+  record names every rule that posted (`rules_applied`).
+- **Funding order** (§14.5) shows what a funding search may use today, with floors and
+  prohibitions; **bank selection** (§14.6) shows the preferred/fallback answer on today's
+  balances. Scenario-scoped rules apply only inside their scenario (tick *Evaluate inside
+  scenario*).
+- **Simulate** runs the household forecast with and without one rule and shows the
+  difference (§14.8) without applying anything. Enable/disable and priority changes record a
+  new version; validation (V054) refuses inverted effective periods, fees above 100 %,
+  unknown accounts and classification cycles by name.
 
 ## Monitoring
 
