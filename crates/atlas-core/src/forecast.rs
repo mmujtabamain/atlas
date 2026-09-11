@@ -431,6 +431,8 @@ pub struct Posting {
 #[derive(Clone, Debug)]
 pub struct AccountPath {
     pub account: AccountId,
+    /// The boundary's share of the account (joint accounts split, §7).
+    pub share_basis_points: u32,
     pub start: Money,
     pub end: Money,
     /// One point per posting (intraday granularity, V010), starting at `as_of`.
@@ -571,6 +573,14 @@ fn postings_for(household: &Household, series: &crate::timeline::EventSeries, op
 /// intraday order; taxes and fees enter once as postings; reservations
 /// constrain spendability and never post.
 pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOptions) -> EngineResult<BoundaryForecast> {
+    // §18 — a scenario with explicit changes or members runs as an overlay:
+    // the overlaid household carries the applied changes, tagged to the scenario.
+    if let Some(id) = options.scenario
+        && household.scenario(id).is_some_and(|s| s.has_overlay())
+    {
+        let overlaid = household.apply_scenarios(&[id])?;
+        return forecast(&overlaid, boundary, options);
+    }
     let currency = household.base_currency;
     let members = boundary_accounts(household, boundary);
     let member_ids: Vec<AccountId> = members.iter().map(|(id, _)| *id).collect();
@@ -659,7 +669,7 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
         }
         let floor = hard_floor_for_account(household, *id)?.share_basis_points(*share);
         let breach = analyse(&points, floor, options.through)?;
-        accounts.push(AccountPath { account: *id, start, end: running, points, postings: own_postings, lowest, lowest_date, floor, breach, negative_from });
+        accounts.push(AccountPath { account: *id, share_basis_points: *share, start, end: running, points, postings: own_postings, lowest, lowest_date, floor, breach, negative_from });
     }
 
     // 3. Boundary path: sum of member balances at every posting instant.

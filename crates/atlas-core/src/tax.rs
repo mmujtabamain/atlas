@@ -135,6 +135,12 @@ fn rate_label(bp: u32) -> String {
 /// Applies every effective rule to the live occurrences of the window and
 /// returns the tax events with their cash dates (§12.3) and attribution (§12.6).
 pub fn assess(household: &Household, through: NaiveDate, scenario: Option<ScenarioId>, case: Case) -> EngineResult<TaxAssessment> {
+    if let Some(id) = scenario
+        && household.scenario(id).is_some_and(|s| s.has_overlay())
+    {
+        let overlaid = household.apply_scenarios(&[id])?;
+        return assess(&overlaid, through, scenario, case);
+    }
     let currency = household.base_currency;
     let occurrences: Vec<Occurrence> = household.expand_all(household.as_of, through, scenario).into_iter().filter(|o| o.is_live()).collect();
     let mut events: Vec<TaxEvent> = Vec::new();

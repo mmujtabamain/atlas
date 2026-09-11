@@ -324,6 +324,12 @@ pub struct RuleEvaluation {
 /// Applies every enabled, effective, scope-matching rule to the window's live
 /// occurrences with deterministic conflict resolution (§14.7).
 pub fn evaluate(household: &Household, through: NaiveDate, scenario: Option<ScenarioId>, case: Case, tie_break: TieBreak) -> EngineResult<RuleEvaluation> {
+    if let Some(id) = scenario
+        && household.scenario(id).is_some_and(|s| s.has_overlay())
+    {
+        let overlaid = household.apply_scenarios(&[id])?;
+        return evaluate(&overlaid, through, scenario, case, tie_break);
+    }
     let mut evaluation = RuleEvaluation::default();
     let occurrences: Vec<Occurrence> = household.expand_all(household.as_of, through, scenario).into_iter().filter(|o| o.is_live()).collect();
     for occurrence in &occurrences {
@@ -440,6 +446,12 @@ pub struct FundingStep {
 /// §14.5 — the ordered accounts a funding search may use on `date` (higher
 /// priority first), with floors and prohibitions from the funding rules.
 pub fn funding_order(household: &Household, date: NaiveDate, scenario: Option<ScenarioId>) -> Vec<FundingStep> {
+    if let Some(id) = scenario
+        && household.scenario(id).is_some_and(|s| s.has_overlay())
+        && let Ok(overlaid) = household.apply_scenarios(&[id])
+    {
+        return funding_order(&overlaid, date, scenario);
+    }
     let mut rules: Vec<&Rule> = household
         .rules
         .iter()
