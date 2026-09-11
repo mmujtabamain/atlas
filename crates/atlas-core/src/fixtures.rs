@@ -599,6 +599,13 @@ pub fn plan_household() -> Household {
     private_account_policy.previous = Some("fully private (v1)".into());
     private_account_policy.purposes = vec!["household forecasts".into(), "scenario: Buy car".into()];
 
+    let mut alpha_policy = preset_policy(9, ObjectRef::Company(ALPHA), vec![a], VisibilityPreset::SharedSummary, CalculationAccess::Excluded);
+    // §8.7: household members know the company exists and see a planning-safe
+    // output; balances, payroll and clients stay with the owner.
+    alpha_policy.existence = Grantees::Household;
+    let mut beta_policy = preset_policy(10, ObjectRef::Company(BETA), vec![a], VisibilityPreset::SharedSummary, CalculationAccess::Excluded);
+    beta_policy.existence = Grantees::Household;
+
     let policies = vec![
         preset_policy(1, ObjectRef::Account(SHARED_SAVINGS), vec![a, b], VisibilityPreset::FullyShared, CalculationAccess::Full),
         private_account_policy,
@@ -608,8 +615,8 @@ pub fn plan_household() -> Household {
         preset_policy(6, ObjectRef::Account(ALPHA_OPERATING), vec![a], VisibilityPreset::SharedSummary, CalculationAccess::Excluded),
         preset_policy(7, ObjectRef::Account(ALPHA_PAYROLL), vec![a], VisibilityPreset::Private, CalculationAccess::Excluded),
         preset_policy(8, ObjectRef::Account(BETA_OPERATING), vec![a], VisibilityPreset::SharedSummary, CalculationAccess::Excluded),
-        preset_policy(9, ObjectRef::Company(ALPHA), vec![a], VisibilityPreset::SharedSummary, CalculationAccess::Excluded),
-        preset_policy(10, ObjectRef::Company(BETA), vec![a], VisibilityPreset::SharedSummary, CalculationAccess::Excluded),
+        alpha_policy,
+        beta_policy,
         preset_policy(11, ObjectRef::Scenario(BUY_CAR), vec![a, b], VisibilityPreset::FullyShared, CalculationAccess::Full),
         preset_policy(12, ObjectRef::Scenario(LEAVE_JOB), vec![a], VisibilityPreset::Private, CalculationAccess::Excluded),
         preset_policy(13, ObjectRef::Person(a), vec![a], VisibilityPreset::FullyShared, CalculationAccess::Full),

@@ -11,7 +11,7 @@ use crate::authz::CalculationAccess;
 use crate::ids::*;
 use crate::model::{Account, Coverage, Holder, Household, Liquidity};
 use crate::money::Money;
-use crate::provenance::{Calc, ProvNode};
+use crate::provenance::{Calc, ProvNode, ProvValue};
 use crate::vocab::{Certainty, MoneyClass, ResultStrength};
 use crate::{EngineError, EngineResult};
 
@@ -338,5 +338,195 @@ mod tests {
         assert_eq!(liquidity.free.money(), fixtures::pkr(-350_000));
         assert!(liquidity.free.node().notes().iter().any(|n| n.contains("Negative headroom")));
         assert_eq!(liquidity.free.money().clamped_at_zero(), fixtures::pkr(0));
+    }
+}
+
+// ----- companies (§8, E07) ------------------------------------------------------
+
+/// A company's cash position with the plan's caveat: a cash-constraint
+/// ceiling is **not** lawfully distributable cash (E07, M27).
+#[derive(Clone, Debug)]
+pub struct CompanyCash {
+    pub company: CompanyId,
+    /// Settled cash across the company's accounts (§6.8 business cash).
+    pub cash: Calc<Money>,
+    /// Earmarks and constraints that must stay funded (§8.6).
+    pub committed: Calc<Money>,
+    /// `cash − committed`: the ceiling before any extraction costs.
+    pub ceiling: Calc<Money>,
+    /// What the household may lawfully extract: unresolved until routes are
+    /// modelled (M9/M27), and never inferred from the ceiling.
+    pub extractable: Calc<Money>,
+}
+
+/// Business cash, committed obligations and the cash-constraint ceiling of a
+/// company, each with its chain.
+pub fn company_cash(household: &Household, id: CompanyId) -> EngineResult<CompanyCash> {
+    let company = household.company(id).ok_or(EngineError::UnknownCompany(id))?;
+    let currency = household.base_currency;
+    let mut cash_terms = Vec::new();
+    let mut cash_total = Money::zero(currency);
+    let mut committed_terms = Vec::new();
+    let mut committed_total = Money::zero(currency);
+
+    for account in household.company_accounts(id) {
+        if account.currency != currency {
+            cash_terms.push(
+                ProvNode::excluded(account.name.clone(), account.settled_balance, format!("held in {}; no conversion convention declared (§32.1)", account.currency))
+                    .subject(ObjectRef::Account(account.id)),
+            );
+            continue;
+        }
+        cash_total = cash_total.checked_add(account.settled_balance)?;
+        cash_terms.push(ledger_node(account));
+        for reservation in household.active_reservations_on(account.id) {
+            committed_total = committed_total.checked_add(reservation.amount)?;
+            committed_terms.push(
+                ProvNode::input(format!("{} ({})", reservation.name, account.name), reservation.amount, reservation.purpose.clone())
+                    .money_class(MoneyClass::ReservedCurrent)
+                    .note(reservation.hardness.label())
+                    .subject(ObjectRef::Reservation(reservation.id)),
+            );
+        }
+    }
+    for constraint in &company.constraints {
+        match constraint {
+            crate::model::CompanyConstraint::MinimumWorkingCapital(floor) => {
+                committed_total = committed_total.checked_add(*floor)?;
+                committed_terms.push(
+                    ProvNode::input("Working-capital floor", *floor, constraint.describe())
+                        .money_class(MoneyClass::ReservedCurrent)
+                        .note("Hard constraint (§8.6)")
+                        .subject(ObjectRef::Company(id)),
+                );
+            }
+            crate::model::CompanyConstraint::TaxReserve(reserve) => {
+                committed_total = committed_total.checked_add(*reserve)?;
+                committed_terms.push(
+                    ProvNode::input("Tax reserve", *reserve, constraint.describe())
+                        .money_class(MoneyClass::ReservedCurrent)
+                        .note("Hard constraint (§8.6)")
+                        .subject(ObjectRef::Company(id)),
+                );
+            }
+            other => committed_terms.push(
+                ProvNode::excluded(other.describe(), ProvValue::Empty, "a timing or payroll-coverage rule, not a cash amount; evaluated by the funding engine (M9)")
+                    .subject(ObjectRef::Company(id)),
+            ),
+        }
+    }
+
+    let cash_node = ProvNode::sum(format!("{} business cash", company.name), cash_total, cash_terms)
+        .money_class(MoneyClass::ConfirmedCurrent)
+        .certainty(Certainty::Confirmed)
+        .subject(ObjectRef::Company(id))
+        .note("Business cash is not household cash and never enters household free cash (§8.5).");
+    let committed_node = ProvNode::sum(format!("{} committed obligations", company.name), committed_total, committed_terms)
+        .money_class(MoneyClass::ReservedCurrent)
+        .subject(ObjectRef::Company(id))
+        .note("Disjoint earmarks and constraint floors; treated as constraints, not suggestions (§8.6).");
+    let ceiling_total = cash_total.checked_sub(committed_total)?;
+    let ceiling_node = ProvNode::sum(
+        format!("{} cash-constraint ceiling", company.name),
+        ceiling_total,
+        vec![cash_node.clone(), committed_node.clone().minus()],
+    )
+    .money_class(MoneyClass::FreeCurrent)
+    .strength(ResultStrength::ExactAccounting)
+    .subject(ObjectRef::Company(id))
+    .note("Before any extraction costs. A simple disjoint cash constraint, not a statement of what may lawfully leave the company (E07).");
+    let extractable_node = ProvNode::formula(
+        format!("{} lawfully extractable cash", company.name),
+        ProvValue::Text("not yet determinable".into()),
+        "min over eligible routes m of NetReceipt(x_m) subject to payroll, working capital, taxes and distribution authority (M27)",
+        vec![ceiling_node.clone()],
+    )
+    .strength(ResultStrength::Unresolved)
+    .subject(ObjectRef::Company(id))
+    .note("Each route (salary, permitted dividend, documented reimbursement, genuine shareholder-loan repayment) must be modelled independently with its legal capacity; book cash does not prove distributable profit (M27). Arrives with M9.");
+
+    Ok(CompanyCash {
+        company: id,
+        cash: Calc::new(cash_total, cash_node),
+        committed: Calc::new(committed_total, committed_node),
+        ceiling: Calc::new(ceiling_total, ceiling_node),
+        extractable: Calc::new(Money::zero(currency), extractable_node),
+    })
+}
+
+// ----- people (§7 attribution) ----------------------------------------------------
+
+/// The economic share of held accounts attributed to one person (§7:
+/// "Individual views can attribute the appropriate economic share"). Never
+/// used for household aggregation, which counts a joint account once.
+pub fn person_attribution(household: &Household, person: PersonId) -> EngineResult<Calc<Money>> {
+    household.person(person).ok_or(EngineError::UnknownPerson(person))?;
+    let currency = household.base_currency;
+    let mut terms = Vec::new();
+    let mut total = Money::zero(currency);
+    for account in household.accounts_of(person) {
+        let share = account.holder.share_of(person);
+        if account.currency != currency {
+            terms.push(
+                ProvNode::excluded(account.name.clone(), account.settled_balance, format!("held in {}; no conversion convention declared (§32.1)", account.currency))
+                    .subject(ObjectRef::Account(account.id)),
+            );
+            continue;
+        }
+        let attributed = account.settled_balance.share_basis_points(share);
+        total = total.checked_add(attributed)?;
+        terms.push(
+            ProvNode::formula(
+                format!("{} ({}% of {})", account.name, share / 100, account.settled_balance.format()),
+                attributed,
+                format!("settled balance × {share} basis points, rounded half away from zero"),
+                Vec::new(),
+            )
+            .money_class(MoneyClass::ConfirmedCurrent)
+            .certainty(Certainty::Confirmed)
+            .subject(ObjectRef::Account(account.id)),
+        );
+    }
+    let name = household.entity_name(EntityRef::Person(person));
+    let node = ProvNode::sum(format!("{name} — attributed share of held accounts"), total, terms)
+        .money_class(MoneyClass::ConfirmedCurrent)
+        .subject(ObjectRef::Person(person))
+        .note("Economic attribution only; the household view counts each joint account once at 100% (§7). Liabilities are attributed with their negative sign.");
+    Ok(Calc::new(total, node))
+}
+
+#[cfg(test)]
+mod entity_tests {
+    use super::*;
+    use crate::fixtures::{self, ids, pkr};
+
+    #[test]
+    fn e07_company_cash_ceiling_is_not_distributable_cash() {
+        let household = fixtures::plan_household();
+        let alpha = company_cash(&household, ids::ALPHA).unwrap();
+        // 2,000,000 operating + 350,000 payroll account; committed: 700,000 payroll + 200,000 tax + 600,000 buffer.
+        assert_eq!(alpha.cash.money(), pkr(2_350_000));
+        assert_eq!(alpha.committed.money(), pkr(1_500_000));
+        assert_eq!(alpha.ceiling.money(), pkr(850_000));
+        assert_eq!(alpha.extractable.node().result_strength(), ResultStrength::Unresolved);
+        assert!(alpha.ceiling.node().verify_sums().is_empty());
+        let text = alpha.ceiling.node().render_chain();
+        assert!(text.contains("Working-capital floor"));
+        assert!(text.contains("(excluded) Keep at least 3 months of payroll"));
+    }
+
+    #[test]
+    fn joint_account_is_attributed_by_share_but_counted_once_for_the_household() {
+        let household = fixtures::plan_household();
+        let a = person_attribution(&household, ids::PERSON_A).unwrap();
+        let b = person_attribution(&household, ids::PERSON_B).unwrap();
+        // A: 50% of 2,000,000 + 1,500,000 + (−85,000) + 50% of 1,000,000.
+        assert_eq!(a.money(), pkr(1_000_000 + 1_500_000 - 85_000 + 500_000));
+        // B: 50% of 2,000,000 + 900,000 + 50% of 1,000,000.
+        assert_eq!(b.money(), pkr(1_000_000 + 900_000 + 500_000));
+        let household_liquid = household_liquidity(&household).unwrap();
+        // The household counts the shared savings once: attribution shares sum to it, not twice it.
+        assert_eq!(household_liquid.liquid_cash.money(), pkr(4_400_000));
+        assert!(a.node().verify_sums().is_empty() && b.node().verify_sums().is_empty());
     }
 }
