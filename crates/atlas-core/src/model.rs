@@ -670,7 +670,7 @@ impl Household {
     pub fn entity_name(&self, entity: EntityRef) -> String {
         match entity {
             EntityRef::Household => self.name.clone(),
-            EntityRef::Person(id) => self.person(id).map(|p| p.name.clone()).unwrap_or_else(|| id.to_string()),
+            EntityRef::Person(id) => self.person(id).map(|p| p.name.clone()).unwrap_or_else(|| if self.people.is_empty() { "no one yet".to_string() } else { id.to_string() }),
             EntityRef::Company(id) => self.company(id).map(|c| c.name.clone()).unwrap_or_else(|| id.to_string()),
         }
     }
