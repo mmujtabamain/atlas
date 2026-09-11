@@ -6,4 +6,5 @@
 pub mod explain;
 pub mod figure;
 pub mod labels;
+pub mod master;
 pub mod table;

@@ -7,7 +7,10 @@
 
 use std::rc::Rc;
 
-use atlas_core::{Calc, Money};
+use atlas_core::authz::Viewer;
+use atlas_core::model::Household;
+use atlas_core::provenance::{Operation, ProvNode};
+use atlas_core::{Calc, Disclosure, Money};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, button::{Button, ButtonVariants as _}, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -83,5 +86,43 @@ impl RenderOnce for Figure {
                     .child(money.format()),
             )
             .child(tags)
+    }
+}
+
+/// A projected, explainable figure: the model half of a [`Figure`], computed
+/// once per state change and rendered by any screen.
+#[derive(Clone, Debug)]
+pub struct ExplainedFigure {
+    pub id: SharedString,
+    pub label: SharedString,
+    /// Node already projected for the viewer (M55).
+    pub calc: Calc<Money>,
+}
+
+impl ExplainedFigure {
+    pub fn new(id: impl Into<SharedString>, label: impl Into<SharedString>, calc: &Calc<Money>, household: &Household, viewer: Viewer) -> Self {
+        let projected = calc.node().project(&household.disclosure_fn(viewer));
+        ExplainedFigure { id: id.into(), label: label.into(), calc: Calc::new(calc.money(), projected) }
+    }
+
+    /// The weakest disclosure level present in the projected chain.
+    pub fn disclosure(&self) -> Disclosure {
+        fn scan(node: &ProvNode) -> Disclosure {
+            let own = match node.operation() {
+                Operation::Aggregate { restricted_terms: 0 } => Disclosure::Hidden,
+                Operation::Aggregate { .. } => Disclosure::Aggregate,
+                _ => Disclosure::Full,
+            };
+            node.children().iter().map(scan).fold(own, Disclosure::min)
+        }
+        scan(self.calc.node())
+    }
+
+    pub fn content(&self, viewer_name: &str) -> ExplainContent {
+        ExplainContent::new(self.label.to_string(), self.calc.money(), self.calc.node().clone(), viewer_name, self.disclosure())
+    }
+
+    pub fn figure(&self, viewer_name: &str, emphasis: bool) -> Figure {
+        Figure::new(self.id.clone(), self.label.clone(), self.calc.clone(), self.content(viewer_name)).emphasis(emphasis)
     }
 }
