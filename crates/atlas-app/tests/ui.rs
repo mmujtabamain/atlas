@@ -24,7 +24,12 @@ fn let_dialog_settle() {
 /// wheel event is dispatched at the anchor's centre, so the anchor must be an
 /// element that is currently on screen (a filter control, a figure …).
 fn scroll_down(window: &mut gpui_kit::Window, anchor: &'static str, cx: &mut gpui_kit::App) {
-    window.scroll(anchor, ScrollDelta::Pixels(point(px(0.), px(-12000.))), cx);
+    scroll_by(window, anchor, 12000., cx);
+}
+
+/// Scrolls the main column down by `pixels` from an on-screen anchor.
+fn scroll_by(window: &mut gpui_kit::Window, anchor: &'static str, pixels: f32, cx: &mut gpui_kit::App) {
+    window.scroll(anchor, ScrollDelta::Pixels(point(px(0.), px(-pixels))), cx);
     window.render_frame(cx);
 }
 
@@ -421,5 +426,57 @@ fn projections_switch_case_and_overlay_scenario(cx: &mut TestAppContext) {
         assert!(shared.negative_from.is_some(), "shared savings goes negative on the car date");
         assert!(model.forecast.transfer_points.iter().any(|t| t.account == fixtures::ids::SHARED_SAVINGS && t.coverable));
         assert!(model.forecast.record.input_hash != 0);
+    });
+}
+
+#[gpui_kit::test]
+fn assumptions_accept_and_derive_through_the_ui(cx: &mut TestAppContext) {
+    use atlas_core::assumptions::Derivation;
+    use atlas_core::ids::AssumptionId;
+    use atlas_core::model::Freshness;
+    let launch = Launch { section: Section::Assumptions, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-assumptions").visible());
+        // Assumption #3 (rent) was accepted in May: stale, with an Accept action.
+        window.click("accept-assumption-3", cx);
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let rent = app.household().assumption(AssumptionId::new(3)).unwrap();
+        assert_eq!(rent.accepted_on, Some(app.household().as_of));
+        assert_eq!(rent.freshness(app.household().as_of), Freshness::Fresh);
+    });
+
+    // Switch the derivation formula to the mean and apply it to assumption #1.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("accept-assumption-3").is_none(), "a fresh assumption has no Accept action");
+        scroll_by(window, "accept-assumption-5", 800., cx);
+        window.within("derivation-formula").click(2usize, cx);
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let model = app.read(cx).assumptions().unwrap();
+        assert_eq!(model.derivation, Derivation::Mean { last_n: 6 });
+        assert_eq!(model.derived.as_ref().unwrap().amount.expected(), fixtures::pkr(500_000));
+        assert!(model.sensitivity.caveat.contains("do NOT guarantee"), "V043");
+        assert!(model.statement.render().contains("Coverage:"), "V031");
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("apply-derivation", cx);
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let salary = app.household().assumption(AssumptionId::new(1)).unwrap();
+        assert_eq!(salary.accepted_on, None, "a re-derived assumption must be accepted again (§2.5)");
+        assert!(salary.source.describe().contains("arithmetic mean"));
+        assert_eq!(app.household().series_by_id(fixtures::ids::SALARY_A).unwrap().amount.expected(), fixtures::pkr(500_000));
     });
 }
