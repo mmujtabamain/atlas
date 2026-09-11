@@ -602,6 +602,10 @@ pub struct Household {
     pub links: Vec<ReconciliationLink>,
     /// §10.7 — reconciled history behind derived assumptions.
     pub history: Vec<HistoricalPayment>,
+    /// §14 — user-defined rules.
+    pub rules: Vec<crate::rules::Rule>,
+    /// §14.7 — how ties between equally specific, equal-priority rules are broken.
+    pub rule_tie_break: crate::rules::TieBreak,
 }
 
 impl Default for Household {
@@ -629,6 +633,8 @@ impl Household {
             actuals: Vec::new(),
             links: Vec::new(),
             history: Vec::new(),
+            rules: Vec::new(),
+            rule_tie_break: crate::rules::TieBreak::OldestRule,
         }
     }
 

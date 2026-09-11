@@ -13,6 +13,7 @@ use crate::ids::*;
 use crate::model::*;
 use crate::money::{Currency, Money};
 use crate::provenance::Disclosure;
+use crate::rules::{Condition, Rule, RuleAction, RuleScope, RuleVersion, Trigger};
 use crate::timeline::*;
 use crate::vocab::Certainty;
 use chrono::{NaiveDate, NaiveDateTime};
@@ -67,6 +68,14 @@ pub mod ids {
 
     pub const BUY_CAR: ScenarioId = ScenarioId::new(1);
     pub const LEAVE_JOB: ScenarioId = ScenarioId::new(2);
+
+    pub const RULE_FOREIGN_FEE: RuleId = RuleId::new(1);
+    pub const RULE_FOREIGN_FEE_WAIVER: RuleId = RuleId::new(2);
+    pub const RULE_TRANSFER_FEE: RuleId = RuleId::new(3);
+    pub const RULE_FUND_FORBID_ALPHA: RuleId = RuleId::new(4);
+    pub const RULE_FUND_SHARED: RuleId = RuleId::new(5);
+    pub const RULE_FUND_A_CURRENT: RuleId = RuleId::new(6);
+    pub const RULE_BANK_SELECTION: RuleId = RuleId::new(7);
 }
 
 /// Whole PKR, the fixture currency.
@@ -178,6 +187,38 @@ fn series(
 
 fn preset_policy(id: u32, object: ObjectRef, owners: Vec<PersonId>, preset: VisibilityPreset, access: CalculationAccess) -> AccessPolicy {
     AccessPolicy::preset(PolicyId::new(id), object, owners, preset, access, d(2026, 9, 1), policy_changed_at())
+}
+
+/// §14.3–§14.6 example rules: a foreign-card fee with a more specific promo
+/// waiver (a visible conflict, §14.7), a fixed transfer fee, the car-purchase
+/// funding order and a bank-selection rule.
+fn demo_rules_for(_owner: PersonId) -> Vec<Rule> {
+    use ids::*;
+    let rule = |id: RuleId, name: &str, scope: RuleScope, trigger: Trigger, conditions: Vec<Condition>, action: RuleAction, priority: i32, from: NaiveDate, to: Option<NaiveDate>, scenario: Option<ScenarioId>, explanation: &str| Rule {
+        id,
+        name: name.into(),
+        scope,
+        trigger,
+        conditions,
+        action,
+        priority,
+        effective_from: from,
+        effective_to: to,
+        enabled: true,
+        scenario,
+        explanation: explanation.into(),
+        version: 1,
+        history: vec![RuleVersion { version: 1, changed_on: d(2026, 9, 1), summary: "created".into() }],
+    };
+    vec![
+        rule(RULE_FOREIGN_FEE, "DEMO foreign card fee", RuleScope::Category("Foreign card".into()), Trigger::Expense, Vec::new(), RuleAction::AddFee { basis_points: 150, fixed: None, label: "foreign transaction fee".into() }, 10, d(2026, 7, 1), None, None, "§14.4: the bank's 1.5% fee is a separate fee event next to the 5% tax event."),
+        rule(RULE_FOREIGN_FEE_WAIVER, "Visa promo: foreign fee waived Oct–Nov", RuleScope::Account(PERSON_A_VISA), Trigger::Expense, vec![Condition::CategoryIs("Foreign card".into())], RuleAction::AddFee { basis_points: 0, fixed: None, label: "promo waiver".into() }, 10, d(2026, 10, 1), Some(d(2026, 11, 30)), None, "Same priority as the category fee; wins on scope specificity while effective (§14.7)."),
+        rule(RULE_TRANSFER_FEE, "Bank B transfer fee", RuleScope::Account(PERSON_A_CURRENT), Trigger::Transfer, vec![Condition::AmountAbove(pkr(50_000))], RuleAction::AddFee { basis_points: 0, fixed: Some(pkr(250)), label: "transfer fee".into() }, 5, d(2026, 1, 1), None, None, "A fixed 250 fee on transfers above 50,000 leaving the account."),
+        rule(RULE_FUND_FORBID_ALPHA, "Car purchase funding: not Company Alpha before Dec 1", RuleScope::Scenario(BUY_CAR), Trigger::Funding, Vec::new(), RuleAction::ForbidAccount { account: ALPHA_OPERATING, unless_after: Some(d(2026, 12, 1)) }, 40, d(2026, 9, 1), None, Some(BUY_CAR), "§14.5 step 3."),
+        rule(RULE_FUND_SHARED, "Car purchase funding: shared savings first", RuleScope::Scenario(BUY_CAR), Trigger::Funding, Vec::new(), RuleAction::PreferAccount { account: SHARED_SAVINGS, preserve: Some(pkr(1_000_000)) }, 30, d(2026, 9, 1), None, Some(BUY_CAR), "§14.5 step 1: use shared savings while preserving 1,000,000."),
+        rule(RULE_FUND_A_CURRENT, "Car purchase funding: then Person A current", RuleScope::Scenario(BUY_CAR), Trigger::Funding, Vec::new(), RuleAction::PreferAccount { account: PERSON_A_CURRENT, preserve: Some(pkr(300_000)) }, 20, d(2026, 9, 1), None, Some(BUY_CAR), "§14.5 step 2: then Person A's account while preserving 300,000."),
+        rule(RULE_BANK_SELECTION, "Ordinary expenses: Person B checking first", RuleScope::Category("Living".into()), Trigger::Expense, Vec::new(), RuleAction::BankSelection { prefer: PERSON_B_CHECKING, fallback: SHARED_SAVINGS, when_below: pkr(100_000) }, 10, d(2026, 1, 1), None, None, "§14.6: use shared savings only when B checking would fall below 100,000."),
+    ]
 }
 
 /// Builds the fixture household.
@@ -790,6 +831,8 @@ pub fn plan_household() -> Household {
         policies,
         actuals,
         links,
+        rules: demo_rules_for(a),
+        rule_tie_break: crate::rules::TieBreak::OldestRule,
         history: vec![
             HistoricalPayment { series: SALARY_A, date: d(2026, 3, 31), amount: pkr(500_000) },
             HistoricalPayment { series: SALARY_A, date: d(2026, 4, 30), amount: pkr(480_000) },

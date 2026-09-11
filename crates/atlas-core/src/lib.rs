@@ -39,6 +39,7 @@ pub mod model;
 pub mod money;
 pub mod mutations;
 pub mod provenance;
+pub mod rules;
 pub mod sensitivity;
 pub mod tax;
 pub mod timeline;
@@ -70,6 +71,8 @@ pub enum EngineError {
     UnknownAssumption(ids::AssumptionId),
     #[error("unknown series {0}")]
     UnknownSeries(ids::SeriesId),
+    #[error("unknown rule {0}")]
+    UnknownRule(ids::RuleId),
     #[error("{0}")]
     Insufficient(String),
 }
