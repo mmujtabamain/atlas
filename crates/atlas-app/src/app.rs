@@ -26,7 +26,8 @@ use gpui_kit::*;
 
 use crate::alerting::{self, Level};
 use crate::launch::Launch;
-use crate::screens::{self, Section, household::HouseholdOverview};
+use crate::screens::{self, Section, entities::EntityModels, household::HouseholdOverview};
+use atlas_core::ids::{AccountId, CompanyId, PersonId};
 
 pub struct AtlasApp {
     household: Household,
@@ -36,6 +37,10 @@ pub struct AtlasApp {
     sidebar_collapsed: bool,
     /// Derived once per state change; screens only read it.
     overview: Result<HouseholdOverview, EngineError>,
+    entities: Result<EntityModels, EngineError>,
+    selected_person: Option<PersonId>,
+    selected_company: Option<CompanyId>,
+    selected_account: Option<AccountId>,
 }
 
 impl AtlasApp {
@@ -44,6 +49,7 @@ impl AtlasApp {
         let viewer = Viewer::person(if launch.viewer == 'b' { fixtures::ids::PERSON_B } else { fixtures::ids::PERSON_A });
         let horizon = fixtures::default_horizon();
         let overview = Self::compute_overview(&household, viewer, horizon);
+        let entities = Self::compute_entities(&household, viewer);
         log::info!("Atlas Financer window: section={} viewer={}", launch.section.slug(), viewer.person);
         AtlasApp {
             household,
@@ -52,7 +58,19 @@ impl AtlasApp {
             horizon,
             sidebar_collapsed: false,
             overview,
+            entities,
+            selected_person: None,
+            selected_company: None,
+            selected_account: None,
         }
+    }
+
+    fn compute_entities(household: &Household, viewer: Viewer) -> Result<EntityModels, EngineError> {
+        let result = EntityModels::compute(household, viewer);
+        if let Err(err) = &result {
+            alerting::report(Level::Error, format!("entity models failed for {}: {err}", viewer.person));
+        }
+        result
     }
 
     fn compute_overview(household: &Household, viewer: Viewer, horizon: NaiveDate) -> Result<HouseholdOverview, EngineError> {
@@ -66,6 +84,27 @@ impl AtlasApp {
     /// Recomputes every derived model after the household or viewer changed.
     fn refresh_derived(&mut self) {
         self.overview = Self::compute_overview(&self.household, self.viewer, self.horizon);
+        self.entities = Self::compute_entities(&self.household, self.viewer);
+    }
+
+    pub fn select_person(&mut self, id: PersonId, cx: &mut Context<Self>) {
+        self.selected_person = Some(id);
+        cx.notify();
+    }
+
+    pub fn select_company(&mut self, id: CompanyId, cx: &mut Context<Self>) {
+        self.selected_company = Some(id);
+        cx.notify();
+    }
+
+    pub fn select_account(&mut self, id: AccountId, cx: &mut Context<Self>) {
+        log::info!("account selected: {id}");
+        self.selected_account = Some(id);
+        cx.notify();
+    }
+
+    pub fn selected_account(&self) -> Option<AccountId> {
+        self.selected_account
     }
 
     /// Switches the main area to `section`.
@@ -92,6 +131,11 @@ impl AtlasApp {
     /// The derived overview, if the engine could compute it.
     pub fn overview(&self) -> Option<&HouseholdOverview> {
         self.overview.as_ref().ok()
+    }
+
+    /// The derived entity models, if the engine could compute them.
+    pub fn entities(&self) -> Option<&EntityModels> {
+        self.entities.as_ref().ok()
     }
 
     /// Changes who is looking; every screen re-projects (M10 adds the UI).
@@ -122,7 +166,7 @@ impl AtlasApp {
                     .gap_3()
                     .child(Icon::new(IconName::Wallet).small())
                     .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer"))
-                    .child(Tag::secondary().xsmall().outline().child("M0 foundation")),
+                    .child(Tag::secondary().xsmall().outline().child("M1 entities")),
             )
             .child(
                 h_flex()
@@ -232,9 +276,33 @@ impl AtlasApp {
                     ))
                     .into_any_element(),
             },
+            Section::People | Section::Companies | Section::Accounts => match &self.entities {
+                Ok(models) => {
+                    let models = models.clone();
+                    match self.section {
+                        Section::People => screens::people::render(&models, &self.household, self.viewer, self.selected_person, cx).into_any_element(),
+                        Section::Companies => screens::companies::render(&models, &self.household, self.viewer, self.selected_company, cx).into_any_element(),
+                        _ => screens::accounts::render(&models, &self.household, self.viewer, self.selected_account, cx).into_any_element(),
+                    }
+                }
+                Err(err) => self.render_engine_failure(self.section, err, cx),
+            },
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
             other => screens::placeholder::render(other, cx).into_any_element(),
         }
+    }
+
+    fn render_engine_failure(&self, section: Section, err: &EngineError, cx: &mut Context<Self>) -> AnyElement {
+        v_flex()
+            .id(SharedString::from(format!("screen-{}", section.slug())))
+            .test_support()
+            .gap_4()
+            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(section.label()))
+            .child(Alert::error("engine-error", format!("This screen could not be calculated: {err}")).title("Calculation failed"))
+            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
+                "The failure was logged and, when alerts are configured, posted to the team.",
+            ))
+            .into_any_element()
     }
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {

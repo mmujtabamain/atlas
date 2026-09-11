@@ -7,7 +7,6 @@ use atlas_core::forecast::household_projection;
 use atlas_core::ids::ObjectRef;
 use atlas_core::liquidity::{account_liquidity, household_liquidity};
 use atlas_core::model::{Assumption, Household};
-use atlas_core::provenance::{Operation, ProvNode};
 use atlas_core::{Calc, Disclosure, EngineResult, Money};
 use chrono::NaiveDate;
 use gpui_kit::component::{
@@ -18,47 +17,10 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::widgets::explain::{self, ExplainContent};
-use crate::widgets::figure::Figure;
+use crate::widgets::explain;
+use crate::widgets::figure::ExplainedFigure;
 use crate::widgets::labels;
 use crate::widgets::table::{money_cell, muted_cell};
-
-/// A projected, explainable figure ready to render.
-#[derive(Clone, Debug)]
-pub struct ExplainedFigure {
-    pub id: &'static str,
-    pub label: &'static str,
-    /// Node already projected for the viewer (M55).
-    pub calc: Calc<Money>,
-}
-
-impl ExplainedFigure {
-    fn new(id: &'static str, label: &'static str, calc: &Calc<Money>, household: &Household, viewer: Viewer) -> Self {
-        let projected = calc.node().project(&household.disclosure_fn(viewer));
-        ExplainedFigure { id, label, calc: Calc::new(calc.money(), projected) }
-    }
-
-    /// The weakest disclosure level present in the projected chain.
-    pub fn disclosure(&self) -> Disclosure {
-        fn scan(node: &ProvNode) -> Disclosure {
-            let own = match node.operation() {
-                Operation::Aggregate { restricted_terms: 0 } => Disclosure::Hidden,
-                Operation::Aggregate { .. } => Disclosure::Aggregate,
-                _ => Disclosure::Full,
-            };
-            node.children().iter().map(scan).fold(own, Disclosure::min)
-        }
-        scan(self.calc.node())
-    }
-
-    fn content(&self, viewer_name: &str) -> ExplainContent {
-        ExplainContent::new(self.label, self.calc.money(), self.calc.node().clone(), viewer_name, self.disclosure())
-    }
-
-    fn figure(&self, viewer_name: &str, emphasis: bool) -> Figure {
-        Figure::new(self.id, self.label, self.calc.clone(), self.content(viewer_name)).emphasis(emphasis)
-    }
-}
 
 /// Everything the overview shows, computed once per state change.
 #[derive(Clone, Debug)]
@@ -139,7 +101,7 @@ pub fn render(overview: &HouseholdOverview, household: &Household, viewer: Viewe
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
                         "One bank balance is never one number: settled cash, earmarked cash and free cash are kept apart, and every figure opens its chain.",
                     ))
-                    .child(h_flex().flex_wrap().gap_8().children(overview.money.iter().map(|f| div().min_w_48().child(f.figure(viewer_name, f.id == "free-cash"))))),
+                    .child(h_flex().flex_wrap().gap_8().children(overview.money.iter().map(|f| div().min_w_48().child(f.figure(viewer_name, f.id.as_ref() == "free-cash"))))),
             ),
         )
         .child(

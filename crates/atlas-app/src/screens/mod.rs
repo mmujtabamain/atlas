@@ -2,7 +2,11 @@
 //! section maps to the plan sections it implements and to the milestone that
 //! delivers it, so a screen that is not built yet can say so precisely.
 
+pub mod accounts;
+pub mod companies;
+pub mod entities;
 pub mod household;
+pub mod people;
 pub mod placeholder;
 pub mod settings;
 
@@ -152,8 +156,7 @@ impl Section {
     pub fn pending_milestone(self) -> Option<Milestone> {
         let m = |number, task_id, title| Some(Milestone { number, task_id, title });
         match self {
-            Section::Household | Section::Settings => None,
-            Section::People | Section::Companies | Section::Accounts => m(1, 2738, "Entities & accounts (verbose views)"),
+            Section::Household | Section::Settings | Section::People | Section::Companies | Section::Accounts => None,
             Section::Liquidity => m(2, 2744, "Liquidity & reservations (E01, E08)"),
             Section::Timeline => m(3, 2750, "Timeline & scheduling engine"),
             Section::Projections => m(4, 2757, "Forecast & projections"),
