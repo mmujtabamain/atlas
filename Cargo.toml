@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/atlas-core", "crates/atlas-app"]
+members = ["crates/atlas-core", "crates/atlas-store", "crates/atlas-app"]
 
 [workspace.package]
 version = "0.1.0"
