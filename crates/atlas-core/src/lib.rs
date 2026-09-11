@@ -23,11 +23,13 @@
 //! | [`model`] | household, people, companies, accounts, ownership, reservations, assumptions, scenarios, tax rules (§5–§8, §17) |
 //! | [`authz`] | access policies, viewers, disclosure evaluation (§7.1–§7.6) |
 //! | [`timeline`] | event series, recurrence expansion, occurrences (§9, M05 — M3 completes it) |
-//! | [`liquidity`] | money definitions §6, earmarks §17, E01 |
+//! | [`liquidity`] | money definitions §6, earmarks §17, E01, boundaries |
+//! | [`breach`] | first breach, worst deficit, minimum injection (M13, E08) |
 //! | [`forecast`] | the §2.1 conditional projection chain (M4 completes it) |
 //! | [`fixtures`] | the fictitious plan household used by the UI and the tests |
 
 pub mod authz;
+pub mod breach;
 pub mod fixtures;
 pub mod forecast;
 pub mod ids;
