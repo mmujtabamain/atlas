@@ -369,9 +369,59 @@ pub struct Assumption {
     pub certainty: Certainty,
     pub source: AssumptionSource,
     pub accepted_on: Option<NaiveDate>,
+    /// F117 — after this date the assumption must be re-approved.
+    pub expires_on: Option<NaiveDate>,
     pub applies_to: Vec<SeriesId>,
     /// Private assumptions belong to a person (§18.5).
     pub private_to: Option<PersonId>,
+}
+
+/// F117 — how current an assumption is on a given date.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Freshness {
+    NotAccepted,
+    Fresh,
+    /// Accepted more than `STALE_AFTER_DAYS` ago and never re-approved.
+    Stale,
+    Expired,
+}
+
+impl Freshness {
+    pub fn label(self) -> &'static str {
+        match self {
+            Freshness::NotAccepted => "not accepted",
+            Freshness::Fresh => "fresh",
+            Freshness::Stale => "stale",
+            Freshness::Expired => "expired",
+        }
+    }
+}
+
+/// Assumptions accepted longer ago than this are flagged stale (F117).
+pub const STALE_AFTER_DAYS: i64 = 90;
+
+impl Assumption {
+    pub fn freshness(&self, on: NaiveDate) -> Freshness {
+        if let Some(expiry) = self.expires_on
+            && on > expiry
+        {
+            return Freshness::Expired;
+        }
+        match self.accepted_on {
+            None => Freshness::NotAccepted,
+            Some(accepted) if (on - accepted).num_days() > STALE_AFTER_DAYS => Freshness::Stale,
+            Some(_) => Freshness::Fresh,
+        }
+    }
+}
+
+/// §10.7 — one reconciled historical payment of a series, the raw material of
+/// a derived assumption.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct HistoricalPayment {
+    pub series: SeriesId,
+    pub date: NaiveDate,
+    pub amount: Money,
 }
 
 /// §5.11 — an overlay over the baseline (M8 adds the overrides).
@@ -468,6 +518,8 @@ pub struct Household {
     pub policies: Vec<AccessPolicy>,
     pub actuals: Vec<ActualTransaction>,
     pub links: Vec<ReconciliationLink>,
+    /// §10.7 — reconciled history behind derived assumptions.
+    pub history: Vec<HistoricalPayment>,
 }
 
 impl Household {
@@ -545,6 +597,24 @@ impl Household {
 
     pub fn actual(&self, id: TransactionId) -> Option<&ActualTransaction> {
         self.actuals.iter().find(|t| t.id == id)
+    }
+
+    pub fn assumption(&self, id: AssumptionId) -> Option<&Assumption> {
+        self.assumptions.iter().find(|a| a.id == id)
+    }
+
+    /// Reconciled history of one series, oldest first.
+    pub fn history_of(&self, series: SeriesId) -> Vec<&HistoricalPayment> {
+        let mut rows: Vec<&HistoricalPayment> = self.history.iter().filter(|h| h.series == series).collect();
+        rows.sort_by_key(|h| h.date);
+        rows
+    }
+
+    /// §2.5 — records the user's acceptance of an assumption on `on`.
+    pub fn accept_assumption(&mut self, id: AssumptionId, on: NaiveDate) -> crate::EngineResult<()> {
+        let assumption = self.assumptions.iter_mut().find(|a| a.id == id).ok_or(crate::EngineError::UnknownAssumption(id))?;
+        assumption.accepted_on = Some(on);
+        Ok(())
     }
 
     /// Reconciliation links for one occurrence.

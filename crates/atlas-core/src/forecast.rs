@@ -880,6 +880,7 @@ mod forecast_tests {
             policies: vec![AccessPolicy::preset(PolicyId::new(1), ObjectRef::Account(account), vec![a], VisibilityPreset::FullyShared, CalculationAccess::Full, d(2026, 9, 1), d(2026, 9, 1).and_hms_opt(0, 0, 0).unwrap())],
             actuals: Vec::new(),
             links: Vec::new(),
+            history: Vec::new(),
         }
     }
 

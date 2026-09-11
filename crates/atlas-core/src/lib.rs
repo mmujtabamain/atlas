@@ -28,6 +28,7 @@
 //! | [`forecast`] | the §2.1 conditional projection chain (M4 completes it) |
 //! | [`fixtures`] | the fictitious plan household used by the UI and the tests |
 
+pub mod assumptions;
 pub mod authz;
 pub mod breach;
 pub mod fixtures;
@@ -37,6 +38,7 @@ pub mod liquidity;
 pub mod model;
 pub mod money;
 pub mod provenance;
+pub mod sensitivity;
 pub mod timeline;
 pub mod vocab;
 
@@ -62,6 +64,12 @@ pub enum EngineError {
     Money(#[from] MoneyError),
     #[error("no access policy for {0}: failing closed (F162)")]
     MissingPolicy(ids::ObjectRef),
+    #[error("unknown assumption {0}")]
+    UnknownAssumption(ids::AssumptionId),
+    #[error("unknown series {0}")]
+    UnknownSeries(ids::SeriesId),
+    #[error("{0}")]
+    Insufficient(String),
 }
 
 /// Result alias used across the engine.
