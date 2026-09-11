@@ -56,6 +56,11 @@ pub mod ids {
     pub const ALPHA_REVENUE: SeriesId = SeriesId::new(9);
     pub const ALPHA_PAYROLL_RUN: SeriesId = SeriesId::new(10);
     pub const VISA_SETTLEMENT: SeriesId = SeriesId::new(11);
+    pub const CAR_INSURANCE: SeriesId = SeriesId::new(12);
+    pub const CARD_PURCHASES: SeriesId = SeriesId::new(13);
+
+    pub const TXN_INSURANCE: TransactionId = TransactionId::new(1);
+    pub const TXN_RECEIVABLE_PART: TransactionId = TransactionId::new(2);
 
     pub const BUY_CAR: ScenarioId = ScenarioId::new(1);
     pub const LEAVE_JOB: ScenarioId = ScenarioId::new(2);
@@ -148,7 +153,15 @@ fn series(
         direction,
         amount,
         amount_changes: Vec::new(),
+        exceptions: Vec::new(),
         recurrence,
+        // §11.1: expenses post before incomes on the same day unless a series says otherwise.
+        intraday_order: match direction {
+            Direction::Expense | Direction::Transfer { .. } => 10,
+            Direction::Income => 20,
+        },
+        settlement_lag_days: 0,
+        availability_lag_days: 0,
         account,
         linked_account: None,
         entity,
@@ -336,6 +349,7 @@ pub fn plan_household() -> Household {
         "Salary",
     );
     salary_a.linked_account = Some(ALPHA_PAYROLL);
+    salary_a.settlement_lag_days = 1;
     salary_a.tax_treatment = "Salary income tax (DEMO pack)".into();
     salary_a.notes = "One linked movement: expense for Company Alpha, income for Person A (§8.4).".into();
 
@@ -351,6 +365,33 @@ pub fn plan_household() -> Household {
         "Major purchase",
     );
     car_down_payment.scenario = Some(BUY_CAR);
+
+    let mut receivable = series(
+        CLIENT_RECEIVABLE,
+        "Client receivable — invoice 2026-031",
+        Direction::Income,
+        AmountSpec::Exact(pkr(350_000)),
+        Recurrence::OneTime { on: DateSpec::Range { earliest: d(2026, 11, 1), expected: d(2026, 11, 10), latest: d(2026, 11, 15) } },
+        PERSON_A_CURRENT,
+        EntityRef::Person(a),
+        Certainty::Expected,
+        "Receivable",
+    );
+    receivable.settlement_lag_days = 2;
+    receivable.notes = "150,000 already received on 9 Sep (partial); the remainder is expected by 15 Nov (§16).".into();
+
+    let mut card_purchases = series(
+        CARD_PURCHASES,
+        "Card purchases",
+        Direction::Expense,
+        AmountSpec::Range { low: pkr(40_000), expected: pkr(60_000), high: pkr(90_000) },
+        Recurrence::Monthly { every_n_months: 1, day: 20, from: d(2026, 9, 20), until: Until::Indefinite, invalid_day: InvalidDayPolicy::ClampToMonthEnd },
+        PERSON_A_VISA,
+        EntityRef::Person(a),
+        Certainty::UserEstimated,
+        "Card spending",
+    );
+    card_purchases.notes = "Expense recognition on the card; the statement settlement is a separate transfer, not a second expense (§15.2, V009).".into();
 
     let series = vec![
         salary_a,
@@ -376,17 +417,7 @@ pub fn plan_household() -> Household {
             Certainty::Expected,
             "Freelance",
         ),
-        series(
-            CLIENT_RECEIVABLE,
-            "Client receivable — invoice 2026-031",
-            Direction::Income,
-            AmountSpec::Exact(pkr(350_000)),
-            Recurrence::OneTime { on: DateSpec::Range { earliest: d(2026, 11, 1), expected: d(2026, 11, 10), latest: d(2026, 11, 15) } },
-            PERSON_A_CURRENT,
-            EntityRef::Person(a),
-            Certainty::Expected,
-            "Receivable",
-        ),
+        receivable,
         series(
             RENT,
             "Rent",
@@ -454,6 +485,40 @@ pub fn plan_household() -> Household {
             Certainty::Contractual,
             "Liability settlement",
         ),
+        series(
+            CAR_INSURANCE,
+            "Car insurance premium",
+            Direction::Expense,
+            AmountSpec::Exact(pkr(96_000)),
+            Recurrence::Yearly { month: 9, day: 5, from: d(2026, 9, 5), until: Until::Indefinite },
+            SHARED_SAVINGS,
+            EntityRef::Household,
+            Certainty::Contractual,
+            "Insurance",
+        ),
+        card_purchases,
+    ];
+
+    // §5.7 / §16 — actual transactions and their reconciliation links.
+    let actuals = vec![
+        ActualTransaction {
+            id: TXN_INSURANCE,
+            date: d(2026, 9, 4),
+            account: SHARED_SAVINGS,
+            amount: pkr(-96_000),
+            description: "INSURECO annual premium".into(),
+        },
+        ActualTransaction {
+            id: TXN_RECEIVABLE_PART,
+            date: d(2026, 9, 9),
+            account: PERSON_A_CURRENT,
+            amount: pkr(150_000),
+            description: "CLIENT X part payment inv 2026-031".into(),
+        },
+    ];
+    let links = vec![
+        ReconciliationLink { series: CAR_INSURANCE, original_due: d(2026, 9, 5), transaction: TXN_INSURANCE, amount: pkr(96_000) },
+        ReconciliationLink { series: CLIENT_RECEIVABLE, original_due: d(2026, 11, 10), transaction: TXN_RECEIVABLE_PART, amount: pkr(150_000) },
     ];
 
     let assumptions = vec![
@@ -636,6 +701,8 @@ pub fn plan_household() -> Household {
         scenarios,
         tax_packs,
         policies,
+        actuals,
+        links,
     }
 }
 
@@ -654,6 +721,10 @@ mod tests {
         }
         for reservation in &household.reservations {
             assert!(household.account(reservation.account).is_some());
+        }
+        for link in &household.links {
+            assert!(household.actual(link.transaction).is_some());
+            assert!(household.series_by_id(link.series).is_some());
         }
         for series in &household.series {
             assert!(household.account(series.account).is_some(), "{}", series.name);

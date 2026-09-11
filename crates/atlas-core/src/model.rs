@@ -427,6 +427,29 @@ pub struct TaxRulePack {
     pub rules: Vec<TaxRule>,
 }
 
+/// §5.7 — a movement that actually happened, reconcilable to a planned occurrence.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct ActualTransaction {
+    pub id: TransactionId,
+    pub date: NaiveDate,
+    pub account: AccountId,
+    /// Signed: positive money in, negative money out.
+    pub amount: Money,
+    pub description: String,
+}
+
+/// §16 — links an actual transaction to the planned occurrence it fulfils
+/// (in full or in part).
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct ReconciliationLink {
+    pub series: SeriesId,
+    /// The occurrence's original due date (its identity within the series).
+    pub original_due: NaiveDate,
+    pub transaction: TransactionId,
+    /// How much of the planned amount this transaction fulfils.
+    pub amount: Money,
+}
+
 /// §5.1 — the planning boundary.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Household {
@@ -443,6 +466,8 @@ pub struct Household {
     pub scenarios: Vec<Scenario>,
     pub tax_packs: Vec<TaxRulePack>,
     pub policies: Vec<AccessPolicy>,
+    pub actuals: Vec<ActualTransaction>,
+    pub links: Vec<ReconciliationLink>,
 }
 
 impl Household {
@@ -514,6 +539,63 @@ impl Household {
         self.companies.iter().filter(move |c| c.owners.iter().any(|o| o.person == person))
     }
 
+    pub fn series_by_id(&self, id: SeriesId) -> Option<&EventSeries> {
+        self.series.iter().find(|s| s.id == id)
+    }
+
+    pub fn actual(&self, id: TransactionId) -> Option<&ActualTransaction> {
+        self.actuals.iter().find(|t| t.id == id)
+    }
+
+    /// Reconciliation links for one occurrence.
+    pub fn links_for(&self, series: SeriesId, original_due: NaiveDate) -> impl Iterator<Item = &ReconciliationLink> {
+        self.links.iter().filter(move |l| l.series == series && l.original_due == original_due)
+    }
+
+    /// §16 — expands a series and applies reconciliation and the calendar:
+    /// fulfilled / partially fulfilled from links, due / overdue relative to
+    /// `as_of`. Occurrences due on or before `after` are excluded, except
+    /// those that are still open (overdue) when `after == as_of`.
+    pub fn expand_series(&self, series: &EventSeries, after: NaiveDate, through: NaiveDate) -> Vec<crate::timeline::Occurrence> {
+        use crate::timeline::OccurrenceStatus;
+        let mut occurrences = crate::timeline::expand(series, after, through);
+        for occurrence in &mut occurrences {
+            let fulfilled = self
+                .links_for(series.id, occurrence.original_due)
+                .try_fold(Money::zero(occurrence.amount.currency()), |acc, link| acc.checked_add(link.amount))
+                .unwrap_or(Money::zero(occurrence.amount.currency()));
+            occurrence.fulfilled = fulfilled;
+            if matches!(occurrence.status, OccurrenceStatus::Skipped | OccurrenceStatus::Cancelled) {
+                continue;
+            }
+            occurrence.status = if fulfilled.minor() >= occurrence.amount.expected().minor() && fulfilled.is_positive() {
+                OccurrenceStatus::Fulfilled
+            } else if fulfilled.is_positive() {
+                OccurrenceStatus::PartiallyFulfilled
+            } else if occurrence.due < self.as_of {
+                OccurrenceStatus::Overdue
+            } else if occurrence.due == self.as_of {
+                OccurrenceStatus::Due
+            } else {
+                OccurrenceStatus::Planned
+            };
+        }
+        occurrences
+    }
+
+    /// Every occurrence of every series in the window, chronologically, with
+    /// the given scenario overlay (§18) applied.
+    pub fn expand_all(&self, after: NaiveDate, through: NaiveDate, scenario: Option<ScenarioId>) -> Vec<crate::timeline::Occurrence> {
+        let mut all: Vec<_> = self
+            .series
+            .iter()
+            .filter(|s| s.scenario.is_none() || s.scenario == scenario)
+            .flat_map(|s| self.expand_series(s, after, through))
+            .collect();
+        all.sort_by_key(|o| o.sort_key());
+        all
+    }
+
     /// The next free reservation id.
     pub fn next_reservation_id(&self) -> ReservationId {
         ReservationId::new(self.reservations.iter().map(|r| r.id.raw()).max().unwrap_or(0) + 1)
@@ -547,5 +629,57 @@ impl Household {
         let reservation = self.reservations.iter_mut().find(|r| r.id == id).expect("checked above");
         reservation.released_on = Some(on);
         Ok(balance)
+    }
+}
+
+#[cfg(test)]
+mod reconciliation_tests {
+    use crate::fixtures::{self, ids, pkr};
+    use crate::timeline::OccurrenceStatus;
+    use chrono::NaiveDate;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    #[test]
+    fn statuses_follow_links_and_the_calendar() {
+        let household = fixtures::plan_household();
+        let insurance = household.series_by_id(ids::CAR_INSURANCE).unwrap();
+        // Expanding from before the premium shows it fulfilled by its actual (V012).
+        let occurrences = household.expand_series(insurance, d(2026, 9, 1), d(2027, 9, 30));
+        assert_eq!(occurrences[0].status, OccurrenceStatus::Fulfilled);
+        assert_eq!(occurrences[0].fulfilled, pkr(96_000));
+        assert_eq!(occurrences[0].remaining_expected(), pkr(0));
+        assert!(!occurrences[0].is_live());
+        assert_eq!(occurrences[1].status, OccurrenceStatus::Planned, "next year's premium is planned");
+
+        let receivable = household.series_by_id(ids::CLIENT_RECEIVABLE).unwrap();
+        let occurrences = household.expand_series(receivable, household.as_of, d(2027, 1, 31));
+        assert_eq!(occurrences[0].status, OccurrenceStatus::PartiallyFulfilled);
+        assert_eq!(occurrences[0].remaining_expected(), pkr(200_000));
+        assert_eq!(occurrences[0].settlement, d(2026, 11, 12), "two-day settlement lag (M05)");
+    }
+
+    #[test]
+    fn unpaid_past_occurrences_are_overdue_and_today_is_due() {
+        let mut household = fixtures::plan_household();
+        household.links.clear();
+        let insurance = household.series_by_id(ids::CAR_INSURANCE).unwrap().clone();
+        let occurrences = household.expand_series(&insurance, d(2026, 9, 1), d(2026, 12, 31));
+        assert_eq!(occurrences[0].status, OccurrenceStatus::Overdue);
+        household.as_of = d(2026, 9, 5);
+        let occurrences = household.expand_series(&insurance, d(2026, 9, 1), d(2026, 12, 31));
+        assert_eq!(occurrences[0].status, OccurrenceStatus::Due);
+    }
+
+    #[test]
+    fn expand_all_is_chronological_and_respects_scenarios() {
+        let household = fixtures::plan_household();
+        let all = household.expand_all(household.as_of, d(2027, 1, 31), None);
+        assert!(all.windows(2).all(|w| w[0].sort_key() <= w[1].sort_key()));
+        assert!(all.iter().all(|o| o.scenario.is_none()));
+        let with_car = household.expand_all(household.as_of, d(2027, 1, 31), Some(ids::BUY_CAR));
+        assert_eq!(with_car.len(), all.len() + 1);
     }
 }

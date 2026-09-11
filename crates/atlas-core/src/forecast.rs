@@ -8,7 +8,7 @@ use crate::liquidity::{household_exclusion_reason, household_liquidity};
 use crate::model::{Assumption, Household, Liquidity};
 use crate::money::Money;
 use crate::provenance::{Calc, ProvNode};
-use crate::timeline::{Direction, Occurrence, expand};
+use crate::timeline::{Direction, Occurrence};
 use crate::vocab::{Certainty, MoneyClass, ResultStrength};
 use crate::EngineResult;
 use crate::breach::PathPoint;
@@ -72,12 +72,12 @@ pub fn household_projection(
         if series.scenario.is_some() && series.scenario != scenario {
             continue;
         }
-        let expanded = expand(series, household.as_of, through);
+        let expanded: Vec<Occurrence> = household.expand_series(series, household.as_of, through).into_iter().filter(|o| o.is_live()).collect();
         if expanded.is_empty() {
             continue;
         }
         if let EntityRef::Company(company) = series.entity {
-            let sum = Money::sum(currency, expanded.iter().map(|o| o.amount.expected()))?;
+            let sum = Money::sum(currency, expanded.iter().map(|o| o.remaining_expected()))?;
             match company_counts.iter_mut().find(|(id, _, _)| *id == company) {
                 Some(entry) => {
                     entry.1 += expanded.len();
@@ -105,7 +105,7 @@ pub fn household_projection(
                 let to_included = is_liquid_included(household, to);
                 match (from_included, to_included) {
                     (true, true) => {
-                        let sum = Money::sum(currency, expanded.iter().map(|o| o.amount.expected()))?;
+                        let sum = Money::sum(currency, expanded.iter().map(|o| o.remaining_expected()))?;
                         terms.push(
                             ProvNode::excluded(
                                 format!("{} ({} transfers)", series.name, expanded.len()),
@@ -123,16 +123,16 @@ pub fn household_projection(
             }
         };
 
-        let sum = Money::sum(currency, expanded.iter().map(|o| o.amount.expected()))?;
+        let sum = Money::sum(currency, expanded.iter().map(|o| o.remaining_expected()))?;
         let count = expanded.len();
-        let amounts_equal = expanded.iter().all(|o| o.amount == expanded[0].amount);
+        let amounts_equal = expanded.iter().all(|o| o.remaining_expected() == expanded[0].remaining_expected());
         let label = if count == 1 {
             format!("{} ({}, {})", series.name, expanded[0].due.format("%d %b"), series.certainty.label().to_lowercase())
         } else if amounts_equal {
             format!(
                 "{} ({count} × {}, {})",
                 series.name,
-                expanded[0].amount.expected().format(),
+                expanded[0].remaining_expected().format(),
                 series.certainty.label().to_lowercase()
             )
         } else {
@@ -168,8 +168,12 @@ pub fn household_projection(
         } else {
             total = total.checked_add(sum)?;
         }
+        if expanded.iter().any(|o| o.fulfilled.is_positive()) {
+            let received = Money::sum(currency, expanded.iter().map(|o| o.fulfilled))?;
+            node = node.note(format!("{} already received and reconciled; only the remainder is expected (§16, V012)", received.format()));
+        }
         for occurrence in &expanded {
-            let amount = occurrence.amount.expected();
+            let amount = occurrence.remaining_expected();
             signed_postings.push((occurrence.due, if sign_is_minus { amount.negated() } else { amount }));
         }
         terms.push(node);
@@ -260,9 +264,11 @@ mod tests {
         assert!(projection.unreserved_cash.node().verify_sums().is_empty());
 
         // Salary A: Sep 30, Oct 31, Nov 30 → 3 × 500,000; salary B: 5 × 300,000 (Sep–Jan);
-        // freelance 300,000; receivable 350,000; rent Oct–Jan 4 × 180,000; other Sep 15–Jan 15 5 × 130,000;
-        // school fees Dec 5 250,000; Visa settlement 85,000 out of liquid cash.
-        let expected = 4_400_000 + 1_500_000 + 1_500_000 + 300_000 + 350_000 - 720_000 - 650_000 - 250_000 - 85_000;
+        // freelance 300,000; receivable 350,000 of which 150,000 already received → 200,000 (V012);
+        // rent Oct–Jan 4 × 180,000; other Sep 15–Jan 15 5 × 130,000; school fees Dec 5 250,000;
+        // Visa settlement 85,000 out of liquid cash. Card purchases hit the card, not liquid cash (V009);
+        // the Sep 5 insurance premium is before as_of and fulfilled.
+        let expected = 4_400_000 + 1_500_000 + 1_500_000 + 300_000 + 200_000 - 720_000 - 650_000 - 250_000 - 85_000;
         assert_eq!(projection.conditional_cash.money(), pkr(expected));
         assert_eq!(projection.unreserved_cash.money(), pkr(expected - 1_750_000));
 
@@ -273,11 +279,43 @@ mod tests {
         assert!(text.contains("(excluded) Company Alpha cash flows"));
         // The car down payment belongs to the Buy Car scenario and is absent from the baseline.
         assert!(!text.contains("Car down payment"));
+        assert!(text.contains("150,000 already received"));
+        assert!(!text.contains("Card purchases"), "card spending does not touch liquid cash (V009)");
         assert!(projection.occurrences.windows(2).all(|w| w[0].due <= w[1].due));
         // The path starts at today's liquid cash and ends at the conditional total.
         assert_eq!(projection.path.first().map(|p| p.balance), Some(pkr(4_400_000)));
         assert_eq!(projection.path.last().map(|p| p.balance), Some(projection.conditional_cash.money()));
         assert!(projection.path.windows(2).all(|w| w[0].date < w[1].date));
+    }
+
+    #[test]
+    fn v001_a_transfer_between_included_accounts_conserves_household_cash() {
+        use crate::timeline::{AmountSpec, DateSpec, Direction, EventSeries, Recurrence};
+        let mut household = fixtures::plan_household();
+        let before = household_projection(&household, horizon(), None).unwrap();
+        household.series.push(EventSeries {
+            id: SeriesId::new(99),
+            name: "Move savings".into(),
+            direction: Direction::Transfer { to: ids::SHARED_SAVINGS },
+            amount: AmountSpec::Exact(pkr(500_000)),
+            amount_changes: Vec::new(),
+            exceptions: Vec::new(),
+            recurrence: Recurrence::OneTime { on: DateSpec::Exact(NaiveDate::from_ymd_opt(2026, 10, 3).unwrap()) },
+            settlement_lag_days: 0,
+            availability_lag_days: 0,
+            intraday_order: 10,
+            account: ids::PERSON_B_CHECKING,
+            linked_account: None,
+            entity: EntityRef::Person(ids::PERSON_B),
+            certainty: Certainty::Confirmed,
+            category: "Transfer".into(),
+            tax_treatment: String::new(),
+            scenario: None,
+            notes: String::new(),
+        });
+        let after = household_projection(&household, horizon(), None).unwrap();
+        assert_eq!(after.conditional_cash.money(), before.conditional_cash.money(), "checking → savings is net zero (§15, V001)");
+        assert!(after.conditional_cash.node().render_chain().contains("(excluded) Move savings"));
     }
 
     #[test]
