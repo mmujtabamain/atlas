@@ -55,6 +55,8 @@ define_id!(/// A versioned access policy (§5.13).
     PolicyId, "policy");
 define_id!(/// A goal or proposed decision (§5.12).
     GoalId, "goal");
+define_id!(/// An actual transaction (§5.7).
+    TransactionId, "txn");
 
 /// The legal/economic entity money belongs to or an event is attributed to.
 /// A company is never "just another personal account" (§5.3, §12.6).
