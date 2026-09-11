@@ -578,8 +578,12 @@ pub struct ReconciliationLink {
     pub amount: Money,
 }
 
+/// Bumped whenever a saved household would no longer load as-is.
+pub const SCHEMA_VERSION: u32 = 1;
+
 /// §5.1 — the planning boundary.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Household {
     pub name: String,
     pub base_currency: Currency,
@@ -600,7 +604,43 @@ pub struct Household {
     pub history: Vec<HistoricalPayment>,
 }
 
+impl Default for Household {
+    fn default() -> Self {
+        Household::empty("New household", Currency::USD, NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid"))
+    }
+}
+
 impl Household {
+    /// An empty household: no people, no accounts, nothing assumed (§2.5).
+    pub fn empty(name: &str, base_currency: Currency, as_of: NaiveDate) -> Self {
+        Household {
+            name: name.into(),
+            base_currency,
+            as_of,
+            people: Vec::new(),
+            companies: Vec::new(),
+            accounts: Vec::new(),
+            reservations: Vec::new(),
+            series: Vec::new(),
+            assumptions: Vec::new(),
+            scenarios: Vec::new(),
+            tax_packs: Vec::new(),
+            policies: Vec::new(),
+            actuals: Vec::new(),
+            links: Vec::new(),
+            history: Vec::new(),
+        }
+    }
+
+    /// The whole household as JSON (the persistence layer stores this shape).
+    pub fn to_json(&self) -> serde_json::Result<String> {
+        serde_json::to_string_pretty(self)
+    }
+
+    pub fn from_json(json: &str) -> serde_json::Result<Household> {
+        serde_json::from_str(json)
+    }
+
     pub fn person(&self, id: PersonId) -> Option<&Person> {
         self.people.iter().find(|p| p.id == id)
     }

@@ -14,10 +14,25 @@ use std::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 use thiserror::Error;
 
 /// A currency: a three-letter code plus the number of minor-unit digits.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+/// Serialized as its code (`"USD"`); the minor digits come from
+/// [`Currency::from_code`] on the way back.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Currency {
     code: [u8; 3],
     minor_digits: u8,
+}
+
+impl Serialize for Currency {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code())
+    }
+}
+
+impl<'de> Deserialize<'de> for Currency {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = String::deserialize(deserializer)?;
+        Currency::from_code(&code).ok_or_else(|| serde::de::Error::custom(format!("unknown currency code {code:?}")))
+    }
 }
 
 impl Currency {
@@ -41,6 +56,36 @@ impl Currency {
     pub const USD: Currency = Currency::new("USD", 2);
     /// British pound.
     pub const GBP: Currency = Currency::new("GBP", 2);
+
+    /// The currencies the app can name; the demo defaults to USD.
+    pub const KNOWN: [(&'static str, u8); 12] = [
+        ("USD", 2),
+        ("EUR", 2),
+        ("GBP", 2),
+        ("PKR", 2),
+        ("AED", 2),
+        ("SAR", 2),
+        ("INR", 2),
+        ("CAD", 2),
+        ("AUD", 2),
+        ("CHF", 2),
+        ("JPY", 0),
+        ("KWD", 3),
+    ];
+
+    /// A known currency by its code (case-insensitive), or an unknown code
+    /// with two minor digits when it is three ASCII letters.
+    pub fn from_code(code: &str) -> Option<Currency> {
+        let upper = code.trim().to_ascii_uppercase();
+        if let Some((known, digits)) = Currency::KNOWN.iter().find(|(c, _)| *c == upper) {
+            return Some(Currency::new(known, *digits));
+        }
+        if upper.len() == 3 && upper.bytes().all(|b| b.is_ascii_uppercase()) {
+            let bytes = upper.as_bytes();
+            return Some(Currency { code: [bytes[0], bytes[1], bytes[2]], minor_digits: 2 });
+        }
+        None
+    }
 
     /// The three-letter code.
     pub fn code(&self) -> &str {
@@ -428,6 +473,20 @@ mod tests {
         assert_eq!(Money::parse("", Currency::PKR), Err(MoneyParseError::Empty));
         assert!(matches!(Money::parse("abc", Currency::PKR), Err(MoneyParseError::NotANumber(_))));
         assert_eq!(Money::parse("1.234", Currency::PKR), Err(MoneyParseError::TooManyDecimals { allowed: 2 }));
+    }
+
+    #[test]
+    fn currency_round_trips_as_its_code() {
+        let json = serde_json::to_string(&Currency::PKR).unwrap();
+        assert_eq!(json, "\"PKR\"");
+        let back: Currency = serde_json::from_str("\"usd\"").unwrap();
+        assert_eq!(back, Currency::USD);
+        let jpy: Currency = serde_json::from_str("\"JPY\"").unwrap();
+        assert_eq!(jpy.minor_digits(), 0);
+        assert!(serde_json::from_str::<Currency>("\"12\"").is_err());
+        let money = Money::from_major(5, Currency::EUR);
+        let back: Money = serde_json::from_str(&serde_json::to_string(&money).unwrap()).unwrap();
+        assert_eq!(back, money);
     }
 
     #[test]
