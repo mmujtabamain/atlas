@@ -31,6 +31,7 @@
 pub mod assumptions;
 pub mod authz;
 pub mod breach;
+pub mod decision;
 pub mod fixtures;
 pub mod forecast;
 pub mod ids;

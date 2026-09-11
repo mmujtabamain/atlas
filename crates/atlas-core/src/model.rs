@@ -243,6 +243,16 @@ impl Holder {
             Holder::Company(_) => 0,
         }
     }
+
+    /// The entity a posting on the account is attributed to by default: the
+    /// company, the sole holder, or the household for a joint account.
+    pub fn primary_entity(&self) -> EntityRef {
+        match self {
+            Holder::Company(id) => EntityRef::Company(*id),
+            Holder::Persons(shares) if shares.len() == 1 => EntityRef::Person(shares[0].person),
+            Holder::Persons(_) => EntityRef::Household,
+        }
+    }
 }
 
 /// A fee schedule entry (§7 "Fees").
@@ -594,6 +604,19 @@ pub struct ReconciliationLink {
 /// Bumped whenever a saved household would no longer load as-is.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// §20 — a goal: an amount the household wants available (above its reserve)
+/// by a target date. Deterministic scheduling, not advice.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Goal {
+    pub id: GoalId,
+    pub name: String,
+    pub amount: Money,
+    pub target_on: NaiveDate,
+    /// Lower is more important (§20 competing uses of money).
+    pub priority: u8,
+    pub private_to: Option<PersonId>,
+}
+
 /// §5.1 — the planning boundary.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -619,6 +642,8 @@ pub struct Household {
     pub rules: Vec<crate::rules::Rule>,
     /// §14.7 — how ties between equally specific, equal-priority rules are broken.
     pub rule_tie_break: crate::rules::TieBreak,
+    /// §20 — goals competing for the same money.
+    pub goals: Vec<Goal>,
 }
 
 impl Default for Household {
@@ -648,6 +673,7 @@ impl Household {
             history: Vec::new(),
             rules: Vec::new(),
             rule_tie_break: crate::rules::TieBreak::OldestRule,
+            goals: Vec::new(),
         }
     }
 

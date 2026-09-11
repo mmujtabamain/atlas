@@ -853,6 +853,10 @@ pub fn plan_household() -> Household {
         links,
         rules: demo_rules_for(a),
         rule_tie_break: crate::rules::TieBreak::OldestRule,
+        goals: vec![
+            Goal { id: GoalId::new(1), name: "House down payment".into(), amount: pkr(3_000_000), target_on: d(2027, 6, 30), priority: 1, private_to: None },
+            Goal { id: GoalId::new(2), name: "Education fund".into(), amount: pkr(600_000), target_on: d(2027, 3, 31), priority: 2, private_to: None },
+        ],
         history: vec![
             HistoricalPayment { series: SALARY_A, date: d(2026, 3, 31), amount: pkr(500_000) },
             HistoricalPayment { series: SALARY_A, date: d(2026, 4, 30), amount: pkr(480_000) },
@@ -901,3 +905,88 @@ mod tests {
         assert_eq!(ids.len(), unique.len(), "policy ids are unique");
     }
 }
+
+/// The E03 fixture (plan §E03): one account, three salaries, rent, other spending,
+/// one client receipt and a down payment — used by the forecast and decision tests.
+pub fn e03_household(down_payment: Money, purchase_on: NaiveDate) -> Household {
+    let a = PersonId::new(1);
+    let account = AccountId::new(1);
+    let mk = |id: u32, name: &str, direction, amount, recurrence, order| EventSeries {
+        id: SeriesId::new(id),
+        name: name.into(),
+        direction,
+        amount,
+        amount_changes: Vec::new(),
+        exceptions: Vec::new(),
+        recurrence,
+        settlement_lag_days: 0,
+        availability_lag_days: 0,
+        intraday_order: order,
+        account,
+        linked_account: None,
+        entity: EntityRef::Person(a),
+        certainty: Certainty::Expected,
+        category: String::new(),
+        tax_treatment: String::new(),
+        scenario: None,
+        notes: String::new(),
+    };
+    let range = |low, expected, high| AmountSpec::Range { low: pkr(low), expected: pkr(expected), high: pkr(high) };
+    let clamp = InvalidDayPolicy::ClampToMonthEnd;
+    Household {
+        name: "E03".into(),
+        base_currency: crate::Currency::PKR,
+        as_of: d(2026, 9, 10),
+        people: vec![Person { id: a, name: "Person".into(), role: HouseholdRole::Owner }],
+        companies: Vec::new(),
+        accounts: vec![Account {
+            id: account,
+            name: "Accessible account".into(),
+            institution: "Bank".into(),
+            kind: AccountKind::Checking,
+            holder: Holder::Persons(vec![OwnershipShare { person: a, basis_points: 10_000 }]),
+            currency: crate::Currency::PKR,
+            liquidity: Liquidity::Immediate,
+            minimum_balance: None,
+            transfer_delay_days: 0,
+            fees: Vec::new(),
+            tax_treatment: String::new(),
+            source_of_truth: SourceOfTruth::Manual,
+            last_reconciled: Some(d(2026, 9, 10)),
+            withdrawals_permitted: true,
+            funds_categories: Vec::new(),
+            include_in_household: true,
+            settled_balance: pkr(2_000_000),
+            pending_balance: pkr(0),
+        }],
+        reservations: vec![Reservation {
+            id: ReservationId::new(1),
+            name: "Protected reserve".into(),
+            account,
+            amount: pkr(1_000_000),
+            coverage: Coverage::Disjoint,
+            hardness: Hardness::Hard,
+            purpose: "E03 floor".into(),
+            released_on: None,
+        }],
+        series: vec![
+            mk(1, "Salary", Direction::Income, range(480_000, 500_000, 520_000), Recurrence::LastDayOfMonth { every_n_months: 1, from: d(2026, 9, 1), until: Until::Date(d(2026, 11, 30)) }, 20),
+            mk(2, "Rent", Direction::Expense, range(180_000, 190_000, 200_000), Recurrence::Monthly { every_n_months: 1, day: 1, from: d(2026, 10, 1), until: Until::Date(d(2027, 1, 1)), invalid_day: clamp }, 10),
+            mk(3, "Other spending", Direction::Expense, range(120_000, 130_000, 140_000), Recurrence::Monthly { every_n_months: 1, day: 15, from: d(2026, 10, 15), until: Until::Date(d(2027, 1, 15)), invalid_day: clamp }, 10),
+            mk(4, "Client receipt", Direction::Income, range(300_000, 350_000, 400_000), Recurrence::OneTime { on: DateSpec::Range { earliest: d(2026, 11, 10), expected: d(2026, 11, 25), latest: d(2026, 12, 10) } }, 20),
+            // The down payment follows every other event on its date (E03 purchase ordering).
+            mk(5, "Down payment", Direction::Expense, AmountSpec::Exact(down_payment), Recurrence::OneTime { on: DateSpec::Exact(purchase_on) }, 30),
+        ],
+        assumptions: Vec::new(),
+        scenarios: Vec::new(),
+        tax_packs: Vec::new(),
+        policies: vec![AccessPolicy::preset(PolicyId::new(1), ObjectRef::Account(account), vec![a], VisibilityPreset::FullyShared, CalculationAccess::Full, d(2026, 9, 1), d(2026, 9, 1).and_hms_opt(0, 0, 0).unwrap())],
+        actuals: Vec::new(),
+        links: Vec::new(),
+        history: Vec::new(),
+        rules: Vec::new(),
+        rule_tie_break: crate::rules::TieBreak::OldestRule,
+        goals: Vec::new(),
+    }
+}
+
