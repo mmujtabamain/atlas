@@ -83,6 +83,10 @@ endpoint when `DEVBENCH_NOTIFY_URL` / `DEVBENCH_NOTIFY_TOKEN` are set, and to th
 
 ## 3. Milestones and tasks
 
+**Status (11 Sep 2026): M0–M12 delivered** on branch `devbench/atlas-financer`
+(https://github.com/mmujtabamain/atlas/pull/1). `docs/handover.md` summarises what each
+milestone shipped; the DevBench board tasks carry the per-task notes and screenshots.
+
 Each milestone ships with unit tests in `atlas-core`, at least one gpui-kit UI test in
 `atlas-app`, logging around its engine calls, and headless screenshots posted to the chat.
 Acceptance ids (E0x, V0xx) refer to `plan.md` §44–§45.

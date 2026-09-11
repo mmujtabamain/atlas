@@ -17,14 +17,16 @@ data model, not a later feature (§7.1).
 | `crates/atlas-store` | Persistence: one SQLite file per household, backups, lock file. |
 | `crates/atlas-app` | The gpui-kit window: shell, screens, the explain sheet, data entry, failure alerting. Binary `atlas`. |
 | `docs/ui-implementation-plan.md` | Milestones M0–M11 and their tasks (mirrored on the DevBench board). |
-| `scripts/shoot.sh` | Headless screenshots of every screen (Linux box). |
+| `scripts/shoot.sh` | Headless screenshots of every screen, light and dark, plus dialogs (Linux box). |
+| `scripts/walkthrough.sh` | The captioned walkthrough video (`shots/walkthrough.mp4`) from a gpui-shot step sequence. |
+| `docs/handover.md` | What was built per milestone, how to run and test, known limits. |
 | `plan.md` | The requirements document this repo implements. |
 
 ## Build and run
 
 ```bash
 cargo run --bin atlas -- --theme dark --screen household --viewer a
-cargo test                      # engine unit tests + app UI integration tests
+cargo test                      # engine unit tests, E01–E08 examples, store, app UI integration tests
 ```
 
 Options: `--theme light|dark`, `--size WxH`, `--screen <section>` (see `atlas --help`),

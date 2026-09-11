@@ -11,3 +11,5 @@
 # Headless screenshots produced by scripts/shoot.sh; shared through DevBench media instead.
 /shots/*.png
 /shots/*.log
+/shots/*.mp4
+/shots/walkthrough/
