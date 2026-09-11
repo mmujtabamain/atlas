@@ -431,6 +431,19 @@ pub struct Scenario {
     pub name: String,
     pub description: String,
     pub private_to: Option<PersonId>,
+    /// §18.2 — explicit changes of the overlay.
+    #[serde(default)]
+    pub changes: Vec<crate::scenario::ScenarioChange>,
+    /// §18.3 — scenarios this one is composed of.
+    #[serde(default)]
+    pub composed_of: Vec<ScenarioId>,
+}
+
+impl Scenario {
+    /// Whether the scenario changes anything beyond the objects tagged with it.
+    pub fn has_overlay(&self) -> bool {
+        !self.changes.is_empty() || !self.composed_of.is_empty()
+    }
 }
 
 /// §12.1 — how a threshold in a tax rule is measured (§14.3).
@@ -780,6 +793,14 @@ impl Household {
     /// Every occurrence of every series in the window, chronologically, with
     /// the given scenario overlay (§18) applied.
     pub fn expand_all(&self, after: NaiveDate, through: NaiveDate, scenario: Option<ScenarioId>) -> Vec<crate::timeline::Occurrence> {
+        if let Some(id) = scenario
+            && self.scenario(id).is_some_and(|s| s.has_overlay())
+        {
+            match self.apply_scenarios(&[id]) {
+                Ok(overlaid) => return overlaid.expand_all(after, through, scenario),
+                Err(err) => log::warn!("scenario {id} overlay not applied: {err}"),
+            }
+        }
         let mut all: Vec<_> = self
             .series
             .iter()

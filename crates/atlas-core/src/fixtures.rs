@@ -68,6 +68,7 @@ pub mod ids {
 
     pub const BUY_CAR: ScenarioId = ScenarioId::new(1);
     pub const LEAVE_JOB: ScenarioId = ScenarioId::new(2);
+    pub const LEAVE_JOB_AND_CAR: ScenarioId = ScenarioId::new(3);
 
     pub const RULE_FOREIGN_FEE: RuleId = RuleId::new(1);
     pub const RULE_FOREIGN_FEE_WAIVER: RuleId = RuleId::new(2);
@@ -670,7 +671,7 @@ pub fn plan_household() -> Household {
         },
         Assumption {
             id: AssumptionId::new(8),
-            text: "Person A leaves Company Alpha at the end of March 2027.".into(),
+            text: "Person A leaves Company Alpha at the end of September 2026; no severance or notice-period pay is modelled.".into(),
             certainty: Certainty::ScenarioOnly,
             source: AssumptionSource::Scenario(LEAVE_JOB),
             accepted_on: None,
@@ -686,12 +687,30 @@ pub fn plan_household() -> Household {
             name: "Buy car".into(),
             description: "8,000,000 car, purchase window Oct–Mar, down payment 2,000,000–5,000,000, keep the 1,000,000 household reserve (§19).".into(),
             private_to: None,
+            changes: Vec::new(),
+            composed_of: Vec::new(),
         },
         Scenario {
             id: LEAVE_JOB,
             name: "Leave job".into(),
-            description: "Person A resigns from Company Alpha at the end of March 2027 (§18.5, private).".into(),
+            description: "Person A resigns from Company Alpha; the last salary is paid on 30 Sep 2026 and a replacement is hired (§18.5, private).".into(),
             private_to: Some(a),
+            changes: vec![
+                crate::scenario::ScenarioChange::EndSeries { series: SALARY_A, last_on: d(2026, 9, 30), reason: "resignation effective end of September 2026".into() },
+                crate::scenario::ScenarioChange::AddEmployment {
+                    company: ALPHA,
+                    employee: Employee { name: "Replacement hire".into(), person: None, monthly_gross: pkr(400_000), start: d(2026, 10, 1), end: None },
+                },
+            ],
+            composed_of: Vec::new(),
+        },
+        Scenario {
+            id: LEAVE_JOB_AND_CAR,
+            name: "Leave job + buy car".into(),
+            description: "Composition (§18.3): both overlays applied together; compatible because they touch different series.".into(),
+            private_to: Some(a),
+            changes: Vec::new(),
+            composed_of: vec![LEAVE_JOB, BUY_CAR],
         },
     ];
 
@@ -812,6 +831,7 @@ pub fn plan_household() -> Household {
         beta_policy,
         preset_policy(11, ObjectRef::Scenario(BUY_CAR), vec![a, b], VisibilityPreset::FullyShared, CalculationAccess::Full),
         preset_policy(12, ObjectRef::Scenario(LEAVE_JOB), vec![a], VisibilityPreset::Private, CalculationAccess::Excluded),
+        preset_policy(16, ObjectRef::Scenario(LEAVE_JOB_AND_CAR), vec![a], VisibilityPreset::Private, CalculationAccess::Excluded),
         preset_policy(13, ObjectRef::Person(a), vec![a], VisibilityPreset::FullyShared, CalculationAccess::Full),
         preset_policy(14, ObjectRef::Person(b), vec![b], VisibilityPreset::FullyShared, CalculationAccess::Full),
     ];

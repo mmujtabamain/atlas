@@ -295,7 +295,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(household.disclosure_for(viewer, ObjectRef::Company(company)), Disclosure::Full);
-        let scenario = household.add_scenario(Scenario { id: household.next_scenario_id(), name: "Private plan".into(), description: String::new(), private_to: Some(me) }, me);
+        let scenario = household.add_scenario(Scenario { id: household.next_scenario_id(), name: "Private plan".into(), description: String::new(), private_to: Some(me), changes: Vec::new(), composed_of: Vec::new() }, me);
         assert_eq!(household.disclosure_for(viewer, ObjectRef::Scenario(scenario)), Disclosure::Full);
         assert_eq!(household.policies.len(), 4);
     }
