@@ -5,6 +5,7 @@
 //! plan cares most about — use the warning variant, and only `Unresolved` is
 //! danger.
 
+use atlas_core::model::Hardness;
 use atlas_core::vocab::{Certainty, MoneyClass, ResultStrength};
 use atlas_core::Disclosure;
 use gpui_kit::component::{Sizable as _, tag::Tag};
@@ -48,5 +49,13 @@ pub fn disclosure_tag(disclosure: Disclosure) -> Tag {
         Disclosure::BalanceOnly => neutral("balance only"),
         Disclosure::Aggregate => caution("aggregate only"),
         Disclosure::Hidden => caution("hidden"),
+    }
+}
+
+/// §17 hard constraint vs user-relaxable preference.
+pub fn hardness_tag(hardness: Hardness) -> Tag {
+    match hardness {
+        Hardness::Hard => neutral("Hard constraint"),
+        Hardness::SoftUserRelaxable => neutral("User-relaxable"),
     }
 }

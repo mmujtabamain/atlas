@@ -6,6 +6,7 @@ pub mod accounts;
 pub mod companies;
 pub mod entities;
 pub mod household;
+pub mod liquidity;
 pub mod people;
 pub mod placeholder;
 pub mod settings;
@@ -156,8 +157,7 @@ impl Section {
     pub fn pending_milestone(self) -> Option<Milestone> {
         let m = |number, task_id, title| Some(Milestone { number, task_id, title });
         match self {
-            Section::Household | Section::Settings | Section::People | Section::Companies | Section::Accounts => None,
-            Section::Liquidity => m(2, 2744, "Liquidity & reservations (E01, E08)"),
+            Section::Household | Section::Settings | Section::People | Section::Companies | Section::Accounts | Section::Liquidity => None,
             Section::Timeline => m(3, 2750, "Timeline & scheduling engine"),
             Section::Projections => m(4, 2757, "Forecast & projections"),
             Section::Assumptions => m(5, 2764, "Assumptions, uncertainty & sensitivity"),
@@ -175,7 +175,6 @@ impl Section {
             Section::People => &["Roles, owned and co-owned accounts with shares", "Income sources and companies per person"],
             Section::Companies => &["Separate company ledger: accounts, employees, payroll", "Constraints: payroll reserve, working-capital floor", "Extractable cash with the §8.5/M27 legal-capacity caveat"],
             Section::Accounts => &["The full §7 property table", "Account detail with the balance-definition strip"],
-            Section::Liquidity => &["Total assets, liabilities, net worth, liquid, reserved, free — per boundary", "Nested vs disjoint earmarks; negative headroom kept visible", "Reservation editor"],
             Section::Timeline => &["Chronological occurrences with due / posting / settlement / availability", "Series editor, exceptions, effective-dated changes", "Planned vs actual reconciliation"],
             Section::Projections => &["Per-boundary chronological forecast and lowest balance", "The §2.1 chain and the assumptions panel", "Conservative / expected / optimistic as scenario-tested paths"],
             Section::Assumptions => &["Assumption register with kinds, sources, acceptance and freshness", "Ranges and historically derived assumptions with their formula", "One-at-a-time sensitivity with the joint caveat"],
@@ -184,7 +183,7 @@ impl Section {
             Section::Scenarios => &["Overlays over the baseline and their composition", "Side-by-side comparison metrics"],
             Section::Decisions => &["Funding optimizer with gross-up to net (E02) and §13.5 strategy comparison", "Affordability grid (E03) with conditional result", "Goal trade-offs and the recommendation contract"],
             Section::Privacy => &["Viewer switcher and per-object access policies", "Provenance projection and difference-attack suppression", "Privacy audit log"],
-            Section::Household | Section::Settings => &[],
+            Section::Household | Section::Settings | Section::Liquidity => &[],
         }
     }
 }
