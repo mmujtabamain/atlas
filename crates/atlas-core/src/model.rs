@@ -11,7 +11,7 @@ use crate::ids::*;
 use crate::money::{Currency, Money};
 use crate::timeline::EventSeries;
 use crate::vocab::Certainty;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 /// §5.15 — household-level roles are conveniences for grants, not policy.
@@ -451,19 +451,97 @@ impl ThresholdBasis {
     }
 }
 
-/// §12.1 — one effective-dated tax rule (M6 evaluates them).
+/// M23 — one marginal bracket: `rate` applies to the part of the base between
+/// `lower` and `upper` (`None` = unbounded top bracket).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Bracket {
+    pub lower: Money,
+    pub upper: Option<Money>,
+    pub rate_basis_points: u32,
+}
+
+/// §12.3 — when the tax cash actually moves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum TaxTiming {
+    /// Paid on the transaction date.
+    Immediate,
+    /// Withheld at source on the transaction date; `creditable` at assessment.
+    WithheldAtSource { creditable: bool },
+    /// Incurred over a calendar year, payable on `month`/`day` of the next year.
+    AnnualAssessment { due_month: u8, due_day: u8 },
+}
+
+impl TaxTiming {
+    pub fn label(self) -> String {
+        match self {
+            TaxTiming::Immediate => "paid immediately".into(),
+            TaxTiming::WithheldAtSource { creditable: true } => "withheld at source, creditable at assessment".into(),
+            TaxTiming::WithheldAtSource { creditable: false } => "withheld at source, final (not creditable)".into(),
+            TaxTiming::AnnualAssessment { due_month, due_day } => format!("accrued over the calendar year, payable {due_day}/{due_month} of the next year"),
+        }
+    }
+}
+
+/// §12.1 — what a rule computes.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum TaxKind {
+    /// A flat rate on the full transaction amount once it exceeds a threshold
+    /// measured on `basis` (§14.3: full amount vs excess must be explicit).
+    FlatAboveThreshold { rate_basis_points: u32, threshold: Money, basis: ThresholdBasis, on_excess_only: bool },
+    /// A flat percentage of every matching transaction.
+    FlatRate { rate_basis_points: u32 },
+    /// Marginal brackets on the entity's annual taxable base (M23).
+    AnnualBrackets { brackets: Vec<Bracket> },
+}
+
+/// §12.1 — one effective-dated tax rule.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct TaxRule {
     pub id: TaxRuleId,
     pub name: String,
     pub tax_type: String,
+    /// Series categories the rule applies to (e.g. "Salary", "Cash withdrawal").
+    pub categories: Vec<String>,
     pub scope: String,
-    pub rate_basis_points: u32,
-    pub threshold: Option<Money>,
-    pub threshold_basis: ThresholdBasis,
+    pub kind: TaxKind,
+    pub timing: TaxTiming,
     pub effective_from: NaiveDate,
     pub effective_to: Option<NaiveDate>,
+    /// Official source / reference metadata, or the fictitious-example note.
+    pub source: String,
     pub explanation: String,
+}
+
+impl TaxRule {
+    pub fn is_effective_on(&self, date: NaiveDate) -> bool {
+        date >= self.effective_from && self.effective_to.is_none_or(|end| date <= end)
+    }
+
+    pub fn applies_to_category(&self, category: &str) -> bool {
+        self.categories.iter().any(|c| c.eq_ignore_ascii_case(category))
+    }
+
+    pub fn describe_kind(&self) -> String {
+        match &self.kind {
+            TaxKind::FlatAboveThreshold { rate_basis_points, threshold, basis, on_excess_only } => format!(
+                "{}.{:02}% on the {} once a transaction exceeds {} ({})",
+                rate_basis_points / 100,
+                rate_basis_points % 100,
+                if *on_excess_only { "excess" } else { "full amount" },
+                threshold.format(),
+                basis.label()
+            ),
+            TaxKind::FlatRate { rate_basis_points } => format!("{}.{:02}% of every matching transaction", rate_basis_points / 100, rate_basis_points % 100),
+            TaxKind::AnnualBrackets { brackets } => brackets
+                .iter()
+                .map(|b| match b.upper {
+                    Some(upper) => format!("{}% from {} to {}", b.rate_basis_points / 100, b.lower.format(), upper.format()),
+                    None => format!("{}% above {}", b.rate_basis_points / 100, b.lower.format()),
+                })
+                .collect::<Vec<_>>()
+                .join(" · "),
+        }
+    }
 }
 
 /// §12.1 / §25 — a versioned pack of tax rules.
@@ -664,6 +742,38 @@ impl Household {
             .collect();
         all.sort_by_key(|o| o.sort_key());
         all
+    }
+
+    /// The next free tax rule id across every pack.
+    pub fn next_tax_rule_id(&self) -> TaxRuleId {
+        TaxRuleId::new(self.tax_packs.iter().flat_map(|p| p.rules.iter()).map(|r| r.id.raw()).max().unwrap_or(0) + 1)
+    }
+
+    /// Every series category in use, sorted (for rule scopes).
+    pub fn categories(&self) -> Vec<String> {
+        let mut categories: Vec<String> = self.series.iter().map(|s| s.category.clone()).collect();
+        categories.sort();
+        categories.dedup();
+        categories
+    }
+
+    /// §12.2 — adds a user-authored rule to the unverified user pack of its
+    /// effective year, creating the pack if needed. User rules never claim
+    /// verification (§12.7).
+    pub fn add_user_tax_rule(&mut self, rule: TaxRule) -> String {
+        let year = rule.effective_from.year();
+        let name = format!("USER-DEFINED-{year}-v1");
+        match self.tax_packs.iter_mut().find(|p| p.name == name) {
+            Some(pack) => pack.rules.push(rule),
+            None => self.tax_packs.push(TaxRulePack {
+                name: name.clone(),
+                version: "v1".into(),
+                jurisdiction: "User-authored — unverified until an official source is attached (§12.7)".into(),
+                verified: false,
+                rules: vec![rule],
+            }),
+        }
+        name
     }
 
     /// The next free reservation id.

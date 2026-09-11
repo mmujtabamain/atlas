@@ -35,6 +35,7 @@ pub mod ids {
     pub const ALPHA_OPERATING: AccountId = AccountId::new(6);
     pub const ALPHA_PAYROLL: AccountId = AccountId::new(7);
     pub const BETA_OPERATING: AccountId = AccountId::new(8);
+    pub const CASH_WALLET: AccountId = AccountId::new(9);
     /// Kept for the E01 test name; the account is the shared savings account.
     pub const PERSON_A_SAVINGS: AccountId = PERSON_A_CURRENT;
 
@@ -58,6 +59,8 @@ pub mod ids {
     pub const VISA_SETTLEMENT: SeriesId = SeriesId::new(11);
     pub const CAR_INSURANCE: SeriesId = SeriesId::new(12);
     pub const CARD_PURCHASES: SeriesId = SeriesId::new(13);
+    pub const ATM_WITHDRAWAL: SeriesId = SeriesId::new(14);
+    pub const FOREIGN_SUBSCRIPTION: SeriesId = SeriesId::new(15);
 
     pub const TXN_INSURANCE: TransactionId = TransactionId::new(1);
     pub const TXN_RECEIVABLE_PART: TransactionId = TransactionId::new(2);
@@ -299,6 +302,9 @@ pub fn plan_household() -> Household {
     );
     beta_operating.include_in_household = false;
 
+    let mut cash_wallet = account(CASH_WALLET, "Cash wallet", "—", AccountKind::CashWallet, only(a), pkr(0), Liquidity::Immediate, SourceOfTruth::Manual);
+    cash_wallet.tax_treatment = "None".into();
+
     let accounts = vec![
         account(
             SHARED_SAVINGS,
@@ -326,6 +332,7 @@ pub fn plan_household() -> Household {
         alpha_operating,
         alpha_payroll,
         beta_operating,
+        cash_wallet,
     ];
 
     let reservations = vec![
@@ -498,6 +505,28 @@ pub fn plan_household() -> Household {
             "Insurance",
         ),
         card_purchases,
+        series(
+            ATM_WITHDRAWAL,
+            "ATM cash withdrawal",
+            Direction::Transfer { to: CASH_WALLET },
+            AmountSpec::Exact(pkr(80_000)),
+            Recurrence::Monthly { every_n_months: 1, day: 10, from: d(2026, 9, 10), until: Until::Indefinite, invalid_day: InvalidDayPolicy::ClampToMonthEnd },
+            PERSON_A_CURRENT,
+            EntityRef::Person(a),
+            Certainty::UserEstimated,
+            "Cash withdrawal",
+        ),
+        series(
+            FOREIGN_SUBSCRIPTION,
+            "Foreign software subscription (USD, on the card)",
+            Direction::Expense,
+            AmountSpec::Exact(pkr(12_000)),
+            Recurrence::Monthly { every_n_months: 1, day: 3, from: d(2026, 10, 3), until: Until::Indefinite, invalid_day: InvalidDayPolicy::ClampToMonthEnd },
+            PERSON_A_VISA,
+            EntityRef::Person(a),
+            Certainty::Contractual,
+            "Foreign card",
+        ),
     ];
 
     // §5.7 / §16 — actual transactions and their reconciliation links.
@@ -625,38 +654,86 @@ pub fn plan_household() -> Household {
         },
     ];
 
-    let tax_packs = vec![TaxRulePack {
-        name: "DEMO-JURISDICTION-2026-v2".into(),
-        version: "v2".into(),
-        jurisdiction: "DEMO — fictitious rule-engine examples, not any country's law (§14.3)".into(),
-        verified: false,
-        rules: vec![
+    // §12 — fictitious DEMO rule packs: the 2026 pack and a 2027 successor whose
+    // only change is the withholding rate, so §25 version pinning is visible.
+    let demo_rules = |year: i32, withholding_bp: u32| {
+        vec![
             TaxRule {
-                id: TaxRuleId::new(1),
+                id: TaxRuleId::new(if year == 2026 { 1 } else { 11 }),
                 name: "DEMO cash withdrawal withholding".into(),
                 tax_type: "Withholding on cash withdrawal".into(),
-                scope: "Personal bank accounts at Bank A".into(),
-                rate_basis_points: 60,
-                threshold: Some(pkr(50_000)),
-                threshold_basis: ThresholdBasis::PerTransaction,
-                effective_from: d(2026, 7, 1),
-                effective_to: Some(d(2027, 6, 30)),
-                explanation: "0.6% on the full withdrawal once it exceeds 50,000; creditable at assessment (DEMO semantics).".into(),
+                categories: vec!["Cash withdrawal".into()],
+                scope: "Personal bank accounts at Bank A and Bank B".into(),
+                kind: TaxKind::FlatAboveThreshold { rate_basis_points: 60, threshold: pkr(50_000), basis: ThresholdBasis::PerTransaction, on_excess_only: false },
+                timing: TaxTiming::WithheldAtSource { creditable: true },
+                effective_from: d(year, 1, 1),
+                effective_to: Some(d(year, 12, 31)),
+                source: "§14.3 rule-engine example — fictitious, not any country's law".into(),
+                explanation: "0.6% on the full withdrawal once a single withdrawal exceeds 50,000; creditable at assessment.".into(),
             },
             TaxRule {
-                id: TaxRuleId::new(2),
+                id: TaxRuleId::new(if year == 2026 { 2 } else { 12 }),
                 name: "DEMO foreign card tax".into(),
                 tax_type: "Card transaction tax".into(),
+                categories: vec!["Foreign card".into()],
                 scope: "Credit-card payments in a currency other than the account base currency".into(),
-                rate_basis_points: 500,
-                threshold: None,
-                threshold_basis: ThresholdBasis::PerTransaction,
-                effective_from: d(2026, 7, 1),
-                effective_to: None,
-                explanation: "5% tax event plus a separate 1.5% bank fee event (§14.4).".into(),
+                kind: TaxKind::FlatRate { rate_basis_points: 500 },
+                timing: TaxTiming::Immediate,
+                effective_from: d(year, 1, 1),
+                effective_to: Some(d(year, 12, 31)),
+                source: "§14.4 rule-engine example — fictitious".into(),
+                explanation: "5% tax event on the card; the bank's 1.5% fee is a separate fee event (M7).".into(),
             },
-        ],
-    }];
+            TaxRule {
+                id: TaxRuleId::new(if year == 2026 { 3 } else { 13 }),
+                name: "DEMO salary withholding".into(),
+                tax_type: "Income tax withheld at source".into(),
+                categories: vec!["Salary".into()],
+                scope: "Salaries paid to persons".into(),
+                kind: TaxKind::FlatRate { rate_basis_points: withholding_bp },
+                timing: TaxTiming::WithheldAtSource { creditable: true },
+                effective_from: d(year, 1, 1),
+                effective_to: Some(d(year, 12, 31)),
+                source: "fictitious".into(),
+                explanation: format!("{}% of gross salary withheld by the employer and credited against the annual assessment (M24).", withholding_bp / 100),
+            },
+            TaxRule {
+                id: TaxRuleId::new(if year == 2026 { 4 } else { 14 }),
+                name: "DEMO annual income tax".into(),
+                tax_type: "Income tax (annual assessment)".into(),
+                categories: vec!["Salary".into(), "Freelance".into(), "Receivable".into()],
+                scope: "Taxable income of persons within the forecast window".into(),
+                kind: TaxKind::AnnualBrackets {
+                    brackets: vec![
+                        Bracket { lower: pkr(0), upper: Some(pkr(600_000)), rate_basis_points: 0 },
+                        Bracket { lower: pkr(600_000), upper: Some(pkr(2_400_000)), rate_basis_points: 1_000 },
+                        Bracket { lower: pkr(2_400_000), upper: None, rate_basis_points: 3_000 },
+                    ],
+                },
+                timing: TaxTiming::AnnualAssessment { due_month: 9, due_day: 30 },
+                effective_from: d(year, 1, 1),
+                effective_to: Some(d(year, 12, 31)),
+                source: "fictitious brackets in the shape of M23".into(),
+                explanation: "Marginal brackets on the year's taxable income inside the window; creditable withholding is deducted at assessment; the balance is payable 30 Sep of the following year (§12.3).".into(),
+            },
+        ]
+    };
+    let tax_packs = vec![
+        TaxRulePack {
+            name: "DEMO-JURISDICTION-2026-v2".into(),
+            version: "v2".into(),
+            jurisdiction: "DEMO — fictitious rule-engine examples, not any country's law (§14.3)".into(),
+            verified: false,
+            rules: demo_rules(2026, 700),
+        },
+        TaxRulePack {
+            name: "DEMO-JURISDICTION-2027-v1".into(),
+            version: "v1".into(),
+            jurisdiction: "DEMO — fictitious, effective 2027 (§25: a 2027 forecast must not silently use 2026 rules)".into(),
+            verified: false,
+            rules: demo_rules(2027, 800),
+        },
+    ];
 
     let mut private_account_policy = preset_policy(
         2,
@@ -689,6 +766,7 @@ pub fn plan_household() -> Household {
         preset_policy(6, ObjectRef::Account(ALPHA_OPERATING), vec![a], VisibilityPreset::SharedSummary, CalculationAccess::Excluded),
         preset_policy(7, ObjectRef::Account(ALPHA_PAYROLL), vec![a], VisibilityPreset::Private, CalculationAccess::Excluded),
         preset_policy(8, ObjectRef::Account(BETA_OPERATING), vec![a], VisibilityPreset::SharedSummary, CalculationAccess::Excluded),
+        preset_policy(15, ObjectRef::Account(CASH_WALLET), vec![a], VisibilityPreset::SharedBalance, CalculationAccess::Full),
         alpha_policy,
         beta_policy,
         preset_policy(11, ObjectRef::Scenario(BUY_CAR), vec![a, b], VisibilityPreset::FullyShared, CalculationAccess::Full),

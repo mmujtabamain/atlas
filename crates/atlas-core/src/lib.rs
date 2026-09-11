@@ -39,6 +39,7 @@ pub mod model;
 pub mod money;
 pub mod provenance;
 pub mod sensitivity;
+pub mod tax;
 pub mod timeline;
 pub mod vocab;
 
