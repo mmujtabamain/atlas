@@ -11,6 +11,7 @@ use crate::provenance::{Calc, ProvNode};
 use crate::timeline::{Direction, Occurrence, expand};
 use crate::vocab::{Certainty, MoneyClass, ResultStrength};
 use crate::EngineResult;
+use crate::breach::PathPoint;
 use chrono::NaiveDate;
 
 /// A household-level conditional projection with its full chain.
@@ -25,6 +26,9 @@ pub struct Projection {
     pub unreserved_cash: Calc<Money>,
     /// Every occurrence that entered the chain, chronologically.
     pub occurrences: Vec<Occurrence>,
+    /// The household liquid-cash path: the balance after each date's
+    /// postings, starting from `as_of` (M13 input; M4 refines per account).
+    pub path: Vec<PathPoint>,
     /// The assumptions the chain depends on (§10.2).
     pub assumptions: Vec<Assumption>,
 }
@@ -60,6 +64,7 @@ pub fn household_projection(
     ];
     let mut total = liquidity.liquid_cash.money();
     let mut occurrences: Vec<Occurrence> = Vec::new();
+    let mut signed_postings: Vec<(NaiveDate, Money)> = Vec::new();
     let mut included_series: Vec<SeriesId> = Vec::new();
     let mut company_counts: Vec<(CompanyId, usize, Money)> = Vec::new();
 
@@ -163,6 +168,10 @@ pub fn household_projection(
         } else {
             total = total.checked_add(sum)?;
         }
+        for occurrence in &expanded {
+            let amount = occurrence.amount.expected();
+            signed_postings.push((occurrence.due, if sign_is_minus { amount.negated() } else { amount }));
+        }
         terms.push(node);
         included_series.push(series.id);
         occurrences.extend(expanded);
@@ -180,6 +189,16 @@ pub fn household_projection(
     }
 
     occurrences.sort_by_key(|o| (o.due, o.series));
+    signed_postings.sort_by_key(|(date, _)| *date);
+    let mut path = vec![PathPoint { date: household.as_of, balance: liquidity.liquid_cash.money() }];
+    let mut running = liquidity.liquid_cash.money();
+    for (date, amount) in signed_postings {
+        running = running.checked_add(amount)?;
+        match path.last_mut() {
+            Some(last) if last.date == date => last.balance = running,
+            _ => path.push(PathPoint { date, balance: running }),
+        }
+    }
 
     let conditional = ProvNode::sum("Conditional projected cash", total, terms)
         .money_class(MoneyClass::ConditionalFuture)
@@ -219,6 +238,7 @@ pub fn household_projection(
         conditional_cash: Calc::new(total, conditional),
         unreserved_cash: Calc::new(unreserved_total, unreserved),
         occurrences,
+        path,
         assumptions,
     })
 }
@@ -254,6 +274,10 @@ mod tests {
         // The car down payment belongs to the Buy Car scenario and is absent from the baseline.
         assert!(!text.contains("Car down payment"));
         assert!(projection.occurrences.windows(2).all(|w| w[0].due <= w[1].due));
+        // The path starts at today's liquid cash and ends at the conditional total.
+        assert_eq!(projection.path.first().map(|p| p.balance), Some(pkr(4_400_000)));
+        assert_eq!(projection.path.last().map(|p| p.balance), Some(projection.conditional_cash.money()));
+        assert!(projection.path.windows(2).all(|w| w[0].date < w[1].date));
     }
 
     #[test]

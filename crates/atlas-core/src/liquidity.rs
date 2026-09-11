@@ -530,3 +530,249 @@ mod entity_tests {
         assert!(a.node().verify_sums().is_empty() && b.node().verify_sums().is_empty());
     }
 }
+
+// ----- boundaries (§11.2) --------------------------------------------------------------
+
+/// A calculation boundary: what "cash" is being asked about (§11.2).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Boundary {
+    Household,
+    Person(PersonId),
+    Company(CompanyId),
+    Account(AccountId),
+}
+
+impl Boundary {
+    pub fn label(self, household: &Household) -> String {
+        match self {
+            Boundary::Household => "Household".to_string(),
+            Boundary::Person(id) => household.entity_name(EntityRef::Person(id)),
+            Boundary::Company(id) => household.entity_name(EntityRef::Company(id)),
+            Boundary::Account(id) => household.account(id).map(|a| a.name.clone()).unwrap_or_else(|| id.to_string()),
+        }
+    }
+
+    pub fn slug(self) -> String {
+        match self {
+            Boundary::Household => "household".into(),
+            Boundary::Person(id) => format!("person-{}", id.raw()),
+            Boundary::Company(id) => format!("company-{}", id.raw()),
+            Boundary::Account(id) => format!("account-{}", id.raw()),
+        }
+    }
+}
+
+/// The §6 figures of one boundary plus its hard floor and settled cash, for
+/// headroom and runway analysis.
+#[derive(Clone, Debug)]
+pub struct BoundaryLiquidity {
+    pub boundary: Boundary,
+    pub figures: Vec<(String, Calc<Money>)>,
+    /// Settled cash the floor applies to.
+    pub settled: Money,
+    /// Hard earmarks and uncovered bank minimums (§17, soft ones excluded).
+    pub hard_floor: Calc<Money>,
+    /// Signed headroom over the hard floor (§6.6).
+    pub headroom: Calc<Money>,
+    /// Accounts whose reservations belong to the boundary.
+    pub accounts: Vec<AccountId>,
+}
+
+fn hard_floor_of(household: &Household, accounts: &[AccountId], share_of: impl Fn(&Account) -> u32) -> EngineResult<Calc<Money>> {
+    let currency = household.base_currency;
+    let mut total = Money::zero(currency);
+    let mut terms = Vec::new();
+    for id in accounts {
+        let Some(account) = household.account(*id) else { continue };
+        let share = share_of(account);
+        let active: Vec<_> = household.active_reservations_on(*id).collect();
+        for reservation in &active {
+            if reservation.hardness != crate::model::Hardness::Hard || matches!(reservation.coverage, Coverage::NestedIn(_)) {
+                continue;
+            }
+            let amount = reservation.amount.share_basis_points(share);
+            total = total.checked_add(amount)?;
+            terms.push(
+                ProvNode::input(format!("{} ({})", reservation.name, account.name), amount, reservation.purpose.clone())
+                    .money_class(MoneyClass::ReservedCurrent)
+                    .subject(ObjectRef::Reservation(reservation.id)),
+            );
+        }
+        if let Some(minimum) = account.minimum_balance
+            && !active.iter().any(|r| r.coverage == Coverage::CoversAccountMinimum && r.hardness == crate::model::Hardness::Hard)
+        {
+            let amount = minimum.share_basis_points(share);
+            total = total.checked_add(amount)?;
+            terms.push(
+                ProvNode::input(format!("Bank minimum ({})", account.name), amount, "account constraint (§17)")
+                    .money_class(MoneyClass::ReservedCurrent)
+                    .subject(ObjectRef::Account(*id)),
+            );
+        }
+    }
+    Ok(Calc::new(
+        total,
+        ProvNode::sum("Hard floors", total, terms)
+            .money_class(MoneyClass::ReservedCurrent)
+            .note("Hard earmarks and bank minimums only; user-relaxable preferences are not floors (§17)."),
+    ))
+}
+
+/// The §6 figures for any boundary.
+pub fn boundary_liquidity(household: &Household, boundary: Boundary) -> EngineResult<BoundaryLiquidity> {
+    let currency = household.base_currency;
+    match boundary {
+        Boundary::Household => {
+            let report = household_liquidity(household)?;
+            let liquid_accounts: Vec<AccountId> = report
+                .included
+                .iter()
+                .copied()
+                .filter(|id| household.account(*id).is_some_and(|a| a.kind.is_cash() && a.liquidity == Liquidity::Immediate))
+                .collect();
+            let hard_floor = hard_floor_of(household, &liquid_accounts, |_| 10_000)?;
+            let headroom = crate::breach::headroom_node("Headroom over hard floors", report.liquid_cash.money(), hard_floor.money())?;
+            Ok(BoundaryLiquidity {
+                boundary,
+                figures: vec![
+                    ("Liquid cash".into(), report.liquid_cash),
+                    ("Reserved cash".into(), report.reserved),
+                    ("Free current cash".into(), report.free),
+                    ("Total assets".into(), report.total_assets),
+                    ("Liabilities".into(), report.liabilities),
+                    ("Net worth".into(), report.net_worth),
+                ],
+                settled: household_liquidity(household)?.liquid_cash.money(),
+                hard_floor,
+                headroom,
+                accounts: liquid_accounts,
+            })
+        }
+        Boundary::Person(person) => {
+            let attribution = person_attribution(household, person)?;
+            let accounts: Vec<AccountId> = household
+                .accounts_of(person)
+                .filter(|a| a.kind.is_cash() && a.liquidity == Liquidity::Immediate && a.currency == currency)
+                .map(|a| a.id)
+                .collect();
+            let mut liquid = Money::zero(currency);
+            let mut reserved = Money::zero(currency);
+            let mut liquid_terms = Vec::new();
+            let mut reserved_terms = Vec::new();
+            for id in &accounts {
+                let account = household.account(*id).expect("listed above");
+                let share = account.holder.share_of(person);
+                let per_account = account_liquidity(household, *id)?;
+                let liquid_part = account.settled_balance.share_basis_points(share);
+                let reserved_part = per_account.reserved.money().share_basis_points(share);
+                liquid = liquid.checked_add(liquid_part)?;
+                reserved = reserved.checked_add(reserved_part)?;
+                liquid_terms.push(
+                    ProvNode::formula(format!("{} ({}%)", account.name, share / 100), liquid_part, "settled × share", Vec::new())
+                        .money_class(MoneyClass::ConfirmedCurrent)
+                        .subject(ObjectRef::Account(*id)),
+                );
+                reserved_terms.push(
+                    ProvNode::formula(format!("{} earmarks ({}%)", account.name, share / 100), reserved_part, "reserved × share", vec![per_account.reserved.node().clone()])
+                        .money_class(MoneyClass::ReservedCurrent)
+                        .subject(ObjectRef::Account(*id)),
+                );
+            }
+            let free = liquid.checked_sub(reserved)?;
+            let name = household.entity_name(EntityRef::Person(person));
+            let liquid_node = ProvNode::sum(format!("{name} — attributed liquid cash"), liquid, liquid_terms).money_class(MoneyClass::ConfirmedCurrent);
+            let reserved_node = ProvNode::sum(format!("{name} — attributed reserved cash"), reserved, reserved_terms).money_class(MoneyClass::ReservedCurrent);
+            let free_node = ProvNode::sum(format!("{name} — attributed free cash"), free, vec![liquid_node.clone(), reserved_node.clone().minus()])
+                .money_class(MoneyClass::FreeCurrent)
+                .note("Economic share view (§7); the household counts joint accounts once.");
+            let hard_floor = hard_floor_of(household, &accounts, |a| a.holder.share_of(person))?;
+            let headroom = crate::breach::headroom_node("Headroom over hard floors (attributed)", liquid, hard_floor.money())?;
+            Ok(BoundaryLiquidity {
+                boundary,
+                figures: vec![
+                    ("Attributed share of held accounts".into(), attribution),
+                    ("Attributed liquid cash".into(), Calc::new(liquid, liquid_node)),
+                    ("Attributed reserved cash".into(), Calc::new(reserved, reserved_node)),
+                    ("Attributed free cash".into(), Calc::new(free, free_node)),
+                ],
+                settled: liquid,
+                hard_floor,
+                headroom,
+                accounts,
+            })
+        }
+        Boundary::Company(company) => {
+            let cash = company_cash(household, company)?;
+            let accounts: Vec<AccountId> = household.company_accounts(company).map(|a| a.id).collect();
+            let headroom = crate::breach::headroom_node("Headroom over committed obligations", cash.cash.money(), cash.committed.money())?;
+            let committed = cash.committed.clone();
+            Ok(BoundaryLiquidity {
+                boundary,
+                figures: vec![
+                    ("Business cash".into(), cash.cash),
+                    ("Committed obligations".into(), cash.committed),
+                    ("Cash-constraint ceiling".into(), cash.ceiling),
+                ],
+                settled: household_liquidity(household).map(|_| Money::zero(currency)).unwrap_or(Money::zero(currency)),
+                hard_floor: committed,
+                headroom,
+                accounts,
+            })
+        }
+        Boundary::Account(account) => {
+            let liquidity = account_liquidity(household, account)?;
+            let hard_floor = hard_floor_of(household, &[account], |_| 10_000)?;
+            let headroom = crate::breach::headroom_node("Headroom over hard floors", liquidity.ledger_cash.money(), hard_floor.money())?;
+            Ok(BoundaryLiquidity {
+                boundary,
+                figures: vec![
+                    ("Settled ledger cash".into(), liquidity.ledger_cash.clone()),
+                    ("Reserved cash".into(), liquidity.reserved),
+                    ("Free current cash".into(), liquidity.free),
+                ],
+                settled: liquidity.ledger_cash.money(),
+                hard_floor,
+                headroom,
+                accounts: vec![account],
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    use crate::fixtures::{self, ids, pkr};
+
+    #[test]
+    fn household_hard_floor_ignores_soft_preferences_and_nested_minimums() {
+        let household = fixtures::plan_household();
+        let report = boundary_liquidity(&household, Boundary::Household).unwrap();
+        // Hard: emergency 800,000 + tax 300,000 (shared savings); A current: bank minimum 300,000
+        // (the 400,000 buffer covering it is soft, so the minimum itself is the floor).
+        assert_eq!(report.hard_floor.money(), pkr(1_400_000));
+        assert_eq!(report.headroom.money(), pkr(4_400_000 - 1_400_000));
+        assert_eq!(report.figures.len(), 6);
+        assert!(report.hard_floor.node().verify_sums().is_empty());
+    }
+
+    #[test]
+    fn person_boundary_uses_economic_shares() {
+        let household = fixtures::plan_household();
+        let b = boundary_liquidity(&household, Boundary::Person(ids::PERSON_B)).unwrap();
+        // B: 50% of shared savings 2,000,000 + B checking 900,000.
+        assert_eq!(b.figures[1].1.money(), pkr(1_900_000));
+        // reserved: 50% of 1,350,000.
+        assert_eq!(b.figures[2].1.money(), pkr(675_000));
+        assert_eq!(b.figures[3].1.money(), pkr(1_225_000));
+        assert_eq!(b.hard_floor.money(), pkr(550_000));
+    }
+
+    #[test]
+    fn company_boundary_matches_e07() {
+        let household = fixtures::plan_household();
+        let alpha = boundary_liquidity(&household, Boundary::Company(ids::ALPHA)).unwrap();
+        assert_eq!(alpha.figures[2].1.money(), pkr(850_000));
+        assert_eq!(alpha.headroom.money(), pkr(850_000));
+    }
+}
