@@ -1110,3 +1110,32 @@ fn privacy_screen_policy_editor_grants_and_fail_closed_view(cx: &mut TestAppCont
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn every_screen_renders_for_both_viewers(cx: &mut TestAppContext) {
+    // M11.2: each section's root renders for the owner and for Person B, with the
+    // sidebar item registered as "<group>-0-<item>" inside the main sidebar.
+    for viewer in ['a', 'b'] {
+        let launch = Launch { viewer, ..Launch::default() };
+        let (handle, app) = open_app(cx, launch);
+        let window = handle.into();
+        for (group_index, (_, sections)) in Section::GROUPS.iter().enumerate() {
+            for (item_index, section) in sections.iter().enumerate() {
+                let item: &'static str = Box::leak(format!("{group_index}-0-{item_index}").into_boxed_str());
+                let root: &'static str = Box::leak(format!("screen-{}", section.slug()).into_boxed_str());
+                cx.update_window(window, |_, window, cx| {
+                    window.render_frame(cx);
+                    window.within("main-sidebar").click(item, cx);
+                })
+                .unwrap();
+                cx.run_until_parked();
+                cx.update_window(window, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.try_find(root).is_some(), "{root} renders for viewer {viewer}");
+                })
+                .unwrap();
+                cx.update(|cx| assert_eq!(app.read(cx).section(), *section));
+            }
+        }
+    }
+}
