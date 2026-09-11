@@ -698,7 +698,7 @@ impl AtlasApp {
                 let description = f.scenario_description.read(cx).value().trim().to_string();
                 let owner = self.viewer.person;
                 self.household.add_scenario(
-                    Scenario { id: self.household.next_scenario_id(), name: name.clone(), description, private_to: if draft.scenario_private { Some(owner) } else { None } },
+                    Scenario { id: self.household.next_scenario_id(), name: name.clone(), description, private_to: if draft.scenario_private { Some(owner) } else { None }, changes: Vec::new(), composed_of: Vec::new() },
                     owner,
                 );
                 format!("Scenario {name} added{}", if draft.scenario_private { " (private to you)" } else { "" })

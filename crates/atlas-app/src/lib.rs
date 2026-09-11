@@ -14,6 +14,7 @@
 //! | [`lifecycle`] | new / open / save / sample, the lock, the who-is-looking picker (M12) |
 //! | [`entry`] | data-entry dialogs for every object (M12) |
 //! | [`rules_entry`] | the rule editor dialog (M7) |
+//! | [`scenario_entry`] | scenario change and composition dialogs (M8) |
 //! | [`alerting`] | failure reporting to the DevBench notify endpoint |
 //! | [`launch`] | command-line options and theme selection |
 
@@ -23,6 +24,7 @@ pub mod entry;
 pub mod launch;
 pub mod lifecycle;
 pub mod rules_entry;
+pub mod scenario_entry;
 pub mod screens;
 pub mod widgets;
 

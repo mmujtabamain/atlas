@@ -65,6 +65,27 @@ tax rules) and account detail has **Reconcile…** and **Delete**.
 - Useful flags for scripts and tests: `--new`, `--sample`, `--household FILE`, `--as-of DATE`,
   `--viewer <person id>`, `--owner NAME`, `--take-over`.
 
+## Scenarios (M8, §18)
+
+A scenario is an **overlay** over the baseline: the series, funding rules and assumptions tagged
+with it plus explicit, typed changes (§18.2 — end a stream, remove events, change an amount from
+a date, move dates, add employment, add/remove a company, add/disable a tax rule). The engine
+applies the overlay (`Household::apply_scenarios`) and runs unchanged on the result, so
+forecasts, taxes, rules and the timeline all agree.
+
+- **Composition** (§18.3): tick two or more scenarios; the compatibility check names any two
+  changes that touch the same series, company or tax rule; **Compose…** creates a new scenario
+  made of the members (private when any member is private).
+- **Comparison** (§18.4): baseline versus the selection on household cash — balances on dates,
+  lowest point and its date, reserve breaches, taxes and incremental taxes, fees, debt, cash
+  runway (first passage, never "infinite"), company working capital and payroll coverage; a
+  two-line chart; one named case at a time.
+- **Difference attribution** (F139): every posting of the window belongs to exactly one bucket
+  (a series, tax postings, fee events, starting cash), so the buckets sum to the end-of-window
+  difference exactly — the screen shows the check.
+- **Privacy** (§18.5): a private scenario, and any composition containing it, is listed and
+  compared only for its owner.
+
 ## Rules (M7, §14)
 
 **Rules** holds the household's deterministic rules: a scope (household, category, account,

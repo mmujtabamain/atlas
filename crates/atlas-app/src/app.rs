@@ -36,7 +36,10 @@ use crate::screens::{
     assumptions::AssumptionsModel,
     taxes::{E05Schedule, TaxModel},
     rules::RulesModel,
+    scenarios::ScenariosModel,
 };
+use atlas_core::ids::ScenarioId;
+use crate::scenario_entry::ScenarioForms;
 use atlas_core::ids::RuleId;
 use atlas_core::rules::TieBreak;
 use crate::rules_entry::RuleForm;
@@ -103,6 +106,10 @@ pub struct AtlasApp {
     pub(crate) simulated_rule: Option<RuleId>,
     pub(crate) rules: Result<RulesModel, EngineError>,
     pub(crate) rule_form: RuleForm,
+    pub(crate) scenario_selection: Vec<ScenarioId>,
+    pub(crate) scenario_case: Case,
+    pub(crate) scenarios: Result<ScenariosModel, EngineError>,
+    pub(crate) scenario_forms: ScenarioForms,
     /// Where the household is saved, once it has a file (M12).
     pub(crate) file: Option<atlas_store::HouseholdFile>,
     /// Unsaved changes since the last save/load.
@@ -344,6 +351,9 @@ impl AtlasApp {
         let tax_form = TaxRuleForm::new(&household, _window, _cx);
         let rules = Self::compute_rules(&household, viewer, horizon, false, None);
         let rule_form = RuleForm::new(&household, _window, _cx);
+        let scenario_selection: Vec<ScenarioId> = household.scenarios.first().map(|s| vec![s.id]).unwrap_or_default();
+        let scenarios = Self::compute_scenarios(&household, viewer, horizon, Case::Expected, &scenario_selection);
+        let scenario_forms = ScenarioForms::new(&household, _window, _cx);
         let lifecycle_form = crate::lifecycle::LifecycleForm::new(_window, _cx);
         let entry_forms = crate::entry::EntryForms::new(&household, _window, _cx);
         let file = resolved.file;
@@ -403,6 +413,10 @@ impl AtlasApp {
             simulated_rule: None,
             rules,
             rule_form,
+            scenario_selection,
+            scenario_case: Case::Expected,
+            scenarios,
+            scenario_forms,
             file,
             dirty: false,
             owner,
@@ -418,6 +432,7 @@ impl AtlasApp {
         self.timeline_controls = TimelineControls::new(&self.household, self.viewer, window, cx);
         self.tax_form = TaxRuleForm::new(&self.household, window, cx);
         self.rule_form = RuleForm::new(&self.household, window, cx);
+        self.scenario_forms = ScenarioForms::new(&self.household, window, cx);
         self.entry_forms = crate::entry::EntryForms::new(&self.household, window, cx);
         let mut subscriptions: Vec<Subscription> = self
             .timeline_controls
@@ -970,6 +985,44 @@ impl AtlasApp {
         self.refresh_assumptions();
         self.refresh_taxes();
         self.refresh_rules();
+        self.refresh_scenarios();
+    }
+
+    // ----- scenarios (§18, M8) -----------------------------------------------------
+
+    fn compute_scenarios(household: &Household, viewer: Viewer, through: NaiveDate, case: Case, selection: &[ScenarioId]) -> Result<ScenariosModel, EngineError> {
+        let result = ScenariosModel::compute(household, viewer, through, case, selection);
+        if let Err(err) = &result {
+            alerting::report(Level::Error, format!("scenarios model failed: {err}"));
+        }
+        result
+    }
+
+    fn refresh_scenarios(&mut self) {
+        self.scenarios = Self::compute_scenarios(&self.household, self.viewer, self.horizon, self.scenario_case, &self.scenario_selection);
+    }
+
+    /// The derived scenarios model, if the engine could compute it.
+    pub fn scenarios(&self) -> Option<&ScenariosModel> {
+        self.scenarios.as_ref().ok()
+    }
+
+    pub fn select_scenario(&mut self, id: ScenarioId, selected: bool, cx: &mut Context<Self>) {
+        self.scenario_selection.retain(|s| *s != id);
+        if selected {
+            self.scenario_selection.push(id);
+        }
+        log::info!("scenario selection: {:?}", self.scenario_selection);
+        self.refresh_scenarios();
+        cx.notify();
+    }
+
+    pub fn set_scenario_case(&mut self, case: Case, cx: &mut Context<Self>) {
+        if self.scenario_case != case {
+            self.scenario_case = case;
+            self.refresh_scenarios();
+            cx.notify();
+        }
     }
 
     // ----- rules (§14, M7) ---------------------------------------------------------
@@ -1530,6 +1583,13 @@ impl AtlasApp {
                     screens::rules::render(&model, &self.household, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Rules, err, cx),
+            },
+            Section::Scenarios => match &self.scenarios {
+                Ok(model) => {
+                    let model = model.clone();
+                    screens::scenarios::render(&model, &self.household, cx).into_any_element()
+                }
+                Err(err) => self.render_engine_failure(Section::Scenarios, err, cx),
             },
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
             other => screens::placeholder::render(other, cx).into_any_element(),

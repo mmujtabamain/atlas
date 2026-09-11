@@ -20,3 +20,13 @@ pub fn money_cell(money: Money, cx: &App) -> TableCell {
 pub fn muted_cell(text: impl Into<SharedString>, cx: &App) -> TableCell {
     TableCell::new().text_color(cx.theme().muted_foreground).child(text.into())
 }
+
+/// A right-aligned signed money cell (differences: `+1,000` / `-1,000`).
+pub fn signed_money_cell(money: Money, cx: &App) -> TableCell {
+    let color = if money.is_negative() { cx.theme().danger } else { cx.theme().foreground };
+    TableCell::new()
+        .text_right()
+        .font_family(cx.theme().mono_font_family.clone())
+        .text_color(color)
+        .child(money.format_signed())
+}
