@@ -9,6 +9,7 @@ pub mod household;
 pub mod liquidity;
 pub mod people;
 pub mod placeholder;
+pub mod projections;
 pub mod settings;
 pub mod timeline;
 
@@ -158,8 +159,7 @@ impl Section {
     pub fn pending_milestone(self) -> Option<Milestone> {
         let m = |number, task_id, title| Some(Milestone { number, task_id, title });
         match self {
-            Section::Household | Section::Settings | Section::People | Section::Companies | Section::Accounts | Section::Liquidity | Section::Timeline => None,
-            Section::Projections => m(4, 2757, "Forecast & projections"),
+            Section::Household | Section::Settings | Section::People | Section::Companies | Section::Accounts | Section::Liquidity | Section::Timeline | Section::Projections => None,
             Section::Assumptions => m(5, 2764, "Assumptions, uncertainty & sensitivity"),
             Section::Taxes => m(6, 2770, "Taxes"),
             Section::Rules => m(7, 2776, "Rules engine"),
@@ -175,14 +175,13 @@ impl Section {
             Section::People => &["Roles, owned and co-owned accounts with shares", "Income sources and companies per person"],
             Section::Companies => &["Separate company ledger: accounts, employees, payroll", "Constraints: payroll reserve, working-capital floor", "Extractable cash with the §8.5/M27 legal-capacity caveat"],
             Section::Accounts => &["The full §7 property table", "Account detail with the balance-definition strip"],
-            Section::Projections => &["Per-boundary chronological forecast and lowest balance", "The §2.1 chain and the assumptions panel", "Conservative / expected / optimistic as scenario-tested paths"],
             Section::Assumptions => &["Assumption register with kinds, sources, acceptance and freshness", "Ranges and historically derived assumptions with their formula", "One-at-a-time sensitivity with the joint caveat"],
             Section::Taxes => &["Effective-dated rule packs (DEMO packs labelled fictitious)", "Tax liabilities as timeline events with reserves", "Incremental tax: with vs without an action (E05)"],
             Section::Rules => &["User rules: scope, trigger, conditions, action, priority, version", "Conflict-resolution inspector", "Rule simulation"],
             Section::Scenarios => &["Overlays over the baseline and their composition", "Side-by-side comparison metrics"],
             Section::Decisions => &["Funding optimizer with gross-up to net (E02) and §13.5 strategy comparison", "Affordability grid (E03) with conditional result", "Goal trade-offs and the recommendation contract"],
             Section::Privacy => &["Viewer switcher and per-object access policies", "Provenance projection and difference-attack suppression", "Privacy audit log"],
-            Section::Household | Section::Settings | Section::Liquidity | Section::Timeline => &[],
+            Section::Household | Section::Settings | Section::Liquidity | Section::Timeline | Section::Projections => &[],
         }
     }
 }

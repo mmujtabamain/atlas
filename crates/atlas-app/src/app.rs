@@ -32,7 +32,9 @@ use crate::screens::{
     household::HouseholdOverview,
     liquidity::LiquidityModel,
     timeline::{TimelineFilter, TimelineModel},
+    projections::ProjectionModel,
 };
+use atlas_core::forecast::Case;
 use atlas_core::timeline::{AmountSpec, Exception, ExceptionKind, OccurrenceStatus};
 use atlas_core::vocab::Certainty;
 use gpui_kit::component::{date_picker::{DatePicker, DatePickerState}, select::SelectEvent};
@@ -70,6 +72,10 @@ pub struct AtlasApp {
     timeline: Result<TimelineModel, EngineError>,
     timeline_controls: TimelineControls,
     series_form: SeriesForm,
+    projection_boundary: Boundary,
+    projection_case: Case,
+    projection_scenario: bool,
+    projection: Result<ProjectionModel, EngineError>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -234,6 +240,7 @@ impl AtlasApp {
         let timeline = Self::compute_timeline(&household, viewer, timeline_filter.clone());
         let timeline_controls = TimelineControls::new(&household, viewer, _window, _cx);
         let series_form = SeriesForm::new(_window, _cx);
+        let projection = Self::compute_projection(&household, viewer, Boundary::Household, Case::Expected, None, horizon);
         let subscriptions = timeline_controls
             .all()
             .iter()
@@ -263,8 +270,49 @@ impl AtlasApp {
             timeline,
             timeline_controls,
             series_form,
+            projection_boundary: Boundary::Household,
+            projection_case: Case::Expected,
+            projection_scenario: false,
+            projection,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn compute_projection(household: &Household, viewer: Viewer, boundary: Boundary, case: Case, scenario: Option<atlas_core::ids::ScenarioId>, through: NaiveDate) -> Result<ProjectionModel, EngineError> {
+        let result = ProjectionModel::compute(household, viewer, boundary, case, scenario, through);
+        if let Err(err) = &result {
+            alerting::report(Level::Error, format!("projection failed for {boundary:?} {case:?}: {err}"));
+        }
+        result
+    }
+
+    fn refresh_projection(&mut self) {
+        let scenario = if self.projection_scenario { Some(fixtures::ids::BUY_CAR) } else { None };
+        self.projection = Self::compute_projection(&self.household, self.viewer, self.projection_boundary, self.projection_case, scenario, self.horizon);
+    }
+
+    /// The derived projection, if the engine could compute it.
+    pub fn projection(&self) -> Option<&ProjectionModel> {
+        self.projection.as_ref().ok()
+    }
+
+    pub fn select_projection_boundary(&mut self, boundary: Boundary, cx: &mut Context<Self>) {
+        self.projection_boundary = boundary;
+        self.refresh_projection();
+        cx.notify();
+    }
+
+    pub fn select_projection_case(&mut self, case: Case, cx: &mut Context<Self>) {
+        log::info!("projection case: {case:?}");
+        self.projection_case = case;
+        self.refresh_projection();
+        cx.notify();
+    }
+
+    pub fn set_projection_scenario(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.projection_scenario = on;
+        self.refresh_projection();
+        cx.notify();
     }
 
     fn compute_timeline(household: &Household, viewer: Viewer, filter: TimelineFilter) -> Result<TimelineModel, EngineError> {
@@ -460,6 +508,7 @@ impl AtlasApp {
         self.entities = Self::compute_entities(&self.household, self.viewer);
         self.liquidity = Self::compute_liquidity(&self.household, self.viewer, self.boundary, self.horizon);
         self.timeline = Self::compute_timeline(&self.household, self.viewer, self.timeline_filter.clone());
+        self.refresh_projection();
     }
 
     /// The derived liquidity model, if the engine could compute it.
@@ -756,7 +805,7 @@ impl AtlasApp {
                     .gap_3()
                     .child(Icon::new(IconName::Wallet).small())
                     .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer"))
-                    .child(Tag::secondary().xsmall().outline().child("M3 timeline")),
+                    .child(Tag::secondary().xsmall().outline().child("M4 projections")),
             )
             .child(
                 h_flex()
@@ -890,6 +939,13 @@ impl AtlasApp {
                     screens::timeline::render(&model, &self.timeline_controls, &self.household, self.viewer, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Timeline, err, cx),
+            },
+            Section::Projections => match &self.projection {
+                Ok(model) => {
+                    let model = model.clone();
+                    screens::projections::render(&model, &self.household, self.viewer, cx).into_any_element()
+                }
+                Err(err) => self.render_engine_failure(Section::Projections, err, cx),
             },
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
             other => screens::placeholder::render(other, cx).into_any_element(),
