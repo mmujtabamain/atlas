@@ -8,6 +8,7 @@
 //! company cash never (§8.5), excluded objects shown as excluded.
 
 use crate::authz::CalculationAccess;
+use chrono::NaiveDate;
 use crate::ids::*;
 use crate::model::{Account, Coverage, Holder, Household, Liquidity};
 use crate::money::Money;
@@ -143,14 +144,24 @@ pub struct HouseholdLiquidity {
 
 /// Why an account stays out of the household boundary, if it does.
 pub fn household_exclusion_reason(household: &Household, account: &Account) -> Option<String> {
+    household_exclusion_reason_for(household, account, crate::authz::Purpose::HouseholdForecast, household.as_of)
+}
+
+/// The same, for a named purpose (§7.4): an account authorized only for one
+/// scenario is unavailable to every other context (V067).
+pub fn household_exclusion_reason_for(household: &Household, account: &Account, purpose: crate::authz::Purpose, date: NaiveDate) -> Option<String> {
     if account.is_company_account() {
         return Some("business cash is not household cash (§8.5)".into());
     }
     if !account.include_in_household {
         return Some("excluded from the household boundary by its inclusion status (§7)".into());
     }
-    if household.calculation_access_for(ObjectRef::Account(account.id)) == CalculationAccess::Excluded {
-        return Some("excluded by its access policy (§7.3)".into());
+    if household.calculation_access_for_purpose(ObjectRef::Account(account.id), purpose, date) == CalculationAccess::Excluded {
+        return Some(if household.calculation_access_for(ObjectRef::Account(account.id)) == CalculationAccess::Excluded {
+            "excluded by its access policy (§7.3)".into()
+        } else {
+            format!("not authorized for {} (§7.4 purpose scope)", purpose.describe(household))
+        });
     }
     if account.currency != household.base_currency {
         return Some(format!(

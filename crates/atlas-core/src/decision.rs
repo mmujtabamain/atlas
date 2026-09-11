@@ -17,6 +17,7 @@
 use crate::assumptions::ConditionalStatement;
 use crate::breach::{PathPoint, analyse};
 use crate::forecast::{BoundaryForecast, Case, ForecastOptions, forecast};
+use crate::authz::CalculationAccess;
 use crate::ids::*;
 use crate::liquidity::{Boundary, company_cash};
 use crate::model::{Household, Scenario, TaxKind, TaxTiming};
@@ -344,9 +345,15 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
         capacity: Money,
     }
     let mut capacities: Vec<Capacity> = Vec::new();
+    let mut refused: Vec<String> = Vec::new();
     for source in plan.sources.iter().filter(|s| s.allowed) {
         let Some(account) = household.account(source.account) else { continue };
         if account.holder.is_company() {
+            continue;
+        }
+        // §7.3 / V067: authorization is evaluated before an object becomes a funding source.
+        if household.calculation_access_for_purpose(ObjectRef::Account(source.account), crate::authz::Purpose::FundingSearch, on) == CalculationAccess::Excluded {
+            refused.push(format!("{} is not authorized for funding searches (§7.4); it was not considered", account.name));
             continue;
         }
         let balance = account_balance_on(household, source.account, on)?;
@@ -415,7 +422,24 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
         })
     };
     if !capacities.is_empty() {
-        strategies.push(personal(&capacities, "Personal accounts in the configured order")?);
+        let mut strategy = personal(&capacities, "Personal accounts in the configured order")?;
+        strategy.caveats.extend(refused.iter().cloned());
+        strategies.push(strategy);
+    } else if !refused.is_empty() {
+        strategies.push(Strategy {
+            name: "Personal accounts in the configured order".into(),
+            steps: Vec::new(),
+            gross_total: Money::zero(currency),
+            immediate_tax: Money::zero(currency),
+            fees: Money::zero(currency),
+            net: Money::zero(currency),
+            future_tax: Money::zero(currency),
+            future_tax_note: String::new(),
+            feasible: false,
+            violations: refused.clone(),
+            caveats: Vec::new(),
+            transfers: 0,
+        });
     }
 
     // Company routes (M27): each independently, with the E07 ceiling and the legal-capacity caveat.
@@ -1144,6 +1168,34 @@ impl Household {
 fn purchase_on_for(as_of: NaiveDate) -> NaiveDate {
     let purchase_on = as_of.checked_add_months(Months::new(2)).unwrap_or(as_of);
     NaiveDate::from_ymd_opt(purchase_on.year(), purchase_on.month(), 15).unwrap_or(purchase_on)
+}
+
+/// [`default_plan`] restricted to what `viewer` may discover (§7.3, V062):
+/// hidden accounts and companies are never offered as sources or routes.
+pub fn default_plan_for(household: &Household, as_of: NaiveDate, viewer: crate::authz::Viewer) -> PurchasePlan {
+    let mut plan = default_plan(household, as_of);
+    let visible = |object: ObjectRef| !matches!(household.disclosure_for(viewer, object), crate::provenance::Disclosure::Hidden);
+    plan.sources.retain(|s| visible(ObjectRef::Account(s.account)));
+    plan.company_routes.retain(|r| visible(ObjectRef::Company(r.company)) && visible(ObjectRef::Account(r.to_account)));
+    let first = plan.sources.iter().find(|s| s.allowed).map(|s| s.account).or_else(|| plan.sources.first().map(|s| s.account));
+    if let Some(account) = first {
+        if let Some(f) = plan.financing.as_mut() && !visible(ObjectRef::Account(f.account)) {
+            f.account = account;
+        }
+        for cost in plan.other_costs.iter_mut() {
+            if !visible(ObjectRef::Account(cost.account)) {
+                cost.account = account;
+            }
+        }
+        if let Some(r) = plan.running_cost.as_mut() && !visible(ObjectRef::Account(r.account)) {
+            r.account = account;
+        }
+    } else {
+        plan.financing = None;
+        plan.other_costs.clear();
+        plan.running_cost = None;
+    }
+    plan
 }
 
 /// A sensible default plan for a household: the usable personal accounts as

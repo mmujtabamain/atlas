@@ -508,12 +508,12 @@ pub struct ForecastOptions {
 }
 
 /// The accounts whose cash a boundary's path is made of, with the share applied.
-fn boundary_accounts(household: &Household, boundary: Boundary) -> Vec<(AccountId, u32)> {
+fn boundary_accounts(household: &Household, boundary: Boundary, purpose: crate::authz::Purpose) -> Vec<(AccountId, u32)> {
     match boundary {
         Boundary::Household => household
             .accounts
             .iter()
-            .filter(|a| household_exclusion_reason(household, a).is_none() && a.kind.is_cash() && a.liquidity == Liquidity::Immediate)
+            .filter(|a| crate::liquidity::household_exclusion_reason_for(household, a, purpose, household.as_of).is_none() && a.kind.is_cash() && a.liquidity == Liquidity::Immediate)
             .map(|a| (a.id, 10_000))
             .collect(),
         Boundary::Person(person) => household
@@ -582,7 +582,8 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
         return forecast(&overlaid, boundary, options);
     }
     let currency = household.base_currency;
-    let members = boundary_accounts(household, boundary);
+    let purpose = crate::authz::Purpose::of_forecast(options.scenario);
+    let members = boundary_accounts(household, boundary, purpose);
     let member_ids: Vec<AccountId> = members.iter().map(|(id, _)| *id).collect();
 
     // 1. Collect postings on member accounts.
@@ -829,7 +830,7 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
         .accounts
         .iter()
         .filter(|a| !member_ids.contains(&a.id))
-        .map(|a| (a.id, household_exclusion_reason(household, a).unwrap_or_else(|| "outside this boundary".into())))
+        .map(|a| (a.id, crate::liquidity::household_exclusion_reason_for(household, a, purpose, household.as_of).unwrap_or_else(|| "outside this boundary".into())))
         .collect();
     let policy_versions: Vec<(PolicyId, u32)> = household.policies.iter().map(|p| (p.id, p.version)).collect();
     let mut hasher = DefaultHasher::new();
