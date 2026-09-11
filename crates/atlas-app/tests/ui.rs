@@ -911,3 +911,96 @@ fn scenarios_compare_compose_and_stay_private(cx: &mut TestAppContext) {
         assert!(matches!(&target.changes[0], atlas_core::scenario::ScenarioChange::EndSeries { reason, .. } if reason == "test change"));
     });
 }
+
+#[gpui_kit::test]
+fn decision_builder_steps_to_a_result_and_saves_a_scenario(cx: &mut TestAppContext) {
+    let launch = Launch { section: Section::Decisions, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-decisions").visible());
+        assert!(window.find("decision-name").visible(), "step 1 shows the purchase form");
+        window.click("decision-next", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| assert_eq!(app.read(cx).decision_step(), 1));
+    cx.update(|cx| {
+        let result = app.update(cx, |app, cx| app.apply_decision_step(1, cx));
+        assert!(result.is_ok(), "step 2 with defaults is valid: {result:?}");
+    });
+    for expected_step in [2, 3, 4] {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            // Long steps push "Next" below the fold; scroll from an on-screen anchor first.
+            scroll_down(window, "screen-decisions", cx);
+            window.click("decision-next", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(app.read(cx).decision_step(), expected_step));
+    }
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let plan = app.decision_plan();
+        assert_eq!(plan.name, "Car");
+        assert_eq!(plan.down_payment, fixtures::pkr(2_500_000));
+        assert!(plan.financing.is_some());
+        let decision = app.decision().expect("the result step evaluated the plan");
+        assert!(!decision.strategies.strategies.is_empty());
+        assert!(decision.strategies.status.contains("not a global optimum"));
+        assert_eq!(decision.grid.len(), 42, "6 months × 7 down payments");
+        assert!(decision.grid.iter().any(|c| c.best));
+        assert!(decision.grid.iter().filter(|c| c.reserve_ok).count() >= 1);
+        assert!(decision.recommendation.render().contains("not an AI recommendation"));
+        assert!(decision.immediate_cash.node().verify_sums().is_empty());
+        assert_eq!(decision.goals.len(), 2);
+    });
+    let scenarios_before = cx.update(|cx| app.read(cx).household().scenarios.len());
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("decision-grid-status").is_some(), "the grid is on the result page");
+        assert!(window.find("decision-recommendation").visible());
+        window.click("decision-save-scenario-top", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let household = app.household();
+        assert_eq!(household.scenarios.len(), scenarios_before + 1);
+        let saved = household.scenarios.last().unwrap();
+        assert!(saved.name.starts_with("Decision: Car"));
+        let tagged = household.series.iter().filter(|s| s.scenario == Some(saved.id)).count();
+        assert!(tagged >= 4, "down payment steps, instalments, other and running costs: {tagged}");
+        assert!(app.is_dirty());
+        let model = app.scenarios().unwrap();
+        assert_eq!(model.selection, vec![saved.id]);
+        assert!(model.comparison.as_ref().unwrap().attribution_verified);
+    });
+
+    // Validation keeps the builder on the step: a down payment above the price is refused.
+    let launch = Launch { section: Section::Decisions, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("decision-next", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("decision-down-payment", cx);
+        window.input("0", cx);
+        window.click("decision-next", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        assert_eq!(app.decision_step(), 1, "25,000,000 exceeds the 8,000,000 price");
+        assert_eq!(app.decision_plan().down_payment, fixtures::pkr(2_500_000), "the plan keeps the last valid value");
+    });
+}
