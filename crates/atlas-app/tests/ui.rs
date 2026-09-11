@@ -802,3 +802,112 @@ fn rules_inspector_simulation_and_editor(cx: &mut TestAppContext) {
         assert!(projection.forecast.end.node().render_chain().contains("Fees from user rules"), "the §2.1 chain carries the fee term");
     });
 }
+
+#[gpui_kit::test]
+fn scenarios_compare_compose_and_stay_private(cx: &mut TestAppContext) {
+    // Person B: the private "Leave job" scenario and its composition never appear (§18.5).
+    let launch = Launch { section: Section::Scenarios, viewer: 'b', ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    cx.update(|cx| {
+        let model = app.read(cx).scenarios().unwrap();
+        assert_eq!(model.cards.len(), 1, "only “Buy car” is visible to Person B");
+        assert_eq!(model.hidden_count, 2);
+        assert_eq!(model.selection, vec![fixtures::ids::BUY_CAR]);
+        let comparison = model.comparison.as_ref().expect("Buy car compares");
+        assert!(comparison.attribution_verified);
+        assert_eq!(comparison.end_delta, fixtures::pkr(-2_500_000));
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-scenarios").visible());
+        assert!(window.find("scenario-card-1").visible());
+        assert!(window.try_find("scenario-card-2").is_none(), "no private card for B");
+        assert!(window.try_find("scenario-card-3").is_none());
+    })
+    .unwrap();
+
+    // Person A: select both base scenarios, see them compatible, compose, then add a change.
+    let launch = Launch { section: Section::Scenarios, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window = handle.into();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("scenario-card-2").visible());
+        window.click("scenario-select-2", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let model = app.read(cx).scenarios().unwrap();
+        assert_eq!(model.selection, vec![fixtures::ids::BUY_CAR, fixtures::ids::LEAVE_JOB]);
+        assert!(model.incompatibilities.is_empty());
+        let comparison = model.comparison.as_ref().unwrap();
+        assert!(comparison.attribution_verified);
+        assert_eq!(comparison.end_delta, fixtures::pkr(-3_430_000), "car −2,500,000, two salaries −1,000,000, withholding +70,000");
+        assert!(comparison.attribution.iter().any(|a| a.kind == "taxes" && a.delta == fixtures::pkr(70_000)));
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("scenario-compose", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("compose-name", cx);
+        window.input("Car after leaving", cx);
+        window.click("compose-save", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let scenarios_before = 3;
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx), "composition accepted");
+        window.clear_notifications(cx);
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let household = app.household();
+        assert_eq!(household.scenarios.len(), scenarios_before + 1);
+        let composed = household.scenarios.last().unwrap();
+        assert_eq!(composed.name, "Car after leaving");
+        assert_eq!(composed.composed_of, vec![fixtures::ids::BUY_CAR, fixtures::ids::LEAVE_JOB]);
+        assert!(composed.private_to.is_some(), "a composition with a private member is private");
+        assert!(household.policy_for(ObjectRef::Scenario(composed.id)).is_some());
+        assert!(app.is_dirty());
+        let model = app.scenarios().unwrap();
+        assert_eq!(model.selection, vec![composed.id]);
+        assert_eq!(model.comparison.as_ref().unwrap().end_delta, fixtures::pkr(-3_430_000), "the composition equals the pair");
+    });
+
+    // Add an explicit change through the dialog: end the first baseline series after today.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("scenario-add-change", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("scenario-change-reason", cx);
+        window.input("test change", cx);
+        window.click("scenario-change-save", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx), "the change was accepted");
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let household = app.read(cx).household();
+        let target = household.scenarios.first().unwrap();
+        assert_eq!(target.changes.len(), 1, "the first scenario in the picker received the change");
+        assert!(matches!(&target.changes[0], atlas_core::scenario::ScenarioChange::EndSeries { reason, .. } if reason == "test change"));
+    });
+}
