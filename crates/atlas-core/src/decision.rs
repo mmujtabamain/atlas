@@ -231,6 +231,92 @@ pub fn monthly_payment(principal: Money, months: u32, annual_rate_basis_points: 
     Money::new((principal.minor() as f64 * factor).round() as i64, currency)
 }
 
+/// E06 — the unrounded annuity payment (for display next to the contract's
+/// rounded one).
+pub fn annuity_payment_exact(principal: Money, months: u32, monthly_rate_basis_points: u32) -> f64 {
+    if months == 0 {
+        return 0.0;
+    }
+    let r = monthly_rate_basis_points as f64 / 10_000.0;
+    if r == 0.0 {
+        return principal.minor() as f64 / months as f64;
+    }
+    principal.minor() as f64 * r / (1.0 - (1.0 + r).powf(-(months as f64)))
+}
+
+/// One replayed instalment of a loan contract.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Instalment {
+    pub number: u32,
+    pub payment: Money,
+    pub interest: Money,
+    pub principal: Money,
+    pub balance_after: Money,
+}
+
+/// E06 — replays a contract with each payment rounded to the minor unit
+/// (half up) and the final payment adjusted so the principal reaches exactly
+/// zero; interest accrues on the rounded balance each month.
+pub fn loan_schedule(principal: Money, months: u32, monthly_rate_basis_points: u32) -> Vec<Instalment> {
+    let currency = principal.currency();
+    if months == 0 || !principal.is_positive() {
+        return Vec::new();
+    }
+    let payment = Money::new(annuity_payment_exact(principal, months, monthly_rate_basis_points).round() as i64, currency);
+    let mut balance = principal;
+    let mut schedule = Vec::with_capacity(months as usize);
+    for number in 1..=months {
+        let interest = Money::new(((balance.minor() as i128 * monthly_rate_basis_points as i128 + 5_000) / 10_000) as i64, currency);
+        let (pay, principal_part) = if number == months {
+            let final_payment = balance.checked_add(interest).unwrap_or(balance);
+            (final_payment, balance)
+        } else {
+            let principal_part = payment.checked_sub(interest).unwrap_or(payment).min(balance).unwrap_or(balance);
+            (payment, principal_part)
+        };
+        balance = balance.checked_sub(principal_part).unwrap_or(balance);
+        schedule.push(Instalment { number, payment: pay, interest, principal: principal_part, balance_after: balance });
+    }
+    schedule
+}
+
+/// E06 — every internal rate of return of a cash-flow pattern in
+/// (−99%, 1000%), found by sign changes of the NPV on a fine grid and
+/// bisection. A pattern can have several roots (−100, 230, −132 has 10% and
+/// 20%), so a single-root routine cannot rank arbitrary patterns.
+pub fn irr_roots(cash_flows: &[f64]) -> Vec<f64> {
+    let npv = |rate: f64| cash_flows.iter().enumerate().map(|(t, cf)| cf / (1.0 + rate).powi(t as i32)).sum::<f64>();
+    let mut roots = Vec::new();
+    let steps = 10_990;
+    let mut previous = -0.99;
+    let mut previous_value = npv(previous);
+    for i in 1..=steps {
+        let rate = -0.99 + i as f64 * 0.001;
+        let value = npv(rate);
+        if previous_value == 0.0 {
+            roots.push(previous);
+        } else if previous_value.signum() != value.signum() {
+            let (mut lo, mut hi) = (previous, rate);
+            let (mut lo_v, _) = (previous_value, value);
+            for _ in 0..60 {
+                let mid = (lo + hi) / 2.0;
+                let mid_v = npv(mid);
+                if mid_v.signum() == lo_v.signum() {
+                    lo = mid;
+                    lo_v = mid_v;
+                } else {
+                    hi = mid;
+                }
+            }
+            roots.push((lo + hi) / 2.0);
+        }
+        previous = rate;
+        previous_value = value;
+    }
+    roots.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    roots
+}
+
 // ----- §13: funding strategies ---------------------------------------------------
 
 /// One movement of a strategy.
@@ -778,8 +864,9 @@ pub fn plan_series(household: &Household, plan: &PurchasePlan, strategy: Option<
         && plan.financed().is_positive()
         && f.months > 0
     {
-        let payment = monthly_payment(plan.financed(), f.months, f.annual_rate_basis_points);
-        out.push(base(
+        let schedule = loan_schedule(plan.financed(), f.months, f.annual_rate_basis_points / 12);
+        let payment = schedule.first().map(|i| i.payment).unwrap_or_else(|| monthly_payment(plan.financed(), f.months, f.annual_rate_basis_points));
+        let mut instalments = base(
             id(),
             format!("{} instalment ({} × {})", plan.name, f.months, payment.format()),
             Direction::Expense,
@@ -788,7 +875,16 @@ pub fn plan_series(household: &Household, plan: &PurchasePlan, strategy: Option<
             f.account,
             10,
             "Financing",
-        ));
+        );
+        // E06: the contract's rounded payments are replayed; the final one is adjusted so the
+        // principal reaches exactly zero instead of assuming the unrounded formula does.
+        if let (Some(last), Some(final_on)) = (schedule.last(), f.first_instalment.checked_add_months(Months::new(f.months.saturating_sub(1))))
+            && last.payment != payment
+        {
+            instalments.change_amount_from(final_on, AmountSpec::Exact(last.payment));
+            instalments.notes.push_str(&format!(" · final instalment {} (rounded schedule replayed, E06)", last.payment.format()));
+        }
+        out.push(instalments);
     }
     for cost in &plan.other_costs {
         out.push(base(id(), format!("{}: {}", plan.name, cost.label), Direction::Expense, cost.amount, Recurrence::OneTime { on: DateSpec::Exact(cost.on) }, cost.account, 30, "Major purchase"));
@@ -1273,6 +1369,23 @@ mod tests {
         let result = gross_up(pkr(1_019_000), &threshold).unwrap();
         assert!(result.net.minor() >= pkr(1_019_000).minor());
         assert_eq!(result.gross, pkr(1_019_000));
+    }
+
+    #[test]
+    fn e06_rounded_schedule_replays_to_zero_and_irr_has_two_roots() {
+        let exact = annuity_payment_exact(pkr(1_000_000), 12, 100);
+        assert!((exact / 100.0 - 88_848.78867834).abs() < 1e-6, "{exact}");
+        let schedule = loan_schedule(pkr(1_000_000), 12, 100);
+        assert_eq!(schedule.len(), 12);
+        assert_eq!(schedule[0].payment, Money::new(8_884_879, crate::Currency::PKR), "88,848.79 rounded");
+        assert_eq!(schedule[0].interest, pkr(10_000));
+        assert!(schedule.last().unwrap().balance_after.is_zero(), "the final payment clears the principal exactly");
+        assert_ne!(schedule.last().unwrap().payment, schedule[0].payment, "the final payment is adjusted, not assumed");
+        let total: i64 = schedule.iter().map(|i| i.payment.minor()).sum();
+        assert!((total - 12 * 8_884_879).abs() < 100, "adjustment stays within rounding drift");
+        let roots = irr_roots(&[-100.0, 230.0, -132.0]);
+        assert_eq!(roots.len(), 2, "{roots:?}");
+        assert!((roots[0] - 0.10).abs() < 1e-6 && (roots[1] - 0.20).abs() < 1e-6, "{roots:?}");
     }
 
     #[test]

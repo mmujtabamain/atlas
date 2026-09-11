@@ -40,6 +40,7 @@ pub mod model;
 pub mod money;
 pub mod mutations;
 pub mod provenance;
+pub mod risk;
 pub mod rules;
 pub mod scenario;
 pub mod sensitivity;
