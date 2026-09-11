@@ -513,4 +513,39 @@ impl Household {
     pub fn companies_of(&self, person: PersonId) -> impl Iterator<Item = &Company> {
         self.companies.iter().filter(move |c| c.owners.iter().any(|o| o.person == person))
     }
+
+    /// The next free reservation id.
+    pub fn next_reservation_id(&self) -> ReservationId {
+        ReservationId::new(self.reservations.iter().map(|r| r.id.raw()).max().unwrap_or(0) + 1)
+    }
+
+    /// Adds an earmark (§17). The account must exist and share the currency.
+    pub fn add_reservation(&mut self, reservation: Reservation) -> crate::EngineResult<ReservationId> {
+        let account = self.account(reservation.account).ok_or(crate::EngineError::UnknownAccount(reservation.account))?;
+        if account.currency != reservation.amount.currency() {
+            return Err(crate::MoneyError::CurrencyMismatch { left: account.currency, right: reservation.amount.currency() }.into());
+        }
+        if let Coverage::NestedIn(outer) = reservation.coverage {
+            self.reservation(outer).ok_or(crate::EngineError::UnknownReservation(outer))?;
+        }
+        let id = reservation.id;
+        self.reservations.push(reservation);
+        Ok(id)
+    }
+
+    /// E01: pays the obligation an earmark was held for and releases the
+    /// earmark — cash falls by the amount, the reservation stops constraining,
+    /// and free cash is unchanged. Returns the new settled balance.
+    pub fn pay_and_release(&mut self, id: ReservationId, on: NaiveDate) -> crate::EngineResult<Money> {
+        let (account_id, amount) = {
+            let reservation = self.reservation(id).ok_or(crate::EngineError::UnknownReservation(id))?;
+            (reservation.account, reservation.amount)
+        };
+        let account = self.accounts.iter_mut().find(|a| a.id == account_id).ok_or(crate::EngineError::UnknownAccount(account_id))?;
+        account.settled_balance = account.settled_balance.checked_sub(amount)?;
+        let balance = account.settled_balance;
+        let reservation = self.reservations.iter_mut().find(|r| r.id == id).expect("checked above");
+        reservation.released_on = Some(on);
+        Ok(balance)
+    }
 }

@@ -75,6 +75,19 @@ pub enum MoneyError {
     Overflow,
 }
 
+/// Why user text could not be read as money.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum MoneyParseError {
+    #[error("enter an amount")]
+    Empty,
+    #[error("{0:?} is not an amount")]
+    NotANumber(String),
+    #[error("at most {allowed} decimal place(s) for this currency")]
+    TooManyDecimals { allowed: u8 },
+    #[error("amount is too large")]
+    TooLarge,
+}
+
 /// An exact amount of one currency, stored in minor units.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct Money {
@@ -99,6 +112,45 @@ impl Money {
     /// Zero in the given currency.
     pub const fn zero(currency: Currency) -> Self {
         Money { minor: 0, currency }
+    }
+
+    /// Parses user text such as `250,000`, `250000`, `-1,400,000.50` or
+    /// `PKR 250,000`. Thousands separators and spaces are ignored; more
+    /// decimals than the currency has are rejected rather than rounded.
+    pub fn parse(text: &str, currency: Currency) -> Result<Money, MoneyParseError> {
+        let cleaned: String = text
+            .trim()
+            .trim_start_matches(currency.code())
+            .chars()
+            .filter(|c| !matches!(c, ',' | ' ' | '_' | '\u{a0}'))
+            .collect();
+        if cleaned.is_empty() {
+            return Err(MoneyParseError::Empty);
+        }
+        let (negative, digits) = match cleaned.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, cleaned.as_str()),
+        };
+        let (major_text, minor_text) = match digits.split_once('.') {
+            Some((major, minor)) => (major, minor),
+            None => (digits, ""),
+        };
+        if major_text.is_empty() || !major_text.chars().all(|c| c.is_ascii_digit()) || !minor_text.chars().all(|c| c.is_ascii_digit()) {
+            return Err(MoneyParseError::NotANumber(text.to_string()));
+        }
+        if minor_text.len() > currency.minor_digits as usize {
+            return Err(MoneyParseError::TooManyDecimals { allowed: currency.minor_digits });
+        }
+        let major: i64 = major_text.parse().map_err(|_| MoneyParseError::NotANumber(text.to_string()))?;
+        let mut minor: i64 = if minor_text.is_empty() { 0 } else { minor_text.parse().map_err(|_| MoneyParseError::NotANumber(text.to_string()))? };
+        for _ in minor_text.len()..currency.minor_digits as usize {
+            minor *= 10;
+        }
+        let total = major
+            .checked_mul(currency.minor_per_major())
+            .and_then(|m| m.checked_add(minor))
+            .ok_or(MoneyParseError::TooLarge)?;
+        Ok(Money::new(if negative { -total } else { total }, currency))
     }
 
     /// The amount in minor units.
@@ -365,6 +417,17 @@ mod tests {
         assert_eq!(Money::new(3, Currency::PKR).share_basis_points(5_000), Money::new(2, Currency::PKR));
         assert_eq!(Money::new(-3, Currency::PKR).share_basis_points(5_000), Money::new(-2, Currency::PKR));
         assert_eq!(pkr(100).share_basis_points(10_000), pkr(100));
+    }
+
+    #[test]
+    fn parses_user_text() {
+        assert_eq!(Money::parse("250,000", Currency::PKR).unwrap(), pkr(250_000));
+        assert_eq!(Money::parse(" PKR 250 000 ", Currency::PKR).unwrap(), pkr(250_000));
+        assert_eq!(Money::parse("-1,400,000.50", Currency::PKR).unwrap(), Money::new(-140_000_050, Currency::PKR));
+        assert_eq!(Money::parse("12.5", Currency::PKR).unwrap(), Money::new(1_250, Currency::PKR));
+        assert_eq!(Money::parse("", Currency::PKR), Err(MoneyParseError::Empty));
+        assert!(matches!(Money::parse("abc", Currency::PKR), Err(MoneyParseError::NotANumber(_))));
+        assert_eq!(Money::parse("1.234", Currency::PKR), Err(MoneyParseError::TooManyDecimals { allowed: 2 }));
     }
 
     #[test]
