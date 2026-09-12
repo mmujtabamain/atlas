@@ -8,7 +8,8 @@
 //!
 //! | module | contents |
 //! |---|---|
-//! | [`app`] | `AtlasApp`, the window's root view: shell, navigation, derived models |
+//! | [`shell`] | `Shell`, the window's root view: title bar, cached sidebar, cached content, status bar |
+//! | [`app`] | `AtlasApp`, the content view: household, derived models, the active screen |
 //! | [`screens`] | one module per sidebar section |
 //! | [`widgets`] | shared pieces: figures with "Why?", vocabulary tags, the explain sheet |
 //! | [`lifecycle`] | new / open / save / sample, the lock, the who-is-looking picker (M12) |
@@ -34,7 +35,9 @@ pub mod privacy_entry;
 pub mod rules_entry;
 pub mod scenario_entry;
 pub mod screens;
+pub mod shell;
 pub mod widgets;
 
 pub use app::AtlasApp;
 pub use launch::Launch;
+pub use shell::Shell;

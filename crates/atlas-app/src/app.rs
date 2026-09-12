@@ -1,6 +1,7 @@
-//! `AtlasApp`: the window's root view. It owns the household, the viewer, the
-//! active section and the derived screen models; screens are pure rendering
-//! over those models.
+//! `AtlasApp`: the content view. It owns the household, the viewer, the active
+//! section and the derived screen models; screens are pure rendering over
+//! those models. The window's root view — title bar, sidebar, status bar —
+//! is [`crate::shell::Shell`], which embeds this view cached.
 
 use atlas_core::authz::Viewer;
 use atlas_core::fixtures;
@@ -8,20 +9,13 @@ use atlas_core::ids::EntityRef;
 use atlas_core::model::Household;
 use atlas_core::{EngineError, Money};
 use chrono::NaiveDate;
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Root, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _,
+    ActiveTheme as _, WindowExt as _,
     alert::Alert,
     button::{Button, ButtonVariants as _},
-    h_flex,
     scroll::ScrollableElement as _,
-    separator::Separator,
-    sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
-    status_bar::StatusBar,
-    tag::Tag,
     v_flex,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::alerting::{self, Level};
@@ -1473,120 +1467,12 @@ impl AtlasApp {
         }
     }
 
-    fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let next = if cx.theme().is_dark() { ThemeMode::Light } else { ThemeMode::Dark };
-        Theme::change(next, Some(window), cx);
-        cx.notify();
+    /// Whether the sidebar is collapsed to its icon column.
+    pub fn sidebar_collapsed(&self) -> bool {
+        self.sidebar_collapsed
     }
 
-    // ----- shell regions --------------------------------------------------------
-
-    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_dark = cx.theme().is_dark();
-        TitleBar::new()
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_3()
-                    .child(Icon::new(IconName::Wallet).small())
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer"))
-                    .child(Tag::secondary().xsmall().outline().child("M12 real data")),
-            )
-            .child(
-                h_flex()
-                    .items_center()
-                    .justify_end()
-                    .px_2()
-                    .gap_3()
-                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!(
-                        "reconciled {}",
-                        self.household.as_of.format("%d %b %Y")
-                    )))
-                    .child(self.render_household_menu(cx))
-                    .child(
-                        Button::new("viewer")
-                            .small()
-                            .ghost()
-                            .compact()
-                            .icon(IconName::Eye)
-                            .label(format!("Viewing as {}", self.viewer_name()))
-                            .tooltip("Change who is looking")
-                            .on_click(cx.listener(|this, _, window, cx| this.open_viewer_picker(window, cx))),
-                    )
-                    .child(
-                        Button::new("theme")
-                            .small()
-                            .ghost()
-                            .compact()
-                            .icon(if is_dark { IconName::Sun } else { IconName::Moon })
-                            .tooltip(if is_dark { "Switch to light theme" } else { "Switch to dark theme" })
-                            .on_click(cx.listener(|this, _, window, cx| this.toggle_theme(window, cx))),
-                    ),
-            )
-    }
-
-    /// The sidebar's layout width: `w_64` expanded, gpui-kit's icon width collapsed.
-    fn sidebar_width(&self) -> Pixels {
-        if self.sidebar_collapsed { px(48.) } else { px(256.) }
-    }
-
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let collapsed = self.sidebar_collapsed;
-        let theme = cx.theme();
-        let mut sidebar = Sidebar::new("main-sidebar").collapsed(collapsed).w_64().header(
-            SidebarHeader::new()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size_8()
-                        .flex_shrink_0()
-                        .rounded(theme.radius)
-                        .bg(theme.sidebar_primary)
-                        .text_color(theme.sidebar_primary_foreground)
-                        .child(Icon::new(IconName::Wallet)),
-                )
-                .when(!collapsed, |this| {
-                    this.child(
-                        v_flex()
-                            .flex_1()
-                            .overflow_hidden()
-                            .text_sm()
-                            .child(self.household.name.clone())
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                                "{} · {}",
-                                self.household.base_currency,
-                                self.viewer_name()
-                            ))),
-                    )
-                }),
-        );
-        for (group, sections) in Section::GROUPS {
-            sidebar = sidebar.child(SidebarGroup::new(group).child(SidebarMenu::new().children(sections.iter().map(|section| {
-                let section = *section;
-                let item = SidebarMenuItem::new(section.label())
-                    .icon(section.icon())
-                    .active(section == self.section)
-                    .on_click(cx.listener(move |this, _, _, cx| this.navigate(section, cx)));
-                match section.pending_milestone() {
-                    Some(m) => item.suffix(move |_, cx| {
-                        div().text_xs().text_color(cx.theme().muted_foreground).child(format!("M{}", m.number)).into_any_element()
-                    }),
-                    None => item,
-                }
-            }))));
-        }
-        sidebar.footer(
-            SidebarFooter::new().child(
-                v_flex()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child("Deterministic · no AI")
-                    .when(!collapsed, |this| this.child("Every figure opens its chain")),
-            ),
-        )
-    }
+    // ----- content ----------------------------------------------------------------
 
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let started = std::time::Instant::now();
@@ -1671,93 +1557,21 @@ impl AtlasApp {
             ))
             .into_any_element()
     }
-
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        StatusBar::new()
-            .left(h_flex().items_center().gap_1().child(Icon::new(IconName::Check).xsmall()).child(self.household.name.clone()))
-            .left(Separator::vertical().h_3())
-            .left(div().text_color(muted).child(format!(
-                "{} accounts · {} series · {} reservations · {} policies",
-                self.household.accounts.len(),
-                self.household.series.len(),
-                self.household.reservations.len(),
-                self.household.policies.len()
-            )))
-            .right(div().text_color(muted).child(match (&self.file, self.dirty) {
-                (Some(file), true) => format!("{} • unsaved", file.path().display()),
-                (Some(file), false) => format!("{}", file.path().display()),
-                (None, true) => "not saved yet • unsaved changes — Household ▸ Save as…".to_string(),
-                (None, false) => "in memory — Household ▸ Save as… to keep it".to_string(),
-            }))
-            .right(Separator::vertical().h_3())
-            .right(div().text_color(muted).child(alerting::status_label()))
-            .right(Separator::vertical().h_3())
-            .right(
-                div()
-                    .id("perf-counter")
-                    .test_support()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_color(muted)
-                    .child(self.perf.status_text()),
-            )
-            .right(Separator::vertical().h_3())
-            .right(div().text_color(muted).child(format!("atlas-core {}", env!("CARGO_PKG_VERSION"))))
-    }
 }
 
 impl Render for AtlasApp {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Perf: close the previous frame (its paint probe has fired by now),
-        // open this one, and write the once-a-second summary when due.
-        self.perf.begin_frame(self.section.slug());
-        self.perf.log_window_info(window, cx.theme().is_dark());
-        self.perf.log_summary_if_due(window);
-        // The summary (histogram snapshot + file write) costs a few ms in a
-        // debug build; keep it out of this frame's `build` figure.
-        self.perf.restart_build_clock();
-        let content_width = window.viewport_size().width - self.sidebar_width();
-        let tree = v_flex()
+    /// The content column: the scroll region with the active screen inside.
+    /// The shell (see `shell`) embeds this view cached at a definite pixel
+    /// size — the column fills those bounds — so a frame that does not touch
+    /// the content (a hover in the sidebar, typing in a dialog, a toast)
+    /// reuses the previous layout and paint of the whole screen.
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .id("main-column")
             .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            // Input counters only (no notify): they say in the log whether the
-            // frames that happened were driven by the mouse or by something else.
-            .on_mouse_move(cx.listener(|this, _, _, _| this.perf.count_mouse_move()))
-            .on_scroll_wheel(cx.listener(|this, _, _, _| this.perf.count_wheel()))
-            .child(self.render_title_bar(cx))
-            .child(
-                h_flex()
-                    .items_stretch()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.render_sidebar(cx))
-                    .child(
-                        // The main column owns the scroll region; its inset is inside it.
-                        // Its width is set in pixels rather than `flex_1()` on purpose:
-                        // with an auto width taffy sizes the whole screen from its
-                        // content on every pass of every ancestor, which multiplied the
-                        // per-frame text measurements ~3× (see perf.rs; measured on the
-                        // Privacy screen: 8,300 → 2,600 measure callbacks per frame).
-                        v_flex()
-                            .id("main-column")
-                            .w(content_width)
-                            .flex_none()
-                            .h_full()
-                            .p_6()
-                            .gap_6()
-                            .child(self.render_content(cx))
-                            .overflow_y_scrollbar(),
-                    ),
-            )
-            .child(self.render_status_bar(cx))
-            .children(Root::render_dialog_layer(window, cx))
-            .children(Root::render_sheet_layer(window, cx))
-            .children(Root::render_notification_layer(window, cx));
-        // The probe times gpui's layout/prepaint/paint of the whole tree and
-        // closes the `draw≈` measurement when its paint ends.
-        let probed = self.perf.phase_probe(tree.into_any_element());
-        self.perf.end_build();
-        probed
+            .p_6()
+            .gap_6()
+            .child(self.render_content(cx))
+            .overflow_y_scrollbar()
     }
 }

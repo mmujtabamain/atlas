@@ -409,8 +409,10 @@ impl AtlasApp {
     }
 
     /// The title-bar Household menu.
-    pub fn render_household_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let this = cx.entity().downgrade();
+    /// The Household ▸ menu in the title bar. `this` is the handle the menu
+    /// items act through; the shell renders the menu, so it cannot come from
+    /// a `Context<AtlasApp>` here.
+    pub fn render_household_menu(&self, this: WeakEntity<Self>) -> impl IntoElement {
         let dirty = self.dirty;
         let label = if dirty { format!("{} •", self.household.name) } else { self.household.name.clone() };
         DropdownButton::new("household-menu")

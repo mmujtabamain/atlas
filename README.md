@@ -46,16 +46,21 @@ perf: frame #12 section=timeline build=4.7ms draw≈95.3ms interval=101.0ms cont
 perf: summary 1.0s: 9 frames (fps≈8.6) build avg=2.0ms max=9.4ms · draw≈ avg=64.7ms max=110.7ms · slow(>50ms)=5 … | gpui draw p50=71.4ms p90=113.1ms max=113.1ms n=9 · dirty→present p50=133.1ms …
 ```
 
-- `build` — time in `AtlasApp::render` (our element tree). `draw≈` — build + gpui layout + paint,
-  measured to a probe painted last in the tree. `gpui draw` — gpui's own `Window::draw` histogram
-  (the `profiler` feature), summarised once a second while frames happen.
-- The **status bar** shows the previous frame: `15 ms/frame = 65 fps possible · 58 frames/s
-  drawn · #50`. The first number is the cost and the frame rate it allows; the second is how
-  many frames gpui actually drew in the last second, which depends on the input — gpui only
-  draws when something changed, so a mouse crossing five buttons draws five frames, and an
-  idle window draws none. The green **overlay** in the top-right corner is gpui's own
-  frame-time readout (current, 1 %/10 % worst, max, frame count); `--no-perf-overlay` or
-  `ATLAS_PERF_OVERLAY=0` hides it.
+- `build` — time in the root view's render (title bar, status bar; small). `draw≈` — build +
+  gpui layout + paint, measured to a probe painted last in the tree. The sidebar and the screen
+  are cached views: gpui rebuilds them inside its `prepaint` phase only when they were notified,
+  and a frame that reused the screen (a hover in the sidebar, typing in a dialog, a toast) says
+  `content(cached)` instead of `content(render=…)`. `gpui draw` — gpui's own `Window::draw`
+  histogram (the `profiler` feature), summarised once a second while frames happen.
+- The **status bar** counter is gpui's own reading, refreshed once a second from its profiler
+  histograms (`Window::frame_duration_snapshot`): `gpui: draw p50 6.3 ms · 58 fps · #50` — the
+  median `Window::draw` time, and the frame rate gpui measured from the interval between
+  presented frames while the window was animating. The rate reads `n/a (not animating)` when
+  gpui presented no consecutive frames: it only draws when something changed, so a mouse
+  crossing five buttons draws five frames and an idle window draws none. The green **overlay**
+  in the top-right corner is gpui's other readout (current draw, 1 %/10 % worst, max, frame
+  count), painted straight into the scene; `--no-perf-overlay` or `ATLAS_PERF_OVERLAY=0`
+  hides it.
 - `cargo run` compiles every dependency at opt-level 2 and `atlas-app` at 1 (see the profile
   notes in `Cargo.toml`); the engine crates stay unoptimised for debugging. The first build
   after pulling this is a full rebuild of the dependencies.

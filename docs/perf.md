@@ -62,9 +62,9 @@ with the counting build (all counts per frame):
 
 ## 3. Rules for layout code in this app
 
-1. **The scroll column has a pixel width** (`viewport − sidebar`, see
-   `AtlasApp::render`) and **every screen root is `w_full()`**. Do not put
-   `flex_1()` back on the main column.
+1. **The scroll column has a pixel width** (`viewport − sidebar`, the cached
+   content view's style in `Shell::render`) and **every screen root is
+   `w_full()`**. Do not put `flex_1()` back on the main column.
 2. **Cards in a wrap row have a fixed width**: use `widgets::figure::card`
    (16 rem). Never `min_w_*` on a wrap-row child.
 3. **Long text never goes in a wrap row and never next to a tag in a
@@ -135,8 +135,10 @@ and half in `gpui-base`/`gpui-component`; both sides must be optimised.
 About the status-bar counter: it used to lead with "N fps", the number of
 frames drawn in the last second. In gpui that is a property of the *input* —
 a mouse crossing five buttons draws five frames, so "5 fps" appeared while
-each frame cost 6 ms. It now leads with the cost and the rate it allows
-(`15 ms/frame = 65 fps possible`) and shows the drawn rate second.
+each frame cost 6 ms. It now shows gpui's own figures (the profiler's
+`Window::draw` p50 and the frame rate from its present-interval histogram,
+which gpui records only while the window animates), refreshed once a second;
+our meter's numbers stay in the log, where the phase split is the point.
 
 ## 4. What remains, in order of expected gain
 
@@ -147,11 +149,10 @@ each frame cost 6 ms. It now leads with the cost and the rate it allows
 - ~~Per-node cost of the debug profile~~ — done, see §3c.
 - **Residual re-measurement** on Scenarios (10 callbacks/node: the chart and
   comparison table), Taxes and Rules (5/node) — same bisection as above.
-- **View caching for hover/typing frames**: gpui reuses a `.cached()` view's
-  layout and paint when the view is clean and its bounds unchanged. Splitting
-  the shell (sidebar, title bar, status bar) from the content view makes a
-  hover on the sidebar cost the shell only. It does not help wheel scrolling
-  (the content's bounds change every frame).
+- ~~**View caching for hover/typing frames**~~ — done (`shell.rs`, perf
+  step 3 in `perf-plan.md`): the sidebar and the content are cached views; a
+  frame that does not touch the screen costs ~2 ms on the box instead of
+  22–60 ms. It does not help wheel scrolling (the content is notified).
 
 ## 5. How to measure
 

@@ -4,7 +4,7 @@
 //! atlas [--theme light|dark] [--size WxH] [--screen household|people|…] [--viewer a|b]
 //! ```
 
-use atlas_app::{AtlasApp, Launch, alerting, logging};
+use atlas_app::{Launch, Shell, alerting, logging};
 use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::*;
 
@@ -41,9 +41,10 @@ fn main() {
                     window.set_debug_frame_overlay_mode(DebugFrameOverlayMode::Full);
                     log::info!("perf: gpui frame-time overlay on (top-right: current draw, 1%/10% worst, max, frame count); --no-perf-overlay hides it");
                 }
-                let view = cx.new(|cx| AtlasApp::new(&launch, window, cx));
-                // Root must be the first view in every gpui-kit window.
-                cx.new(|cx| Root::new(view, window, cx))
+                // The shell creates the content view; Root must be the first
+                // view in every gpui-kit window.
+                let shell = cx.new(|cx| Shell::new(&launch, window, cx));
+                cx.new(|cx| Root::new(shell, window, cx))
             })
             .expect("failed to open the Atlas Financer window");
         })
