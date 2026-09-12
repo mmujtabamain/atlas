@@ -26,7 +26,8 @@ use crate::widgets::grid;
 use crate::nav::{Destination, Route};
 pub use crate::actions::with_app;
 use crate::actions::{AccountsControls, AppHandle};
-use crate::controls::PlanChoices;
+use crate::controls::{ActivityControls, PlanChoices};
+use crate::occurrence_entry::OccurrenceForm;
 use crate::models::{
     self,
     entities::EntityModels,
@@ -106,8 +107,13 @@ pub struct AtlasApp {
     pub(crate) selected_policy: Option<ObjectRef>,
     /// The object the policy editor opens on, when opened from its detail.
     pub(crate) policy_target: Option<ObjectRef>,
-    /// Activity / Actuals: the account filter.
-    pub(crate) actuals_account_filter: Option<AccountId>,
+    /// Activity: the series search and actuals account filter, the occurrence
+    /// dialogs' inputs, and the selections behind the inspectors.
+    pub(crate) activity_controls: ActivityControls,
+    pub(crate) occurrence_form: OccurrenceForm,
+    pub(crate) selected_occurrence: Option<(SeriesId, NaiveDate)>,
+    pub(crate) selected_actual: Option<atlas_core::ids::TransactionId>,
+    pub(crate) selected_series: Option<SeriesId>,
     /// Forecast / Path: the account whose path is expanded, and the report tab.
     pub(crate) forecast_selected_account: Option<AccountId>,
     pub(crate) forecast_report_tab: usize,
@@ -205,8 +211,8 @@ pub struct Grids {
 impl Grids {
     fn new(window: &mut Window, cx: &mut App) -> Self {
         Grids {
-            timeline_occurrences: grid::new_grid(models::timeline::OCCURRENCE_COLUMNS.to_vec(), window, cx),
-            timeline_actuals: grid::new_grid(models::timeline::ACTUAL_COLUMNS.to_vec(), window, cx),
+            timeline_occurrences: grid::new_selectable_grid(models::timeline::OCCURRENCE_COLUMNS.to_vec(), window, cx),
+            timeline_actuals: grid::new_selectable_grid(models::timeline::ACTUAL_COLUMNS.to_vec(), window, cx),
             tax_events: grid::new_grid(models::taxes::EVENT_COLUMNS.to_vec(), window, cx),
             rule_fees: grid::new_grid(models::rules::FEE_COLUMNS.to_vec(), window, cx),
         }
@@ -438,7 +444,7 @@ impl AtlasApp {
         });
         let boundary = Boundary::Household;
         let reservation_form = ReservationForm::new(&household, viewer, _window, _cx);
-        let timeline_filter = TimelineFilter { entity: None, account: None, certainty: None, status: None, scenario: None, through: horizon };
+        let timeline_filter = TimelineFilter { entity: None, account: None, certainty: None, status: None, scenario: None, through: horizon, series: None, actuals_account: None };
         let timeline_controls = TimelineControls::new(&household, viewer, _window, _cx);
         let series_form = SeriesForm::new(_window, _cx);
         let e05_amount = Money::from_major(100_000, household.base_currency);
@@ -478,7 +484,11 @@ impl AtlasApp {
             account_tab: 0,
             selected_policy: None,
             policy_target: None,
-            actuals_account_filter: None,
+            activity_controls: ActivityControls::new(&household_for_controls, viewer, None, _window, _cx),
+            occurrence_form: OccurrenceForm::new(_window, _cx),
+            selected_occurrence: None,
+            selected_actual: None,
+            selected_series: None,
             forecast_selected_account: None,
             forecast_report_tab: 0,
             boundary_choice,
@@ -562,6 +572,7 @@ impl AtlasApp {
         self.privacy_forms = PrivacyForms::new(&self.household, self.viewer.person, window, cx);
         self.entry_forms = crate::entry::EntryForms::new(&self.household, window, cx);
         self.accounts_controls = AccountsControls::new(&self.household, window, cx);
+        self.activity_controls = ActivityControls::new(&self.household, self.viewer, self.timeline_filter.actuals_account, window, cx);
         let (boundary_choice, boundaries) = crate::controls::boundary_choice(&self.household, self.viewer, self.boundary, window, cx);
         self.boundary_choice = boundary_choice;
         self.boundaries = boundaries;
@@ -796,7 +807,7 @@ impl AtlasApp {
         result
     }
 
-    fn refresh_assumptions(&mut self) {
+    pub(crate) fn refresh_assumptions(&mut self) {
         self.assumptions.invalidate();
     }
 
@@ -973,6 +984,74 @@ impl AtlasApp {
     pub fn set_timeline_scenario(&mut self, on: bool, cx: &mut Context<Self>) {
         self.timeline_filter.scenario = if on { self.overlay_scenario() } else { None };
         self.timeline.invalidate();
+        cx.notify();
+    }
+
+    /// Upcoming narrowed to one series, or widened again.
+    pub fn set_timeline_series(&mut self, series: Option<SeriesId>, cx: &mut Context<Self>) {
+        self.timeline_filter.series = series;
+        self.timeline.invalidate();
+        cx.notify();
+    }
+
+    /// `Clear filters` on Upcoming: entity, account, certainty, status and
+    /// window back to their defaults; the Plan choice stays explicit.
+    pub fn clear_timeline_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for state in self.timeline_controls.all() {
+            state.update(cx, |s, cx| s.set_selected_index(Some(IndexPath::default()), window, cx));
+        }
+        self.timeline_filter.series = None;
+        self.apply_timeline_filters(cx);
+    }
+
+    /// The actual-transactions register narrowed to one account.
+    pub fn set_actuals_account(&mut self, account: Option<AccountId>, cx: &mut Context<Self>) {
+        if self.timeline_filter.actuals_account != account {
+            self.timeline_filter.actuals_account = account;
+            self.selected_actual = None;
+            self.timeline.invalidate();
+            cx.notify();
+        }
+    }
+
+    /// A click on a row of the Upcoming register: the occurrence's identity
+    /// (series and original due date) opens the inspector.
+    pub fn select_occurrence_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        let key = self.timeline().and_then(|m| m.occurrences.get(row)).map(|o| (o.series, o.original_due));
+        if key.is_some() {
+            log::info!("occurrence selected: {key:?}");
+            self.selected_occurrence = key;
+            cx.notify();
+        }
+    }
+
+    pub fn select_occurrence(&mut self, series: SeriesId, original_due: NaiveDate, cx: &mut Context<Self>) {
+        self.selected_occurrence = Some((series, original_due));
+        cx.notify();
+    }
+
+    pub fn close_occurrence_inspector(&mut self, cx: &mut Context<Self>) {
+        self.selected_occurrence = None;
+        cx.notify();
+    }
+
+    /// A click on a row of the actual-transactions register.
+    pub fn select_actual_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        let id = self.timeline().and_then(|m| m.actual_ids.get(row)).copied();
+        if id.is_some() {
+            log::info!("actual selected: {id:?}");
+            self.selected_actual = id;
+            cx.notify();
+        }
+    }
+
+    pub fn close_actual_inspector(&mut self, cx: &mut Context<Self>) {
+        self.selected_actual = None;
+        cx.notify();
+    }
+
+    pub fn select_series(&mut self, id: SeriesId, cx: &mut Context<Self>) {
+        self.selected_series = Some(id);
         cx.notify();
     }
 
@@ -1772,8 +1851,13 @@ impl AtlasApp {
                 Err(err) => self.render_engine_failure(Route::Funding, "the funding order", err, cx),
             },
             Route::Upcoming | Route::Series | Route::SeriesDetail(_) | Route::Actuals => match self.timeline_result() {
-                Ok(model) => models::timeline::render(model, &self.timeline_controls, &self.grids, &self.household, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Route::Upcoming, "the timeline", err, cx),
+                Ok(model) => match self.route {
+                    Route::Series => crate::screens::activity::render_series(self, model, &self.household, cx),
+                    Route::SeriesDetail(id) => crate::screens::activity::render_series_detail(self, id, model, &self.household, cx),
+                    Route::Actuals => crate::screens::activity::render_actuals(self, model, &self.household, cx),
+                    _ => crate::screens::activity::render_upcoming(self, model, &self.household, cx),
+                },
+                Err(err) => self.render_engine_failure(self.route, "the planned movements", err, cx),
             },
             Route::ForecastPath => match self.projection_result() {
                 Ok(model) => models::projections::render(model, &self.household, cx).into_any_element(),

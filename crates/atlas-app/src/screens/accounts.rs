@@ -296,7 +296,7 @@ fn render_overview(app: &AtlasApp, account: &Account, model: &AccountModel, hous
                 .flex_wrap()
                 .gap_2()
                 .child(Button::new("account-record-transaction").small().outline().label("Record transaction…").on_click(cx.listener(move |this, _, window, cx| this.open_entry_with_account(Entry::Actual, id, window, cx))))
-                .child(Button::new("account-actuals").small().ghost().label("Actuals").on_click(cx.listener(move |this, _, _, cx| this.open_actuals_for(id, cx))))
+                .child(Button::new("account-actuals").small().ghost().label("Actuals").on_click(cx.listener(move |this, _, window, cx| this.open_actuals_for(id, window, cx))))
                 .child(
                     Button::new("account-view-forecast")
                         .small()

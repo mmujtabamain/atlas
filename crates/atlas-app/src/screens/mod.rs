@@ -2,6 +2,7 @@
 //! derived models in [`crate::models`]; state changes go through `AtlasApp`.
 
 pub mod accounts;
+pub mod activity;
 pub mod common;
 pub mod earmarks;
 pub mod funding;
