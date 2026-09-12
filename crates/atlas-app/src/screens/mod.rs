@@ -1,6 +1,6 @@
-//! One module per sidebar section. [`Section`] is the navigation model; every
-//! section maps to the plan sections it implements and to the milestone that
-//! delivers it, so a screen that is not built yet can say so precisely.
+//! One module per sidebar section. [`Section`] is the navigation model: the
+//! sidebar groups, labels, icons and the stable slugs used by `--screen`,
+//! element ids and tests.
 
 pub mod accounts;
 pub mod assumptions;
@@ -18,9 +18,24 @@ pub mod settings;
 pub mod taxes;
 pub mod timeline;
 
+use atlas_core::authz::Viewer;
+use atlas_core::ids::{ObjectRef, ScenarioId};
+use atlas_core::model::Household;
+use atlas_core::Disclosure;
 use gpui_kit::assets::IconName;
 
-/// The sidebar destinations (plan doc §2 "Screen map").
+/// The scenario behind the “overlay scenario …” toggles of the Timeline,
+/// Projections, Assumptions, Taxes and Rules screens: the household's first
+/// scenario the viewer may see. `None` hides the toggle.
+pub fn overlay_scenario(household: &Household, viewer: Viewer) -> Option<ScenarioId> {
+    household
+        .scenarios
+        .iter()
+        .map(|s| s.id)
+        .find(|id| !matches!(household.disclosure_for(viewer, ObjectRef::Scenario(*id)), Disclosure::Hidden))
+}
+
+/// The sidebar destinations.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Section {
     Household,
@@ -37,14 +52,6 @@ pub enum Section {
     Decisions,
     Privacy,
     Settings,
-}
-
-/// A milestone that delivers a section, with its DevBench board task.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Milestone {
-    pub number: u8,
-    pub task_id: u32,
-    pub title: &'static str,
 }
 
 impl Section {
@@ -137,38 +144,6 @@ impl Section {
             Section::Decisions => IconName::Target,
             Section::Privacy => IconName::ShieldCheck,
             Section::Settings => IconName::Settings,
-        }
-    }
-
-    /// The `plan.md` sections a screen implements.
-    pub fn plan_sections(self) -> &'static str {
-        match self {
-            Section::Household => "§5, §6, §7, §2.1",
-            Section::People => "§5.2, §7",
-            Section::Companies => "§5.3, §8",
-            Section::Accounts => "§5.4, §7",
-            Section::Liquidity => "§6, §17, M02, E01, E08",
-            Section::Timeline => "§9, §15, §16, M05",
-            Section::Projections => "§11, §2.1, §2.4, §10.6",
-            Section::Assumptions => "§10, §32.2",
-            Section::Taxes => "§12, M23, M24, E05",
-            Section::Rules => "§14, M54",
-            Section::Scenarios => "§18",
-            Section::Decisions => "§13, §19, §20, §26, E02, E03, E07",
-            Section::Privacy => "§7.1–7.6, §18.5, M55",
-            Section::Settings => "—",
-        }
-    }
-
-    /// The milestone that delivers the screen when it is not built yet.
-    pub fn pending_milestone(self) -> Option<Milestone> {
-        let m = |number, task_id, title| Some(Milestone { number, task_id, title });
-        match self {
-            Section::Household | Section::Settings | Section::People | Section::Companies | Section::Accounts | Section::Liquidity | Section::Timeline | Section::Projections | Section::Assumptions | Section::Taxes => None,
-            Section::Rules => m(7, 2776, "Rules engine"),
-            Section::Scenarios => m(8, 2783, "Scenarios & comparison"),
-            Section::Decisions => m(9, 2789, "Funding optimizer & affordability decisions"),
-            Section::Privacy => m(10, 2796, "Privacy & authorization"),
         }
     }
 }

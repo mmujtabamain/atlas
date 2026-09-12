@@ -39,7 +39,7 @@ fn main() {
                     // gpui's own frame-time readout, painted straight into the
                     // scene (no view invalidation, so it never causes a frame).
                     window.set_debug_frame_overlay_mode(DebugFrameOverlayMode::Full);
-                    log::info!("perf: gpui frame-time overlay on (top-right: current draw, 1%/10% worst, max, frame count); --no-perf-overlay hides it");
+                    log::info!("perf: gpui frame-time overlay on (top-right: current draw, 1%/10% worst, max, frame count)");
                 }
                 // The shell creates the content view; Root must be the first
                 // view in every gpui-kit window.

@@ -39,8 +39,9 @@ pub struct Launch {
     pub owner: String,
     /// Take over another owner's lock on the household file.
     pub take_over: bool,
-    /// gpui's frame-time overlay in the window's top-right corner (perf work);
-    /// `--no-perf-overlay` or `ATLAS_PERF_OVERLAY=0` hides it.
+    /// gpui's frame-time overlay in the window's top-right corner (perf work).
+    /// Off unless `--perf-overlay` or `ATLAS_PERF_OVERLAY=1` asks for it; the
+    /// status bar keeps gpui's fps reading either way.
     pub perf_overlay: bool,
 }
 
@@ -57,7 +58,7 @@ impl Default for Launch {
             as_of: None,
             owner: std::env::var("USER").unwrap_or_else(|_| "user".into()),
             take_over: false,
-            perf_overlay: std::env::var("ATLAS_PERF_OVERLAY").map(|v| !matches!(v.trim(), "0" | "off" | "false" | "no")).unwrap_or(true),
+            perf_overlay: std::env::var("ATLAS_PERF_OVERLAY").map(|v| matches!(v.trim(), "1" | "on" | "true" | "yes")).unwrap_or(false),
         }
     }
 }
@@ -120,7 +121,7 @@ impl Launch {
                 "--no-perf-overlay" => launch.perf_overlay = false,
                 "-h" | "--help" => {
                     println!(
-                        "atlas [--theme light|dark] [--size WxH] [--screen {}] [--viewer a|b|<person id>] [--household FILE.atlas.sqlite | --new | --sample] [--as-of YYYY-MM-DD] [--owner NAME] [--take-over] [--no-perf-overlay]\n\nLogs go to stderr and logs.log (ATLAS_LOG_FILE=path|off, RUST_LOG=filter, ATLAS_LOG_FILE_FILTER=filter); the status bar shows the previous frame's fps/build/draw.",
+                        "atlas [--theme light|dark] [--size WxH] [--screen {}] [--viewer a|b|<person id>] [--household FILE.atlas.sqlite | --new | --sample] [--as-of YYYY-MM-DD] [--owner NAME] [--take-over] [--perf-overlay]\n\nLogs go to stderr and logs.log (ATLAS_LOG_FILE=path|off, RUST_LOG=filter, ATLAS_LOG_FILE_FILTER=filter); the status bar shows gpui's frame timing.",
                         Section::slugs().join("|")
                     );
                     std::process::exit(0);
@@ -138,7 +139,7 @@ impl Launch {
             "dark" => Theme::change(ThemeMode::Dark, None, cx),
             "light" => Theme::change(ThemeMode::Light, None, cx),
             other => {
-                log::warn!("unknown theme {other:?}; using light (bundled JSON themes are an open decision, see docs/ui-implementation-plan.md §6)");
+                log::warn!("unknown theme {other:?}; using light");
                 Theme::change(ThemeMode::Light, None, cx);
             }
         }
@@ -159,8 +160,9 @@ mod tests {
         assert_eq!(launch.start, Start::File(PathBuf::from("/tmp/x.atlas.sqlite")));
         assert_eq!(launch.owner, "ada");
         assert!(launch.take_over);
-        assert!(launch.perf_overlay, "overlay is on unless asked off");
-        assert!(!Launch::parse(["--no-perf-overlay"].map(String::from)).perf_overlay);
+        assert!(!launch.perf_overlay, "the overlay is off unless asked for");
+        assert!(Launch::parse(["--perf-overlay"].map(String::from)).perf_overlay);
+        assert!(!Launch::parse(["--perf-overlay", "--no-perf-overlay"].map(String::from)).perf_overlay);
         let empty = Launch::parse(["--new", "--viewer", "7", "--as-of", "2026-09-11"].map(String::from));
         assert_eq!(empty.start, Start::Empty);
         assert_eq!(empty.viewer_id, Some(7));

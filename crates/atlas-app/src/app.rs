@@ -118,7 +118,7 @@ pub struct AtlasApp {
     pub(crate) decision_form: DecisionForm,
     pub(crate) privacy: Lazy<PrivacyModel>,
     pub(crate) privacy_forms: PrivacyForms,
-    /// Where the household is saved, once it has a file (M12).
+    /// Where the household is saved, once it has a file.
     pub(crate) file: Option<atlas_store::HouseholdFile>,
     /// Unsaved changes since the last save/load.
     pub(crate) dirty: bool,
@@ -170,7 +170,7 @@ pub struct TaxRuleDraft {
     pub timing: usize,
 }
 
-/// Retained state of the "New tax rule" dialog (§12.2).
+/// Retained state of the "New tax rule" dialog.
 pub struct TaxRuleForm {
     name: Entity<InputState>,
     tax_type: Entity<InputState>,
@@ -277,7 +277,7 @@ const HORIZONS: [(&str, Option<u32>); 4] = [
     ("Next 12 months", Some(12)),
 ];
 
-/// Retained state of the series editor dialog (§9.2–9.4).
+/// Retained state of the series editor dialog.
 pub struct SeriesForm {
     amount: Entity<InputState>,
     change_from: Entity<DatePickerState>,
@@ -309,7 +309,7 @@ pub struct ReservationDraft {
     pub hardness: usize,
 }
 
-/// Retained state of the "New reservation" form (§17).
+/// Retained state of the "New reservation" form.
 pub struct ReservationForm {
     name: Entity<InputState>,
     amount: Entity<InputState>,
@@ -555,7 +555,7 @@ impl AtlasApp {
         }
     }
 
-    // ----- user tax rules (§12.2) ----------------------------------------------------
+    // ----- user tax rules --------------------------------------------------------
 
     pub fn open_new_tax_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let form = &self.tax_form;
@@ -576,7 +576,7 @@ impl AtlasApp {
             let draft_entity = draft.clone();
             let this = this.clone();
             dialog
-                .title("New tax rule (user-authored, unverified)")
+                .title("New tax rule")
                 .w_96()
                 .child(
                     Form::vertical()
@@ -584,7 +584,7 @@ impl AtlasApp {
                         .child(Field::new().label("Tax type").child(Input::new(&tax_type).id("tax-rule-type")))
                         .child(Field::new().label("Applies to series category").child(Select::new(&category).placeholder("Pick a category")))
                         .child(
-                            Field::new().label("Kind (§14.3: full amount vs excess must be explicit)").child(
+                            Field::new().label("How it is charged").child(
                                 RadioGroup::vertical("tax-rule-kind")
                                     .children(["Flat rate on every matching transaction", "Rate on the full amount once a transaction exceeds the threshold", "Rate on the excess above the threshold"])
                                     .selected_index(Some(kind))
@@ -597,7 +597,7 @@ impl AtlasApp {
                         .child(Field::new().label("Rate (%)").required(true).child(Input::new(&rate).id("tax-rule-rate")))
                         .child(Field::new().label("Threshold (per transaction)").child(Input::new(&threshold).id("tax-rule-threshold")))
                         .child(
-                            Field::new().label("Timing (§12.3)").child(
+                            Field::new().label("When it is paid").child(
                                 RadioGroup::vertical("tax-rule-timing")
                                     .children(["Paid immediately", "Withheld at source, creditable", "Withheld at source, final"])
                                     .selected_index(Some(timing))
@@ -609,7 +609,7 @@ impl AtlasApp {
                         )
                         .child(Field::new().label("Effective from").required(true).child(DatePicker::new(&from)))
                         .child(Field::new().label("Effective to (optional)").child(DatePicker::new(&to)))
-                        .child(Field::new().label("Source").child(Input::new(&source).id("tax-rule-source"))),
+                        .child(Field::new().label("Source (the rule stays marked unverified until one is attached)").child(Input::new(&source).id("tax-rule-source"))),
                 )
                 .footer(
                     DialogFooter::new()
@@ -701,8 +701,8 @@ impl AtlasApp {
             timing,
             effective_from,
             effective_to,
-            source: if source.is_empty() { "user-authored, no source attached — unverified (§12.7)".into() } else { format!("{source} — unverified until reviewed") },
-            explanation: "User-authored rule; simulated alongside the DEMO pack, never labelled legally compliant (§12.7, M54).".into(),
+            source: if source.is_empty() { "no source attached — unverified".into() } else { format!("{source} — unverified until reviewed") },
+            explanation: "Your own rule, applied alongside the DEMO pack. It is a planning estimate, not legal or tax advice.".into(),
         };
         let pack = self.household.add_user_tax_rule(rule);
         log::info!("user tax rule “{name}” added to {pack}");
@@ -775,7 +775,7 @@ impl AtlasApp {
         cx.notify();
     }
 
-    /// §2.5 — records acceptance of an assumption today.
+    /// Records acceptance of an assumption today.
     pub fn accept_assumption(&mut self, id: AssumptionId, window: &mut Window, cx: &mut Context<Self>) {
         match self.household.accept_assumption(id, self.household.as_of) {
             Ok(()) => {
@@ -792,7 +792,7 @@ impl AtlasApp {
         cx.notify();
     }
 
-    /// §10.7 — applies the current derivation to an assumption; it then needs acceptance.
+    /// Applies the current derivation to an assumption; it then needs acceptance.
     pub fn apply_derivation(&mut self, assumption: AssumptionId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(series) = self.derivation_series.or_else(|| self.assumptions().map(|m| m.derivation_series)) else { return };
         match derive(&self.household, series, self.derivation).and_then(|d| apply_derived(&mut self.household, &d, assumption).map(|_| d)) {
@@ -824,7 +824,7 @@ impl AtlasApp {
 
     fn projection_result(&self) -> &Result<ProjectionModel, EngineError> {
         self.projection.get(|| {
-            let scenario = if self.projection_scenario { Some(fixtures::ids::BUY_CAR) } else { None };
+            let scenario = if self.projection_scenario { self.overlay_scenario() } else { None };
             Self::compute_projection(&self.household, self.viewer, self.projection_boundary, self.projection_case, scenario, self.horizon)
         })
     }
@@ -874,7 +874,7 @@ impl AtlasApp {
         &self.timeline_filter
     }
 
-    /// Rebuilds the timeline filter from the Select states (§9 filters).
+    /// Rebuilds the timeline filter from the Select states.
     pub fn apply_timeline_filters(&mut self, cx: &mut Context<Self>) {
         let row = |state: &Entity<SelectState<Vec<SharedString>>>, cx: &App| state.read(cx).selected_index(cx).map(|p| p.row).unwrap_or(0);
         let controls = &self.timeline_controls;
@@ -896,14 +896,19 @@ impl AtlasApp {
         cx.notify();
     }
 
-    /// Toggles the “Buy car” scenario overlay on the timeline (§18).
+    /// The scenario the overlay toggles apply (see [`screens::overlay_scenario`]).
+    pub fn overlay_scenario(&self) -> Option<ScenarioId> {
+        screens::overlay_scenario(&self.household, self.viewer)
+    }
+
+    /// Toggles the scenario overlay on the timeline.
     pub fn set_timeline_scenario(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.timeline_filter.scenario = if on { Some(fixtures::ids::BUY_CAR) } else { None };
+        self.timeline_filter.scenario = if on { self.overlay_scenario() } else { None };
         self.timeline.invalidate();
         cx.notify();
     }
 
-    // ----- series editor (§9.2–9.4) --------------------------------------------------
+    // ----- series editor ---------------------------------------------------------
 
     pub fn open_series_editor(&mut self, id: SeriesId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(series) = self.household.series_by_id(id).cloned() else { return };
@@ -933,11 +938,11 @@ impl AtlasApp {
                         .child(div().text_xs().child(summary.clone()))
                         .child(
                             Form::vertical()
-                                .child(Field::new().label("Expected amount — whole series (§9.2 “edit entire series”)").child(Input::new(&amount).id("series-amount")))
-                                .child(Field::new().label("New amount from this date on (§9.3 effective-dated change)").child(DatePicker::new(&change_from)))
-                                .child(Field::new().label("New amount").child(Input::new(&change_amount).id("series-change-amount")))
-                                .child(Field::new().label("Skip the occurrence due on (§9.2 “edit only this occurrence”)").child(DatePicker::new(&skip_on)))
-                                .child(Field::new().label("End the series after (§9.4 last salary date)").child(DatePicker::new(&end_after))),
+                                .child(Field::new().label("Expected amount for the whole series").child(Input::new(&amount).id("series-amount")))
+                                .child(Field::new().label("Change the amount from this date on").child(DatePicker::new(&change_from)))
+                                .child(Field::new().label("New amount from that date").child(Input::new(&change_amount).id("series-change-amount")))
+                                .child(Field::new().label("Skip only the occurrence due on").child(DatePicker::new(&skip_on)))
+                                .child(Field::new().label("End the series after").child(DatePicker::new(&end_after))),
                         ),
                 )
                 .footer(
@@ -1112,7 +1117,7 @@ impl AtlasApp {
         self.decision_step
     }
 
-    // ----- scenarios (§18, M8) -----------------------------------------------------
+    // ----- scenarios ---------------------------------------------------------------
 
     fn compute_scenarios(household: &Household, viewer: Viewer, through: NaiveDate, case: Case, selection: &[ScenarioId]) -> Result<ScenariosModel, EngineError> {
         let result = perf::timed(&format!("compute scenarios (viewer={} case={case:?} selected={})", viewer.person, selection.len()), || ScenariosModel::compute(household, viewer, through, case, selection));
@@ -1153,7 +1158,7 @@ impl AtlasApp {
         }
     }
 
-    // ----- rules (§14, M7) ---------------------------------------------------------
+    // ----- rules -------------------------------------------------------------------
 
     fn compute_rules(household: &Household, viewer: Viewer, through: NaiveDate, scenario: bool, simulated: Option<RuleId>) -> Result<RulesModel, EngineError> {
         let result = perf::timed(&format!("compute rules (viewer={} scenario={scenario} simulated={simulated:?})", viewer.person), || RulesModel::compute(household, viewer, through, scenario, simulated));
@@ -1269,7 +1274,7 @@ impl AtlasApp {
         cx.notify();
     }
 
-    // ----- reservations (§17, E01) ------------------------------------------------
+    // ----- reservations ------------------------------------------------------------
 
     /// Opens the "New reservation" dialog. The builder only reads the form
     /// entities, never `self` (it runs while this view is rendering).
@@ -1294,7 +1299,7 @@ impl AtlasApp {
                         .child(Field::new().label("Account").child(Select::new(&form_account).placeholder("Pick an account")))
                         .child(Field::new().label("Amount").required(true).child(Input::new(&form_amount).id("reservation-amount")))
                         .child(
-                            Field::new().label("Coverage (§17)").child(
+                            Field::new().label("How it relates to other earmarks").child(
                                 RadioGroup::vertical("reservation-coverage")
                                     .children(["Disjoint — adds to every other earmark", "Includes the account's bank minimum", "Nested inside another earmark"])
                                     .selected_index(Some(coverage))
@@ -1406,7 +1411,7 @@ impl AtlasApp {
                 self.mark_dirty();
         self.refresh_derived();
                 cx.notify();
-                Ok(format!("Reserved {} for “{name}” — ledger cash unchanged, free cash reduced (§17)", amount.format()))
+                Ok(format!("Reserved {} for “{name}” — the bank balance is unchanged, free cash is reduced", amount.format()))
             }
             Err(err) => {
                 alerting::report(Level::Warning, format!("add_reservation rejected: {err}"));
@@ -1415,14 +1420,14 @@ impl AtlasApp {
         }
     }
 
-    /// Asks before recording the payment that releases an earmark (E01).
+    /// Asks before recording the payment that releases an earmark.
     pub fn open_release_reservation(&mut self, id: ReservationId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(reservation) = self.household.reservation(id).cloned() else { return };
         let account_name = self.household.account(reservation.account).map(|a| a.name.clone()).unwrap_or_default();
         let this = cx.entity().downgrade();
         let title = format!("Pay and release “{}”?", reservation.name);
         let body = format!(
-            "Records the {} payment from {} and releases the earmark. Ledger cash falls by the same amount; free cash stays where it is because the same obligation is never deducted twice (E01).",
+            "Records the {} payment from {} and releases the earmark. The bank balance falls by that amount; free cash stays where it is, because the money was already set aside.",
             reservation.amount.format(),
             account_name
         );
@@ -1456,7 +1461,7 @@ impl AtlasApp {
         true
     }
 
-    /// E01 in one step: pay the obligation, release the earmark, recompute.
+    /// Pay the obligation, release the earmark, recompute — in one step.
     pub fn pay_and_release(&mut self, id: ReservationId, cx: &mut Context<Self>) -> Result<String, String> {
         let name = self.household.reservation(id).map(|r| r.name.clone()).unwrap_or_else(|| id.to_string());
         match self.household.pay_and_release(id, self.household.as_of) {
@@ -1533,13 +1538,13 @@ impl AtlasApp {
         self.entities_result().as_ref().ok()
     }
 
-    /// Changes who is looking; every screen re-projects (M10 adds the UI).
+    /// Changes who is looking; every screen re-projects.
     pub fn set_viewer(&mut self, viewer: Viewer, cx: &mut Context<Self>) {
         if self.viewer != viewer {
             let from = self.viewer_name();
             self.viewer = viewer;
             let to = self.viewer_name();
-            // §5.18: a viewer switch is authorization-sensitive and goes on the audit log.
+            // A viewer switch is authorization-sensitive and goes on the audit log.
             self.household.record_audit(viewer.person, None, atlas_core::authz::AuditKind::ViewerSwitched, format!("viewer switched from {from} to {to}; every screen re-filtered through their policies"), None, chrono::Local::now().naive_local());
             self.mark_dirty();
         }
@@ -1592,7 +1597,7 @@ impl AtlasApp {
                             .title("Calculation failed"),
                     )
                     .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
-                        "The failure was logged and, when alerts are configured, posted to the team. Fix the fixture or the policy and reopen the screen.",
+                        "The failure was logged and, when alerts are configured, posted to the team. Check the household's accounts and policies, then reopen the screen.",
                     ))
                     .into_any_element(),
             },

@@ -34,7 +34,6 @@ use gpui_kit::component::{
     separator::Separator,
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
     status_bar::StatusBar,
-    tag::Tag,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -94,8 +93,7 @@ impl Shell {
                     .items_center()
                     .gap_3()
                     .child(Icon::new(IconName::Wallet).small())
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer"))
-                    .child(Tag::secondary().xsmall().outline().child("M12 real data")),
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer")),
             )
             .child(
                 h_flex()
@@ -147,8 +145,8 @@ impl Shell {
                 (None, _, true) => "saving…".to_string(),
                 (Some(path), true, false) => format!("{} • unsaved", path.display()),
                 (Some(path), false, false) => format!("{}", path.display()),
-                (None, true, false) => "not saved yet • unsaved changes — Household ▸ Save as…".to_string(),
-                (None, false, false) => "in memory — Household ▸ Save as… to keep it".to_string(),
+                (None, true, false) => "unsaved changes — Save as… from the household menu".to_string(),
+                (None, false, false) => "not saved to a file yet".to_string(),
             }))
             .right(Separator::vertical().h_3())
             .right(div().text_color(muted).child(alerting::status_label()))
@@ -162,7 +160,7 @@ impl Shell {
                     .child(app.perf().status_text()),
             )
             .right(Separator::vertical().h_3())
-            .right(div().text_color(muted).child(format!("atlas-core {}", env!("CARGO_PKG_VERSION"))))
+            .right(div().text_color(muted).child(format!("v{}", env!("CARGO_PKG_VERSION"))))
     }
 }
 
@@ -308,16 +306,10 @@ impl Render for SidebarView {
         for (group, sections) in Section::GROUPS {
             sidebar = sidebar.child(SidebarGroup::new(group).child(SidebarMenu::new().children(sections.iter().map(|section| {
                 let section = *section;
-                let item = SidebarMenuItem::new(section.label())
+                SidebarMenuItem::new(section.label())
                     .icon(section.icon())
                     .active(section == snapshot.section)
-                    .on_click(cx.listener(move |this, _, _, cx| this.app.update(cx, |app, cx| app.navigate(section, cx))));
-                match section.pending_milestone() {
-                    Some(m) => item.suffix(move |_, cx| {
-                        div().text_xs().text_color(cx.theme().muted_foreground).child(format!("M{}", m.number)).into_any_element()
-                    }),
-                    None => item,
-                }
+                    .on_click(cx.listener(move |this, _, _, cx| this.app.update(cx, |app, cx| app.navigate(section, cx))))
             }))));
         }
         sidebar.footer(
@@ -325,8 +317,8 @@ impl Render for SidebarView {
                 v_flex()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child("Deterministic · no AI")
-                    .when(!collapsed, |this| this.child("Every figure opens its chain")),
+                    .child("Deterministic, no AI")
+                    .when(!collapsed, |this| this.child("Every figure shows its calculation")),
             ),
         )
     }
