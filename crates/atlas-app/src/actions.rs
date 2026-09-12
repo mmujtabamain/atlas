@@ -180,6 +180,12 @@ impl AtlasApp {
         self.navigate(Route::Actuals, cx);
     }
 
+    /// Rules & taxes / Taxes with the entity display filter set.
+    pub fn open_taxes_for_entity(&mut self, entity: atlas_core::ids::EntityRef, cx: &mut Context<Self>) {
+        self.tax_entity_filter = Some(entity);
+        self.navigate(Route::Taxes, cx);
+    }
+
     /// Activity / Upcoming narrowed to one series.
     pub fn open_upcoming_for_series(&mut self, series: SeriesId, cx: &mut Context<Self>) {
         self.set_timeline_series(Some(series), cx);

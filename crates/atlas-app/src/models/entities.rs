@@ -16,8 +16,18 @@ pub struct PersonModel {
     pub attribution: ExplainedFigure,
     /// Income series attributed to the person.
     pub income: Vec<SeriesId>,
-    /// Tax cash the person owes in the window, as text.
-    pub tax_text: String,
+    /// Tax cash attributed to the person through the horizon (Expected
+    /// baseline), with the event count and the packs used; `None` when the
+    /// assessment could not be computed.
+    pub tax: Option<PersonTax>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PersonTax {
+    pub total: Option<ExplainedFigure>,
+    pub events: usize,
+    pub through: chrono::NaiveDate,
+    pub packs: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -67,23 +77,23 @@ pub struct EntityModels {
 }
 
 impl EntityModels {
-    pub fn compute(household: &Household, viewer: Viewer) -> EngineResult<Self> {
-        log::info!("computing entity models for viewer {}", viewer.person);
+    pub fn compute(household: &Household, viewer: Viewer, horizon: chrono::NaiveDate) -> EngineResult<Self> {
+        log::info!("computing entity models for viewer {} through {horizon}", viewer.person);
         let mut persons = Vec::new();
-        let assessment = atlas_core::tax::assess(household, atlas_core::fixtures::default_horizon().max(household.as_of), None, atlas_core::forecast::Case::Expected).ok();
+        let through = horizon.max(household.as_of);
+        let assessment = atlas_core::tax::assess(household, through, None, atlas_core::forecast::Case::Expected).ok();
         for person in &household.people {
             let attribution = person_attribution(household, person.id)?;
-            let tax_text = match &assessment {
-                Some(assessment) => {
-                    let own = assessment.by_entity.iter().find(|(e, _)| *e == EntityRef::Person(person.id)).map(|(_, c)| c.money());
-                    let events = assessment.events.iter().filter(|e| e.entity == EntityRef::Person(person.id)).count();
-                    match own {
-                        Some(total) if events > 0 => format!("{} in the window from {events} tax event{} under the DEMO pack — a planning estimate, not a filing", total.format(), if events == 1 { "" } else { "s" }),
-                        _ => "no tax event attributed to this person in the window".into(),
-                    }
+            let tax = assessment.as_ref().map(|assessment| {
+                let own = assessment.by_entity.iter().find(|(e, _)| *e == EntityRef::Person(person.id)).map(|(_, c)| c);
+                let events = assessment.events.iter().filter(|e| e.entity == EntityRef::Person(person.id)).count();
+                PersonTax {
+                    total: own.filter(|_| events > 0).map(|calc| ExplainedFigure::new(format!("person-{}-tax", person.id.raw()), "Tax cash attributed", calc, household, viewer)),
+                    events,
+                    through,
+                    packs: assessment.packs_used.clone(),
                 }
-                None => "tax assessment unavailable".into(),
-            };
+            });
             persons.push(PersonModel {
                 id: person.id,
                 attribution: ExplainedFigure::new(
@@ -99,7 +109,7 @@ impl EntityModels {
                     .filter(|s| s.entity == EntityRef::Person(person.id) && s.direction == Direction::Income)
                     .map(|s| s.id)
                     .collect(),
-                tax_text,
+                tax,
             });
         }
 

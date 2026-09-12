@@ -2,7 +2,7 @@
 //! `Open…` command that leads to the row's detail or inspector. Bounded
 //! collections use this; unbounded ones use the virtualised [`super::grid`].
 
-use gpui_kit::component::{ActiveTheme as _, h_flex, list::ListItem, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, button::{Button, ButtonVariants as _}, h_flex, list::ListItem, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -86,4 +86,10 @@ pub fn money(money: atlas_core::Money, cx: &App) -> AnyElement {
         .when(money.is_negative(), |d| d.text_color(theme.danger))
         .child(money.format())
         .into_any_element()
+}
+
+/// A named object as a link to its canonical detail: a compact ghost button,
+/// left-aligned in its lane.
+pub fn link(id: impl Into<SharedString>, label: impl Into<SharedString>, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> AnyElement {
+    h_flex().justify_start().min_w_0().child(Button::new(ElementId::Name(id.into())).xsmall().ghost().compact().label(label.into()).on_click(on_click)).into_any_element()
 }

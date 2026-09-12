@@ -107,7 +107,7 @@ fn render_detail(person: &atlas_core::model::Person, model: &super::entities::Pe
                     .child(DescriptionItem::new("Accounts held").value(if accounts.is_empty() { "—".to_string() } else { accounts.join(" · ") }))
                     .child(DescriptionItem::new("Companies").value(if companies.is_empty() { "—".to_string() } else { companies.join(" · ") }))
                     .child(DescriptionItem::new("Liabilities").value(if liabilities.is_empty() { "—".to_string() } else { liabilities.join(" · ") }))
-                    .child(DescriptionItem::new("Tax attribution").value(model.tax_text.clone())),
+                    .child(DescriptionItem::new("Tax attribution").value(model.tax.as_ref().and_then(|t| t.total.as_ref()).map(|f| f.money().format()).unwrap_or_else(|| "none".into()))),
             ),
         )
         .child(
