@@ -421,7 +421,7 @@ pub fn company_cash(household: &Household, id: CompanyId) -> EngineResult<Compan
                 );
             }
             other => committed_terms.push(
-                ProvNode::excluded(other.describe(), ProvValue::Empty, "a timing or payroll-coverage rule, not a cash amount; evaluated by the funding engine (M9)")
+                ProvNode::excluded(other.describe(), ProvValue::Empty, "a timing or payroll-coverage rule, not a cash amount; evaluated by the funding search")
                     .subject(ObjectRef::Company(id)),
             ),
         }

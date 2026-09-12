@@ -22,8 +22,8 @@ use atlas_core::vocab::{Certainty, MoneyClass, ResultStrength};
 use atlas_core::{Disclosure, fixtures};
 
 /// A plan reference: `§` anywhere, or a milestone/example/validation/feature
-/// code — one of the letters M, E, V, F followed by two or three digits, as a
-/// whole word (`M13`, `E05`, `V012`, `F162`; not `M1`, not `EUR2026`).
+/// code — one of the letters M, E, V, F followed by one to three digits, as a
+/// whole word (`M9`, `M13`, `E05`, `V012`, `F162`; not `EUR2026`, not `M1000`).
 fn plan_reference(text: &str) -> Option<String> {
     if let Some(pos) = text.find('§') {
         return Some(text[pos..].chars().take(12).collect());
@@ -37,7 +37,7 @@ fn plan_reference(text: &str) -> Option<String> {
             continue;
         }
         let digits = chars[i + 1..].iter().take_while(|d| d.is_ascii_digit()).count();
-        if !(2..=3).contains(&digits) {
+        if !(1..=3).contains(&digits) {
             continue;
         }
         if chars.get(i + 1 + digits).is_some_and(|d| d.is_alphanumeric()) {
@@ -124,8 +124,9 @@ fn plan_reference_detector_matches_codes_only() {
     assert_eq!(plan_reference("never counted twice (V012)").as_deref(), Some("V012"));
     assert_eq!(plan_reference("fails closed, F162").as_deref(), Some("F162"));
     assert_eq!(plan_reference("E05 example").as_deref(), Some("E05"));
+    assert_eq!(plan_reference("arrives with the decision builder (M9)").as_deref(), Some("M9"));
     assert_eq!(plan_reference("Person A current account"), None);
-    assert_eq!(plan_reference("EUR2026 M1 v2 100,000 M"), None);
+    assert_eq!(plan_reference("EUR2026 v2 100,000 M"), None);
     assert_eq!(plan_reference("Series M100 is fine? no: 3 digits"), Some("M100".into()));
     assert_eq!(plan_reference("M1000 is not a code"), None);
 }

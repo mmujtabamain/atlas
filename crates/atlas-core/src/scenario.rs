@@ -434,7 +434,7 @@ pub fn compare(household: &Household, boundary: Boundary, scenarios: &[ScenarioI
             metrics.push(MetricRow { name: format!("{} payroll coverage", company.name), baseline: coverage(base.lowest.money()), scenario: coverage(over.lowest.money()), delta: None, note: "lowest company cash divided by monthly gross payroll".into() });
         }
     }
-    metrics.push(MetricRow { name: "Goal delays".into(), baseline: "no goals defined".into(), scenario: "no goals defined".into(), delta: None, note: "goals arrive with the decision builder (M9)".into() });
+    metrics.push(MetricRow { name: "Goal delays".into(), baseline: "no goals defined".into(), scenario: "no goals defined".into(), delta: None, note: "goals are evaluated on the Decisions screen".into() });
 
     // F139 attribution: every posting in exactly one bucket.
     #[derive(Default)]
