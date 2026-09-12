@@ -26,6 +26,7 @@ use gpui_kit::*;
 
 use crate::alerting::{self, Level};
 use crate::launch::{Launch, Start};
+use crate::perf;
 use crate::screens::{
     self, Section,
     entities::EntityModels,
@@ -128,6 +129,8 @@ pub struct AtlasApp {
     pub(crate) owner: String,
     pub(crate) lifecycle_form: crate::lifecycle::LifecycleForm,
     pub(crate) entry_forms: crate::entry::EntryForms,
+    /// Frame timing behind the status-bar FPS counter and the `perf:` log lines.
+    pub(crate) perf: crate::perf::FrameMeter,
     pub(crate) _subscriptions: Vec<Subscription>,
 }
 
@@ -442,6 +445,7 @@ impl AtlasApp {
             owner,
             lifecycle_form,
             entry_forms,
+            perf: crate::perf::FrameMeter::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -477,7 +481,7 @@ impl AtlasApp {
     }
 
     fn compute_taxes(household: &Household, viewer: Viewer, through: NaiveDate, scenario: bool, e05_amount: Money, e05_split: bool, e05_schedule: E05Schedule) -> Result<TaxModel, EngineError> {
-        let result = TaxModel::compute(household, viewer, through, scenario, e05_amount, e05_split, e05_schedule);
+        let result = perf::timed(&format!("compute taxes (viewer={} through={through} scenario={scenario})", viewer.person), || TaxModel::compute(household, viewer, through, scenario, e05_amount, e05_split, e05_schedule));
         if let Err(err) = &result {
             alerting::report(Level::Error, format!("tax model failed: {err}"));
         }
@@ -689,7 +693,7 @@ impl AtlasApp {
         scenario: bool,
         horizon: NaiveDate,
     ) -> Result<AssumptionsModel, EngineError> {
-        let result = AssumptionsModel::compute(household, viewer, derivation_series, derivation, boundary, scenario, horizon);
+        let result = perf::timed(&format!("compute assumptions (viewer={} boundary={boundary:?} scenario={scenario})", viewer.person), || AssumptionsModel::compute(household, viewer, derivation_series, derivation, boundary, scenario, horizon));
         if let Err(err) = &result {
             alerting::report(Level::Error, format!("assumptions model failed: {err}"));
         }
@@ -773,7 +777,7 @@ impl AtlasApp {
     }
 
     fn compute_projection(household: &Household, viewer: Viewer, boundary: Boundary, case: Case, scenario: Option<atlas_core::ids::ScenarioId>, through: NaiveDate) -> Result<ProjectionModel, EngineError> {
-        let result = ProjectionModel::compute(household, viewer, boundary, case, scenario, through);
+        let result = perf::timed(&format!("compute projection (viewer={} boundary={boundary:?} case={case:?} scenario={scenario:?} through={through})", viewer.person), || ProjectionModel::compute(household, viewer, boundary, case, scenario, through));
         if let Err(err) = &result {
             alerting::report(Level::Error, format!("projection failed for {boundary:?} {case:?}: {err}"));
         }
@@ -810,7 +814,7 @@ impl AtlasApp {
     }
 
     fn compute_timeline(household: &Household, viewer: Viewer, filter: TimelineFilter) -> Result<TimelineModel, EngineError> {
-        let result = TimelineModel::compute(household, viewer, filter);
+        let result = perf::timed(&format!("compute timeline (viewer={} through={})", viewer.person, filter.through), || TimelineModel::compute(household, viewer, filter));
         if let Err(err) = &result {
             alerting::report(Level::Error, format!("timeline model failed: {err}"));
         }
@@ -974,7 +978,7 @@ impl AtlasApp {
     }
 
     fn compute_liquidity(household: &Household, viewer: Viewer, boundary: Boundary, horizon: NaiveDate) -> Result<LiquidityModel, EngineError> {
-        let result = LiquidityModel::compute(household, viewer, boundary, horizon);
+        let result = perf::timed(&format!("compute liquidity (viewer={} boundary={boundary:?})", viewer.person), || LiquidityModel::compute(household, viewer, boundary, horizon));
         if let Err(err) = &result {
             alerting::report(Level::Error, format!("liquidity model failed for {boundary:?}: {err}"));
         }
@@ -982,7 +986,7 @@ impl AtlasApp {
     }
 
     fn compute_entities(household: &Household, viewer: Viewer) -> Result<EntityModels, EngineError> {
-        let result = EntityModels::compute(household, viewer);
+        let result = perf::timed(&format!("compute entities (viewer={})", viewer.person), || EntityModels::compute(household, viewer));
         if let Err(err) = &result {
             alerting::report(Level::Error, format!("entity models failed for {}: {err}", viewer.person));
         }
@@ -990,7 +994,7 @@ impl AtlasApp {
     }
 
     fn compute_overview(household: &Household, viewer: Viewer, horizon: NaiveDate) -> Result<HouseholdOverview, EngineError> {
-        let result = HouseholdOverview::compute(household, viewer, horizon);
+        let result = perf::timed(&format!("compute household overview (viewer={} horizon={horizon})", viewer.person), || HouseholdOverview::compute(household, viewer, horizon));
         if let Err(err) = &result {
             alerting::report(Level::Error, format!("household overview failed for {}: {err}", viewer.person));
         }
@@ -999,6 +1003,12 @@ impl AtlasApp {
 
     /// Recomputes every derived model after the household or viewer changed.
     pub(crate) fn refresh_derived(&mut self) {
+        let started = std::time::Instant::now();
+        self.refresh_derived_models();
+        log::info!("perf: refresh_derived (every screen model) took {:.1}ms", perf::ms(started.elapsed()));
+    }
+
+    fn refresh_derived_models(&mut self) {
         self.overview = Self::compute_overview(&self.household, self.viewer, self.horizon);
         self.entities = Self::compute_entities(&self.household, self.viewer);
         self.liquidity = Self::compute_liquidity(&self.household, self.viewer, self.boundary, self.horizon);
@@ -1011,12 +1021,17 @@ impl AtlasApp {
         if self.decision.is_some() {
             self.evaluate_decision();
         }
-        self.privacy = PrivacyModel::compute(&self.household, self.viewer);
+        self.privacy = perf::timed(&format!("compute privacy (viewer={})", self.viewer.person), || PrivacyModel::compute(&self.household, self.viewer));
     }
 
     /// The privacy model for the current viewer.
     pub fn privacy(&self) -> &PrivacyModel {
         &self.privacy
+    }
+
+    /// Frame timings (status-bar counter, perf log).
+    pub fn perf(&self) -> &perf::FrameMeter {
+        &self.perf
     }
 
     /// The evaluated decision, if the result step has been reached.
@@ -1035,7 +1050,7 @@ impl AtlasApp {
     // ----- scenarios (§18, M8) -----------------------------------------------------
 
     fn compute_scenarios(household: &Household, viewer: Viewer, through: NaiveDate, case: Case, selection: &[ScenarioId]) -> Result<ScenariosModel, EngineError> {
-        let result = ScenariosModel::compute(household, viewer, through, case, selection);
+        let result = perf::timed(&format!("compute scenarios (viewer={} case={case:?} selected={})", viewer.person, selection.len()), || ScenariosModel::compute(household, viewer, through, case, selection));
         if let Err(err) = &result {
             alerting::report(Level::Error, format!("scenarios model failed: {err}"));
         }
@@ -1072,7 +1087,7 @@ impl AtlasApp {
     // ----- rules (§14, M7) ---------------------------------------------------------
 
     fn compute_rules(household: &Household, viewer: Viewer, through: NaiveDate, scenario: bool, simulated: Option<RuleId>) -> Result<RulesModel, EngineError> {
-        let result = RulesModel::compute(household, viewer, through, scenario, simulated);
+        let result = perf::timed(&format!("compute rules (viewer={} scenario={scenario} simulated={simulated:?})", viewer.person), || RulesModel::compute(household, viewer, through, scenario, simulated));
         if let Err(err) = &result {
             alerting::report(Level::Error, format!("rules model failed: {err}"));
         }
@@ -1569,6 +1584,23 @@ impl AtlasApp {
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
+        let started = std::time::Instant::now();
+        let element = self.render_section(cx);
+        let clone = self.perf.content_clone_so_far();
+        self.perf.record_content(clone, started.elapsed().saturating_sub(clone));
+        element
+    }
+
+    /// Clones the screen model (measured — the clone is what the perf log
+    /// calls `content clone`) so the screen function can borrow `cx` mutably.
+    fn cloned<M: Clone>(&self, model: &M) -> M {
+        let started = std::time::Instant::now();
+        let cloned = model.clone();
+        self.perf.add_content_clone(started.elapsed());
+        cloned
+    }
+
+    fn render_section(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.section {
             Section::Household => match &self.overview {
                 Ok(overview) => screens::household::render(overview, &self.household, self.viewer, cx).into_any_element(),
@@ -1588,7 +1620,7 @@ impl AtlasApp {
             },
             Section::People | Section::Companies | Section::Accounts => match &self.entities {
                 Ok(models) => {
-                    let models = models.clone();
+                    let models = self.cloned(models);
                     match self.section {
                         Section::People => screens::people::render(&models, &self.household, self.viewer, self.selected_person, cx).into_any_element(),
                         Section::Companies => screens::companies::render(&models, &self.household, self.viewer, self.selected_company, cx).into_any_element(),
@@ -1599,56 +1631,56 @@ impl AtlasApp {
             },
             Section::Liquidity => match &self.liquidity {
                 Ok(model) => {
-                    let model = model.clone();
+                    let model = self.cloned(model);
                     screens::liquidity::render(&model, &self.household, self.viewer, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Liquidity, err, cx),
             },
             Section::Timeline => match &self.timeline {
                 Ok(model) => {
-                    let model = model.clone();
+                    let model = self.cloned(model);
                     screens::timeline::render(&model, &self.timeline_controls, &self.household, self.viewer, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Timeline, err, cx),
             },
             Section::Projections => match &self.projection {
                 Ok(model) => {
-                    let model = model.clone();
+                    let model = self.cloned(model);
                     screens::projections::render(&model, &self.household, self.viewer, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Projections, err, cx),
             },
             Section::Assumptions => match &self.assumptions {
                 Ok(model) => {
-                    let model = model.clone();
+                    let model = self.cloned(model);
                     screens::assumptions::render(&model, &self.household, self.viewer, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Assumptions, err, cx),
             },
             Section::Taxes => match &self.taxes {
                 Ok(model) => {
-                    let model = model.clone();
+                    let model = self.cloned(model);
                     screens::taxes::render(&model, &self.tax_controls, &self.household, self.viewer, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Taxes, err, cx),
             },
             Section::Rules => match &self.rules {
                 Ok(model) => {
-                    let model = model.clone();
+                    let model = self.cloned(model);
                     screens::rules::render(&model, &self.household, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Rules, err, cx),
             },
             Section::Scenarios => match &self.scenarios {
                 Ok(model) => {
-                    let model = model.clone();
+                    let model = self.cloned(model);
                     screens::scenarios::render(&model, &self.household, cx).into_any_element()
                 }
                 Err(err) => self.render_engine_failure(Section::Scenarios, err, cx),
             },
             Section::Decisions => screens::decisions::render(self.decision_step, &self.decision_form, self.decision.as_ref(), &self.household, &self.viewer_name(), cx).into_any_element(),
             Section::Privacy => {
-                let model = self.privacy.clone();
+                let model = self.cloned(&self.privacy);
                 screens::privacy::render(&model, &self.household, &self.viewer_name(), cx).into_any_element()
             }
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
@@ -1689,16 +1721,34 @@ impl AtlasApp {
             .right(Separator::vertical().h_3())
             .right(div().text_color(muted).child(alerting::status_label()))
             .right(Separator::vertical().h_3())
+            .right(
+                div()
+                    .id("perf-counter")
+                    .test_support()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_color(muted)
+                    .child(self.perf.status_text()),
+            )
+            .right(Separator::vertical().h_3())
             .right(div().text_color(muted).child(format!("atlas-core {}", env!("CARGO_PKG_VERSION"))))
     }
 }
 
 impl Render for AtlasApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
+        // Perf: close the previous frame (its paint probe has fired by now),
+        // open this one, and write the once-a-second summary when due.
+        self.perf.begin_frame(self.section.slug());
+        self.perf.log_window_info(window, cx.theme().is_dark());
+        self.perf.log_summary_if_due(window);
+        let tree = v_flex()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            // Input counters only (no notify): they say in the log whether the
+            // frames that happened were driven by the mouse or by something else.
+            .on_mouse_move(cx.listener(|this, _, _, _| this.perf.count_mouse_move()))
+            .on_scroll_wheel(cx.listener(|this, _, _, _| this.perf.count_wheel()))
             .child(self.render_title_bar(cx))
             .child(
                 h_flex()
@@ -1723,5 +1773,9 @@ impl Render for AtlasApp {
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
+            // Last in the tree: its paint closes the `draw≈` measurement.
+            .child(self.perf.paint_probe());
+        self.perf.end_build();
+        tree
     }
 }

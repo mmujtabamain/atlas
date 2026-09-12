@@ -30,7 +30,33 @@ cargo test                      # engine unit tests, E01–E08 examples, store, 
 ```
 
 Options: `--theme light|dark`, `--size WxH`, `--screen <section>` (see `atlas --help`),
-`--viewer a|b` (which fixture person is looking — private objects project to aggregates).
+`--viewer a|b` (which fixture person is looking — private objects project to aggregates),
+`--no-perf-overlay` (hide gpui's frame-time readout, see below).
+
+### Logs and the frame meter (performance work)
+
+Every run logs to **stderr and `logs.log`** in the current directory (`cargo run` → the
+repository root; the previous run is kept as `logs.prev.log`). Send `logs.log` when the app
+feels slow: it starts with the build profile (debug/release, opt-level), OS, window size and
+scale factor, then every engine computation with its duration (`perf: compute … took 12.2ms`)
+and, per frame, what a frame cost:
+
+```text
+perf: frame #12 section=timeline build=4.7ms draw≈95.3ms interval=101.0ms content(clone=0.0ms render=2.6ms) input(moves=3 wheel=0)
+perf: summary 1.0s: 9 frames (fps≈8.6) build avg=2.0ms max=9.4ms · draw≈ avg=64.7ms max=110.7ms · slow(>50ms)=5 … | gpui draw p50=71.4ms p90=113.1ms max=113.1ms n=9 · dirty→present p50=133.1ms …
+```
+
+- `build` — time in `AtlasApp::render` (our element tree). `draw≈` — build + gpui layout + paint,
+  measured to a probe painted last in the tree. `gpui draw` — gpui's own `Window::draw` histogram
+  (the `profiler` feature), summarised once a second while frames happen.
+- The **status bar** shows the previous frame: `11 fps · build 1 ms · draw 49 ms · frame #50`.
+  gpui only draws when something changed, so "fps" is the rate *while frames are happening*;
+  an idle window at 0 is healthy. The green **overlay** in the top-right corner is gpui's own
+  frame-time readout (current, 1 %/10 % worst, max, frame count); `--no-perf-overlay` or
+  `ATLAS_PERF_OVERLAY=0` hides it.
+- Filters: `RUST_LOG=<filter>` (both sinks; the file keeps `atlas_*=debug` on top of it),
+  `ATLAS_LOG_FILE_FILTER=<filter>` (file only), `ATLAS_LOG_FILE=<path>|off`.
+- Module docs: `crates/atlas-app/src/perf.rs` and `logging.rs`.
 
 The app boots with the fictitious *plan household* fixture (`atlas_core::fixtures`), whose
 numbers come from the plan's own worked examples (E01, E03, E07, §13.1, §10.2).

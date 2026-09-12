@@ -1139,3 +1139,27 @@ fn every_screen_renders_for_both_viewers(cx: &mut TestAppContext) {
         }
     }
 }
+
+#[gpui_kit::test]
+fn status_bar_shows_the_frame_meter(cx: &mut TestAppContext) {
+    // Perf diagnostics: the status bar carries the previous frame's fps /
+    // build / draw readout, and every rendered frame is measured.
+    let (handle, app) = open_app(cx, Launch::default());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("perf-counter").visible(), "the counter sits in the status bar");
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let meter = app.read(cx).perf();
+        assert!(meter.frames() >= 2, "two frames rendered: {}", meter.frames());
+        let last = meter.last().expect("the first frame is complete once the second began");
+        assert_eq!(last.section, "household");
+        assert!(last.build > std::time::Duration::ZERO, "{last:?}");
+        assert!(last.draw.is_some(), "the paint probe painted: {last:?}");
+        assert!(last.draw.unwrap() >= last.build, "draw covers the build: {last:?}");
+        let status = meter.status_text();
+        assert!(status.contains("fps") && status.contains("build") && status.contains("draw"), "{status}");
+    });
+}
