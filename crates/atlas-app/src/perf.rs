@@ -7,15 +7,21 @@
 //! What matters for the person is how long one frame takes, and that is what
 //! is measured, in three independent ways:
 //!
-//! 1. **build** — time inside `AtlasApp::render`, i.e. building the element
-//!    tree (model clones, screen functions, formatting). Our code only.
+//! 1. **build** — time inside the root view's render (`Shell::render`): the
+//!    title bar, the status bar and the two cached view elements. Our code
+//!    only, and small: the screen itself is built later, see below.
 //! 2. **draw≈** — from the start of `render` until our tree finished
 //!    painting, split by the [phase probe] that wraps the root element into
 //!    gpui's phases: `layout` (request_layout — this is where `RenderOnce`
 //!    components such as Button, Table, Tag build their own element trees),
 //!    `taffy` (the flexbox solve), `prepaint` (hitboxes, element state) and
-//!    `paint` (quads, glyphs). Overlays drawn through `defer_draw` (tooltips,
-//!    popovers) come after our tree, so this is a floor, not the whole frame.
+//!    `paint` (quads, glyphs). The sidebar and the content are *cached views*
+//!    (`shell`): gpui renders, lays out and prepaints a cached view inside the
+//!    `prepaint` phase, and only when the view was notified — so a screen's
+//!    build and flexbox solve show up under `prepaint`, and a frame that
+//!    reused the screen says `content(cached)`. Overlays drawn through
+//!    `defer_draw` (tooltips, popovers) come after our tree, so this is a
+//!    floor, not the whole frame.
 //! 3. **gpui** — gpui's own profiler histograms (`profiler` feature):
 //!    `Window::draw` duration, first-invalidation-to-present, and the interval
 //!    between presented frames while animating. Ground truth, summarised once
@@ -33,7 +39,6 @@
 //! [phase probe]: FrameMeter::phase_probe
 
 use std::cell::Cell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -53,8 +58,6 @@ pub const HITCH: Duration = Duration::from_millis(250);
 pub const SUMMARY_EVERY: Duration = Duration::from_secs(1);
 /// An engine computation longer than this is logged at warn instead of info.
 pub const SLOW_COMPUTE: Duration = Duration::from_millis(100);
-/// Frames within this window feed the instantaneous FPS figure.
-const FPS_WINDOW: Duration = Duration::from_secs(1);
 
 /// Milliseconds as a float, for log lines.
 pub fn ms(duration: Duration) -> f64 {
@@ -82,12 +85,27 @@ pub fn timed<R>(what: &str, f: impl FnOnce() -> R) -> R {
     result
 }
 
+/// gpui's own figures for one summary window (delta of its histograms).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuiReading {
+    /// Median `Window::draw` duration.
+    pub draw_p50: Duration,
+    /// Longest `Window::draw` in the window.
+    pub draw_max: Duration,
+    /// Frames drawn in the window.
+    pub draws: u64,
+    /// Frames per second from the median interval between presented frames,
+    /// recorded by gpui only while the window was animating (consecutive
+    /// frames); `None` when there were none.
+    pub fps: Option<f64>,
+}
+
 /// One completed frame, as the next frame sees it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FrameSample {
     /// 1-based frame count since the view was created.
     pub number: u64,
-    /// Time inside `AtlasApp::render`.
+    /// Time inside the root view's render (`Shell::render`).
     pub build: Duration,
     /// Render start → our tree finished painting (build + the phases below),
     /// when the probe ran in that frame.
@@ -96,8 +114,10 @@ pub struct FrameSample {
     pub phases: Phases,
     /// Render start → next render start.
     pub interval: Option<Duration>,
-    /// Time spent in the screen's render function inside `render_content`.
-    pub content_render: Duration,
+    /// Time spent in the screen's render function inside `render_content`;
+    /// `None` when the content view was not rendered at all — gpui reused its
+    /// cached layout and paint (see `shell`).
+    pub content_render: Option<Duration>,
     /// Section slug the frame rendered.
     pub section: &'static str,
     /// Mouse-move events on the window since the previous frame.
@@ -191,10 +211,10 @@ pub struct FrameMeter {
     probe: Rc<Cell<ProbeState>>,
     /// The frame being built (finished by the next `begin_frame`).
     pending: FrameSample,
-    /// The last completed frame — what the status bar shows.
+    /// The last completed frame.
     last: Option<FrameSample>,
-    /// Frame starts within [`FPS_WINDOW`].
-    recent: VecDeque<Instant>,
+    /// gpui's own figures for the last summary window — what the status bar shows.
+    gpui: Option<GpuiReading>,
     window_started: Instant,
     window: WindowStats,
     last_summary: Option<Instant>,
@@ -202,7 +222,7 @@ pub struct FrameMeter {
     logged_window_info: bool,
     mouse_moves: Cell<u32>,
     wheel_events: Cell<u32>,
-    content_render: Cell<Duration>,
+    content_render: Cell<Option<Duration>>,
     /// gpui histograms at the previous summary, to report the delta.
     previous_snapshot: Option<profiler::FrameDurationSnapshot>,
 }
@@ -221,7 +241,7 @@ impl FrameMeter {
             probe: Rc::new(Cell::new(ProbeState::default())),
             pending: FrameSample::default(),
             last: None,
-            recent: VecDeque::new(),
+            gpui: None,
             window_started: Instant::now(),
             window: WindowStats::default(),
             last_summary: None,
@@ -229,12 +249,12 @@ impl FrameMeter {
             logged_window_info: false,
             mouse_moves: Cell::new(0),
             wheel_events: Cell::new(0),
-            content_render: Cell::new(Duration::ZERO),
+            content_render: Cell::new(None),
             previous_snapshot: None,
         }
     }
 
-    // ----- called from AtlasApp::render, in this order ------------------------
+    // ----- called from Shell::render, in this order ---------------------------
 
     /// First thing in `render`: closes the previous frame (now that its paint
     /// probe has fired) and opens this one. Returns the finished frame, if any.
@@ -244,6 +264,10 @@ impl FrameMeter {
             let probe = self.probe.get();
             let painted = probe.paint_ended.filter(|painted| *painted >= previous_start);
             let mut sample = self.pending;
+            // The content view renders inside gpui's prepaint of the cached
+            // view element, after `end_build` — so it is read here, when the
+            // frame is closed.
+            sample.content_render = self.content_render.take();
             sample.draw = painted.map(|painted| painted - previous_start);
             sample.phases = if painted.is_some() { probe.phases() } else { Phases::default() };
             sample.interval = Some(now - previous_start);
@@ -256,7 +280,7 @@ impl FrameMeter {
         self.frames += 1;
         self.started = Some(now);
         self.probe.set(ProbeState::default());
-        self.content_render.set(Duration::ZERO);
+        self.content_render.set(None);
         self.pending = FrameSample {
             number: self.frames,
             section,
@@ -264,10 +288,6 @@ impl FrameMeter {
             wheel_events: self.wheel_events.take(),
             ..FrameSample::default()
         };
-        self.recent.push_back(now);
-        while self.recent.front().is_some_and(|first| now - *first > FPS_WINDOW) {
-            self.recent.pop_front();
-        }
         if self.frames == 1 {
             log::info!("perf: first frame started {:.0}ms after process start", ms(logging::process_start().elapsed()));
         }
@@ -302,10 +322,11 @@ impl FrameMeter {
         );
     }
 
-    /// Records how long `render_content` spent in the screen function.
-    /// `&self` because it is called while the view is borrowed immutably.
+    /// Records that the content view rendered this frame and how long its
+    /// screen function took. `&self` because it is called while the view is
+    /// borrowed immutably. Not called in a frame that reused the cached content.
     pub fn record_content(&self, render: Duration) {
-        self.content_render.set(render);
+        self.content_render.set(Some(render));
     }
 
     /// Last thing in `render`: the element tree is built.
@@ -313,7 +334,6 @@ impl FrameMeter {
         if let Some(started) = self.started {
             self.pending.build = started.elapsed();
         }
-        self.pending.content_render = self.content_render.get();
     }
 
     /// Wraps the finished tree so gpui's phases on it are timed; the end of
@@ -335,13 +355,11 @@ impl FrameMeter {
         self.window_started = now;
         self.last_summary = Some(now);
         let avg = |sum: Duration, n: u32| if n == 0 { None } else { Some(sum / n) };
-        let fps = self.fps().map(|fps| format!("{fps:.1}")).unwrap_or_else(|| "n/a".into());
         let phases = if stats.draw_samples == 0 { Phases::default() } else { stats.phases_sum.div(stats.draw_samples) };
         let mut line = format!(
-            "perf: summary {:.1}s: {} frames (fps≈{}) build avg={} max={} · draw≈ avg={} max={} (avg {}) · slow(>{}ms)={} hitches(>{}ms)={} · input moves={} wheel={} · section={}",
+            "perf: summary {:.1}s: {} frames build avg={} max={} · draw≈ avg={} max={} (avg {}) · slow(>{}ms)={} hitches(>{}ms)={} · input moves={} wheel={} · section={}",
             since.as_secs_f64(),
             stats.frames,
-            fps,
             fmt_ms(avg(stats.build_sum, stats.frames)),
             fmt_ms(Some(stats.build_max)),
             fmt_ms(avg(stats.draw_sum, stats.draw_samples)),
@@ -371,15 +389,9 @@ impl FrameMeter {
 
     // ----- readings -------------------------------------------------------------
 
-    /// Frames per second over the last second, from the spacing of frame
-    /// starts; `None` until two frames fell inside the window.
-    pub fn fps(&self) -> Option<f64> {
-        let (first, last) = (self.recent.front()?, self.recent.back()?);
-        let span = *last - *first;
-        if self.recent.len() < 2 || span.is_zero() {
-            return None;
-        }
-        Some((self.recent.len() - 1) as f64 / span.as_secs_f64())
+    /// gpui's figures for the last summary window, once a summary has run.
+    pub fn gpui(&self) -> Option<GpuiReading> {
+        self.gpui
     }
 
     /// The last completed frame.
@@ -392,29 +404,27 @@ impl FrameMeter {
         self.frames
     }
 
-    /// The status-bar text: previous frame's numbers.
+    /// The status-bar text: gpui's own frame figures for the last summary
+    /// window (`Window::frame_duration_snapshot`, the `profiler` feature) —
+    /// the median `Window::draw` time and the frame rate gpui measured from
+    /// the interval between presented frames while the window was animating.
+    /// Not our meter's numbers: those go to the log, where the phase split
+    /// is useful; the counter a person reads should be the framework's.
     ///
-    /// Leads with the frame *cost* and the rate it allows, because the rate of
-    /// frames actually drawn is a property of the input in gpui: a mouse
-    /// crossing five buttons in a second draws five frames, and "5 frames/s"
-    /// read as "5 fps" looks like a performance problem when each of those
-    /// frames took 6 ms.
+    /// The rate is `n/a` when gpui presented no consecutive frames in the
+    /// window: gpui draws only when something changed, so an idle or
+    /// hover-driven window has a draw time but no frame rate.
     pub fn status_text(&self) -> String {
-        let drawn = match self.fps() {
-            Some(fps) => format!("{fps:.0} frames/s drawn"),
-            None => "idle".to_string(),
-        };
-        match self.last {
-            Some(last) => match last.draw {
-                Some(draw) if !draw.is_zero() => format!(
-                    "{:.0} ms/frame = {:.0} fps possible · {drawn} · #{}",
-                    ms(draw),
-                    1000.0 / ms(draw),
-                    last.number
-                ),
-                _ => format!("build {:.0} ms/frame · {drawn} · #{}", ms(last.build), last.number),
-            },
-            None => "first frame".to_string(),
+        let frame = self.last.map(|last| last.number).unwrap_or(self.frames);
+        match self.gpui {
+            Some(reading) => {
+                let fps = match reading.fps {
+                    Some(fps) => format!("{fps:.0} fps"),
+                    None => "fps n/a (not animating)".to_string(),
+                };
+                format!("gpui: draw p50 {:.1} ms · {fps} · #{frame}", ms(reading.draw_p50))
+            }
+            None => format!("gpui: measuring… · #{frame}"),
         }
     }
 
@@ -442,14 +452,17 @@ impl FrameMeter {
             stats.hitches += 1;
         }
         let detail = format!(
-            "frame #{} section={} build={} draw≈{} ({}) interval={} content(render={}) input(moves={} wheel={})",
+            "frame #{} section={} build={} draw≈{} ({}) interval={} content({}) input(moves={} wheel={})",
             sample.number,
             sample.section,
             fmt_ms(Some(sample.build)),
             fmt_ms(sample.draw),
             sample.phases.describe(),
             fmt_ms(sample.interval),
-            fmt_ms(Some(sample.content_render)),
+            match sample.content_render {
+                Some(render) => format!("render={}", fmt_ms(Some(render))),
+                None => "cached".to_string(),
+            },
             sample.mouse_moves,
             sample.wheel_events,
         );
@@ -481,6 +494,14 @@ impl FrameMeter {
         let draw = &delta.draw_duration_histogram;
         let dirty = &delta.dirty_to_present_histogram;
         let present = &delta.present_interval_histogram;
+        if draw.len() > 0 {
+            self.gpui = Some(GpuiReading {
+                draw_p50: Duration::from_nanos(draw.value_at_percentile(50.0)),
+                draw_max: Duration::from_nanos(draw.max()),
+                draws: draw.len(),
+                fps: (present.len() > 0).then(|| 1e9 / present.value_at_percentile(50.0).max(1) as f64),
+            });
+        }
         let nanos = |value: u64| format!("{:.1}ms", value as f64 / 1_000_000.0);
         let mut out = String::new();
         if draw.len() > 0 {
@@ -578,7 +599,7 @@ mod tests {
     fn measures_build_draw_interval_and_fps() {
         let mut meter = FrameMeter::new();
         assert_eq!(meter.begin_frame("household"), None, "nothing to finish before the first frame");
-        assert_eq!(meter.status_text(), "first frame");
+        assert_eq!(meter.status_text(), "gpui: measuring… · #1", "no gpui reading before the first summary");
         meter.count_mouse_move();
         meter.record_content(Duration::from_millis(5));
         std::thread::sleep(Duration::from_millis(5));
@@ -604,17 +625,17 @@ mod tests {
         assert!(draw >= finished.build, "draw includes the build: {finished:?}");
         assert!(finished.interval.unwrap() >= draw, "interval spans the whole frame: {finished:?}");
         assert_eq!(finished.phases, Phases { layout: Duration::from_millis(1), taffy: Duration::from_millis(1), prepaint: Duration::from_millis(1), paint: Duration::from_millis(1) });
-        assert_eq!(finished.content_render, Duration::from_millis(5));
+        assert_eq!(finished.content_render, Some(Duration::from_millis(5)));
         assert_eq!(finished.mouse_moves, 0, "the move was counted after frame 1 began, so it belongs to frame 2");
         assert_eq!(meter.last(), Some(finished));
         assert_eq!(meter.pending.mouse_moves, 1);
-        assert!(meter.status_text().contains("ms/frame = "), "{}", meter.status_text());
         assert!(meter.status_text().ends_with("· #1"), "{}", meter.status_text());
 
-        // Two frames inside the window give a rate; ~15 ms apart → tens of fps.
-        let fps = meter.fps().expect("two frames in the window");
-        assert!(fps > 10.0 && fps < 200.0, "{fps}");
-        assert!(meter.status_text().contains("fps possible · ") && meter.status_text().contains(" frames/s drawn"), "{}", meter.status_text());
+        // The status bar shows gpui's figures once a summary has read them.
+        meter.gpui = Some(GpuiReading { draw_p50: Duration::from_micros(6300), draw_max: Duration::from_millis(20), draws: 12, fps: Some(58.4) });
+        assert_eq!(meter.status_text(), "gpui: draw p50 6.3 ms · 58 fps · #1");
+        meter.gpui = Some(GpuiReading { fps: None, ..meter.gpui.unwrap() });
+        assert_eq!(meter.status_text(), "gpui: draw p50 6.3 ms · fps n/a (not animating) · #1");
     }
 
     #[test]
@@ -624,7 +645,6 @@ mod tests {
         meter.end_build();
         let finished = meter.begin_frame("rules").unwrap();
         assert_eq!(finished.draw, None);
-        assert!(meter.status_text().starts_with("build "), "{}", meter.status_text());
         assert_eq!(meter.window.frames, 1);
     }
 
