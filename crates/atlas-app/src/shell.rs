@@ -3,9 +3,8 @@
 //! gpui rebuilds a view's whole element tree whenever the view is notified —
 //! and a hover, a tooltip, a scroll tick or a keystroke in a dialog all notify
 //! the view that rendered the element under the pointer. With one view for the
-//! whole window (how the app started) every such event re-laid-out and
-//! re-painted the title bar, the sidebar, the entire screen and the status bar:
-//! 1,800 taffy nodes for a hover over a sidebar item.
+//! whole window every such event re-laid-out and re-painted the title bar,
+//! the sidebar, the entire screen and the status bar.
 //!
 //! This module splits the window into views that gpui can cache independently
 //! ([`Entity::cached`] reuses a view's layout and paint while the view is not
@@ -22,9 +21,11 @@
 //! would be pointless. Instead it keeps a [`SidebarSnapshot`] of what it shows
 //! and re-renders only when that snapshot changes.
 //!
-//! The title bar and the status bar stay inline in the shell: together they are
-//! ~40 nodes, the status bar's frame counter changes every frame, and caching
-//! them would buy less than it costs.
+//! What the shell shows follows the design: the title bar carries the app
+//! name, the household menu, the sample marker, the viewer and the theme; the
+//! sidebar the eight destinations and the footer (Figure meanings, Settings);
+//! the status bar the currency, the two dates, the file state with Save, the
+//! last result and gpui's frame reading.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -34,15 +35,15 @@ use gpui_kit::component::{
     separator::Separator,
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
     status_bar::StatusBar,
+    tag::Tag,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::alerting;
 use crate::app::AtlasApp;
 use crate::launch::Launch;
-use crate::screens::Section;
+use crate::nav::{Destination, Route};
 
 /// Width of the sidebar column: gpui-kit's `w_64` expanded, its icon width collapsed.
 pub fn sidebar_width(collapsed: bool) -> Pixels {
@@ -83,8 +84,9 @@ impl Shell {
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_dark = cx.theme().is_dark();
         let app = self.app.read(cx);
-        let reconciled = format!("reconciled {}", app.household().as_of.format("%d %b %Y"));
-        let viewing_as = format!("Viewing as {}", app.viewer_display_name());
+        let opened = app.is_opened();
+        let is_sample = app.is_sample();
+        let viewer_label = if opened { format!("Who is looking: {}", app.viewer_display_name()) } else { String::new() };
         let menu = app.render_household_menu(self.app.downgrade());
         let picker = self.app.clone();
         TitleBar::new()
@@ -93,7 +95,9 @@ impl Shell {
                     .items_center()
                     .gap_3()
                     .child(Icon::new(IconName::Wallet).small())
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer")),
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer"))
+                    .when(opened, |this| this.child(menu))
+                    .when(opened && is_sample, |this| this.child(Tag::secondary().xsmall().outline().child("Fictitious sample"))),
             )
             .child(
                 h_flex()
@@ -101,18 +105,18 @@ impl Shell {
                     .justify_end()
                     .px_2()
                     .gap_3()
-                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(reconciled))
-                    .child(menu)
-                    .child(
-                        Button::new("viewer")
-                            .small()
-                            .ghost()
-                            .compact()
-                            .icon(IconName::Eye)
-                            .label(viewing_as)
-                            .tooltip("Change who is looking")
-                            .on_click(move |_, window, cx| picker.update(cx, |app, cx| app.open_viewer_picker(window, cx))),
-                    )
+                    .when(opened, |this| {
+                        this.child(
+                            Button::new("viewer")
+                                .small()
+                                .ghost()
+                                .compact()
+                                .icon(IconName::Eye)
+                                .label(viewer_label)
+                                .tooltip("Change who is looking")
+                                .on_click(move |_, window, cx| picker.update(cx, |app, cx| app.open_viewer_picker(window, cx))),
+                        )
+                    })
                     .child(
                         Button::new("theme")
                             .small()
@@ -130,37 +134,43 @@ impl Shell {
         let mono = cx.theme().mono_font_family.clone();
         let app = self.app.read(cx);
         let household = app.household();
-        StatusBar::new()
-            .left(h_flex().items_center().gap_1().child(Icon::new(IconName::Check).xsmall()).child(household.name.clone()))
-            .left(Separator::vertical().h_3())
-            .left(div().text_color(muted).child(format!(
-                "{} accounts · {} series · {} reservations · {} policies",
-                household.accounts.len(),
-                household.series.len(),
-                household.reservations.len(),
-                household.policies.len()
-            )))
-            .right(div().text_color(muted).child(match (app.file_path(), app.is_dirty(), app.is_saving()) {
-                (Some(path), _, true) => format!("{} • saving…", path.display()),
-                (None, _, true) => "saving…".to_string(),
-                (Some(path), true, false) => format!("{} • unsaved", path.display()),
-                (Some(path), false, false) => format!("{}", path.display()),
-                (None, true, false) => "unsaved changes — Save as… from the household menu".to_string(),
-                (None, false, false) => "not saved to a file yet".to_string(),
-            }))
-            .right(Separator::vertical().h_3())
-            .right(div().text_color(muted).child(alerting::status_label()))
-            .right(Separator::vertical().h_3())
-            .right(
-                div()
-                    .id("perf-counter")
-                    .test_support()
-                    .font_family(mono)
-                    .text_color(muted)
-                    .child(app.perf().status_text()),
-            )
-            .right(Separator::vertical().h_3())
-            .right(div().text_color(muted).child(format!("v{}", env!("CARGO_PKG_VERSION"))))
+        let opened = app.is_opened();
+        let save = self.app.clone();
+        let file_state = app.file_state_text();
+        let save_label = app.save_command_label();
+        let last_result = app.last_result().map(str::to_string);
+        let mut bar = StatusBar::new();
+        if opened {
+            bar = bar
+                .left(div().child(household.base_currency.code().to_string()))
+                .left(Separator::vertical().h_3())
+                .left(div().text_color(muted).child(format!("Balances as of {}", household.as_of.format("%d %b %Y"))))
+                .left(Separator::vertical().h_3())
+                .left(div().text_color(muted).child(format!("Forecast through {}", app.horizon().format("%d %b %Y"))))
+                .left(Separator::vertical().h_3())
+                .left(div().id("file-state").test_support().text_color(muted).child(file_state))
+                .left(
+                    Button::new("status-save")
+                        .xsmall()
+                        .ghost()
+                        .compact()
+                        .label(save_label)
+                        .on_click(move |_, window, cx| save.update(cx, |app, cx| app.save(window, cx))),
+                );
+            if let Some(result) = last_result {
+                bar = bar.left(Separator::vertical().h_3()).left(div().id("last-result").test_support().text_color(muted).child(result));
+            }
+        } else {
+            bar = bar.left(div().text_color(muted).child("No household open"));
+        }
+        bar.right(
+            div()
+                .id("perf-counter")
+                .test_support()
+                .font_family(mono)
+                .text_color(muted)
+                .child(app.perf().status_text()),
+        )
     }
 }
 
@@ -171,16 +181,16 @@ impl Render for Shell {
         // Close the previous frame (its paint probe has fired by now), open this
         // one, and write the once-a-second summary when due.
         let is_dark = cx.theme().is_dark();
-        let collapsed = self.app.update(cx, |app, _| {
-            app.perf.begin_frame(app.section().slug());
+        let (collapsed, show_sidebar) = self.app.update(cx, |app, _| {
+            app.perf.begin_frame(app.route().slug());
             app.perf.log_window_info(window, is_dark);
             app.perf.log_summary_if_due(window);
             // The summary (histogram snapshot + file write) costs a few ms in a
             // debug build; keep it out of this frame's `build` figure.
             app.perf.restart_build_clock();
-            app.sidebar_collapsed()
+            (app.sidebar_collapsed(), app.is_opened() && !app.viewer_pending())
         });
-        let sidebar_width = sidebar_width(collapsed);
+        let sidebar_width = if show_sidebar { sidebar_width(collapsed) } else { px(0.) };
         // The content column's width is set in pixels rather than `flex_1()` on
         // purpose: with an auto width taffy sizes the whole screen from its
         // content on every pass of every ancestor (docs/perf.md §2).
@@ -201,7 +211,7 @@ impl Render for Shell {
                     .min_h_0()
                     // Cached views are laid out from the style given here (their
                     // contents are not measured), so both get a definite size.
-                    .child(self.sidebar.clone().cached(StyleRefinement::default().w(sidebar_width).h_full().flex_none()))
+                    .when(show_sidebar, |this| this.child(self.sidebar.clone().cached(StyleRefinement::default().w(sidebar_width).h_full().flex_none())))
                     .child(self.app.clone().cached(StyleRefinement::default().w(content_width).h_full().flex_none())),
             )
             .child(self.render_status_bar(cx))
@@ -219,7 +229,7 @@ impl Render for Shell {
 /// What the sidebar shows. The sidebar re-renders only when this changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SidebarSnapshot {
-    pub section: Section,
+    pub destination: Option<Destination>,
     pub collapsed: bool,
     pub household_name: String,
     pub subtitle: String,
@@ -229,7 +239,7 @@ impl SidebarSnapshot {
     fn of(app: &AtlasApp) -> Self {
         let household = app.household();
         SidebarSnapshot {
-            section: app.section(),
+            destination: app.destination(),
             collapsed: app.sidebar_collapsed(),
             household_name: household.name.clone(),
             subtitle: format!("{} · {}", household.base_currency, app.viewer_display_name()),
@@ -254,7 +264,7 @@ impl SidebarView {
         let _observe = cx.observe(&app, |this, app, cx| {
             let next = SidebarSnapshot::of(app.read(cx));
             if next != this.snapshot {
-                log::debug!("perf: sidebar re-renders (section={} viewer={})", next.section.slug(), next.subtitle);
+                log::debug!("perf: sidebar re-renders (destination={:?} viewer={})", next.destination, next.subtitle);
                 this.snapshot = next;
                 cx.notify();
             }
@@ -303,22 +313,43 @@ impl Render for SidebarView {
                     )
                 }),
         );
-        for (group, sections) in Section::GROUPS {
-            sidebar = sidebar.child(SidebarGroup::new(group).child(SidebarMenu::new().children(sections.iter().map(|section| {
-                let section = *section;
-                SidebarMenuItem::new(section.label())
-                    .icon(section.icon())
-                    .active(section == snapshot.section)
-                    .on_click(cx.listener(move |this, _, _, cx| this.app.update(cx, |app, cx| app.navigate(section, cx))))
+        // Group breaks are visual separators, not named groups: the group label
+        // stays empty so the sidebar draws only the items.
+        for group in Destination::GROUPS {
+            sidebar = sidebar.child(SidebarGroup::new("").child(SidebarMenu::new().children(group.iter().map(|destination| {
+                let destination = *destination;
+                SidebarMenuItem::new(destination.label())
+                    .icon(destination.icon())
+                    .active(snapshot.destination == Some(destination))
+                    .on_click(cx.listener(move |this, _, _, cx| this.app.update(cx, |app, cx| app.navigate(destination.home(), cx))))
             }))));
         }
+        let meanings = self.app.clone();
         sidebar.footer(
             SidebarFooter::new().child(
                 v_flex()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child("Deterministic, no AI")
-                    .when(!collapsed, |this| this.child("Every figure shows its calculation")),
+                    .w_full()
+                    .gap_1()
+                    .child(
+                        Button::new("sidebar-figure-meanings")
+                            .small()
+                            .ghost()
+                            .compact()
+                            .icon(IconName::BookOpen)
+                            .when(!collapsed, |b| b.label("Figure meanings…"))
+                            .tooltip("What the tags on every figure mean")
+                            .on_click(move |_, window, cx| meanings.update(cx, |app, cx| app.open_figure_meanings(None, window, cx))),
+                    )
+                    .child(
+                        Button::new("sidebar-settings")
+                            .small()
+                            .ghost()
+                            .compact()
+                            .icon(IconName::Settings)
+                            .when(!collapsed, |b| b.label("Settings"))
+                            .when(snapshot.destination == Some(Destination::Settings), |b| b.primary())
+                            .on_click(cx.listener(|this, _, _, cx| this.app.update(cx, |app, cx| app.navigate(Route::Settings, cx)))),
+                    ),
             ),
         )
     }

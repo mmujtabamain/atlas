@@ -1,9 +1,10 @@
-//! Household lifecycle and identity: new / open / save /
-//! save-as / load-sample, the dirty state, the lock, and the "who is looking?"
-//! picker. Native file dialogs are used when the platform has them; a path
-//! field always works (the Linux box has no portal).
+//! Household lifecycle and identity: Welcome, new / open / save / save-as /
+//! sample, the unsaved-changes guard, the lock, the file-state machine and
+//! the "Who is looking?" chooser. Native file dialogs are used when the
+//! platform has them; a path field always works (the Linux box has no portal).
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use atlas_core::authz::Viewer;
 use atlas_core::fixtures;
@@ -22,14 +23,17 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputState},
     menu::PopupMenuItem,
+    radio::RadioGroup,
     select::{Select, SelectState},
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::alerting::{self, Level};
 use crate::app::AtlasApp;
 use crate::launch::{Launch, Start};
+use crate::nav::Route;
 
 /// Retained state of the lifecycle dialogs.
 pub struct LifecycleForm {
@@ -38,6 +42,14 @@ pub struct LifecycleForm {
     pub first_person: Entity<InputState>,
     pub currency: Entity<SelectState<Vec<SharedString>>>,
     pub as_of: Entity<DatePickerState>,
+    /// The person picked in the chooser before `Continue`.
+    pub viewer_choice: Entity<ViewerChoice>,
+}
+
+/// The chooser's selected row.
+#[derive(Default, Debug, Clone)]
+pub struct ViewerChoice {
+    pub index: usize,
 }
 
 impl LifecycleForm {
@@ -49,6 +61,7 @@ impl LifecycleForm {
             first_person: cx.new(|cx| InputState::new(window, cx).placeholder("your name")),
             currency: cx.new(|cx| SelectState::new(codes, Some(IndexPath::default()), window, cx)),
             as_of: cx.new(|cx| DatePickerState::new(window, cx).date_format("%d %b %Y")),
+            viewer_choice: cx.new(|_| ViewerChoice::default()),
         }
     }
 }
@@ -58,35 +71,48 @@ pub struct Resolved {
     pub household: Household,
     pub file: Option<HouseholdFile>,
     pub notices: Vec<String>,
+    /// A startup failure shown on Welcome (the requested file did not open).
+    pub failure: Option<String>,
+    /// Another editor holds the file: (owner, since).
+    pub lock_holder: Option<(String, String)>,
 }
+
+/// A step to run once the unsaved-changes guard is passed.
+pub type Continuation = Rc<dyn Fn(&mut AtlasApp, &mut Window, &mut Context<AtlasApp>)>;
 
 impl AtlasApp {
     /// Resolves `--household / --new / --sample` into a household and file.
+    /// With none of them (the default) nothing opens: Welcome shows.
     pub fn resolve_start(launch: &Launch, owner: &str) -> Resolved {
         let mut notices = Vec::new();
+        let placeholder = || Household::empty("", Currency::USD, launch.as_of.unwrap_or_else(|| chrono::Local::now().date_naive()));
         match &launch.start {
-            Start::Sample => Resolved { household: fixtures::plan_household(), file: None, notices },
+            Start::Welcome => Resolved { household: placeholder(), file: None, notices, failure: None, lock_holder: None },
+            Start::Sample => Resolved { household: fixtures::plan_household(), file: None, notices, failure: None, lock_holder: None },
             Start::Empty => Resolved {
                 household: Household::empty("New household", Currency::USD, launch.as_of.unwrap_or_else(|| chrono::Local::now().date_naive())),
                 file: None,
                 notices,
+                failure: None,
+                lock_holder: None,
             },
             Start::File(path) => {
                 let file = HouseholdFile::new(path);
                 if file.exists() {
+                    let mut lock_holder = None;
                     match file.acquire(owner, launch.take_over) {
                         Ok(_) => {}
                         Err(StoreError::Locked { owner: other, since, .. }) => {
-                            notices.push(format!("{} is open by {other} since {since}; opened read-only until you take it over from the Household menu.", path.display()));
+                            notices.push(format!("{} is open by {other} since {since}. Viewing only; use Save as… to keep a copy.", path.display()));
+                            lock_holder = Some((other, since));
                         }
                         Err(err) => notices.push(format!("Could not lock {}: {err}", path.display())),
                     }
                     match file.load() {
-                        Ok(household) => Resolved { household, file: Some(file), notices },
+                        Ok(household) => Resolved { household, file: Some(file), notices, failure: None, lock_holder },
                         Err(err) => {
                             alerting::report(Level::Error, format!("failed to load household file {}: {err}", path.display()));
-                            notices.push(format!("Could not load {}: {err}. Showing the sample instead.", path.display()));
-                            Resolved { household: fixtures::plan_household(), file: None, notices }
+                            Resolved { household: placeholder(), file: None, notices, failure: Some(format!("Could not open {}: {err}", path.display())), lock_holder: None }
                         }
                     }
                 } else {
@@ -98,31 +124,113 @@ impl AtlasApp {
                             notices.push(format!("Could not create {}: {err}", path.display()));
                         }
                     }
-                    Resolved { household, file: Some(file), notices }
+                    Resolved { household, file: Some(file), notices, failure: None, lock_holder: None }
                 }
             }
         }
     }
 
+    /// The startup failure Welcome shows, if any.
+    pub fn startup_notice(&self) -> Option<&str> {
+        self.startup_notice.as_deref()
+    }
+
     /// Replaces the household (after new / open / sample), rebuilds every form
     /// that snapshots household data, recomputes, and asks who is looking.
-    pub fn replace_household(&mut self, household: Household, file: Option<HouseholdFile>, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn replace_household(&mut self, household: Household, file: Option<HouseholdFile>, is_sample: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(old) = self.file.take() {
             let _ = old.release(&self.owner);
         }
+        log::info!("household replaced: “{}” ({} people, sample={is_sample}, file={:?})", household.name, household.people.len(), file.as_ref().map(|f| f.path().to_path_buf()));
         self.household = household;
         self.file = file;
         self.dirty = false;
+        self.opened = true;
+        self.is_sample = is_sample;
+        self.lock_holder = None;
+        self.startup_notice = None;
         self.viewer = Viewer::person(self.household.people.first().map(|p| p.id).unwrap_or(PersonId::new(0)));
+        self.viewer_pending = self.household.people.len() > 1;
+        self.horizon = if is_sample { fixtures::default_horizon() } else { self.household.as_of.checked_add_months(chrono::Months::new(12)).unwrap_or(self.household.as_of) };
         self.selected_account = None;
         self.selected_company = None;
         self.selected_person = None;
+        self.history.clear();
+        self.last_result = None;
+        self.route = Route::Today;
+        self.reset_decision_state();
         self.rebuild_forms(window, cx);
         self.refresh_derived();
         cx.notify();
-        if self.household.people.len() > 1 {
+        if self.viewer_pending {
             cx.defer_in(window, |this, window, cx| this.open_viewer_picker(window, cx));
         }
+    }
+
+    /// Closes the household and returns to Welcome (after the guard).
+    pub fn close_household(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.guard_unsaved(window, cx, Rc::new(|app, _, cx| app.close_household_now(cx)));
+    }
+
+    fn close_household_now(&mut self, cx: &mut Context<Self>) {
+        if let Some(old) = self.file.take() {
+            let _ = old.release(&self.owner);
+        }
+        log::info!("household closed");
+        self.household = Household::empty("", Currency::USD, chrono::Local::now().date_naive());
+        self.opened = false;
+        self.is_sample = false;
+        self.viewer_pending = false;
+        self.dirty = false;
+        self.lock_holder = None;
+        self.route = Route::Welcome;
+        self.history.clear();
+        self.last_result = None;
+        self.refresh_derived();
+        cx.notify();
+    }
+
+    /// Runs `then` now, or after the person has decided what to do with
+    /// unsaved changes (`Save and continue` / `Discard changes` / `Cancel`).
+    pub fn guard_unsaved(&mut self, window: &mut Window, cx: &mut Context<Self>, then: Continuation) {
+        if !self.opened || !self.dirty {
+            then(self, window, cx);
+            return;
+        }
+        let name = self.household.name.clone();
+        let this = cx.entity().downgrade();
+        let discard = then.clone();
+        let save = then;
+        window.open_dialog(cx, move |dialog, _, _| {
+            let this_discard = this.clone();
+            let this_save = this.clone();
+            let discard = discard.clone();
+            let save = save.clone();
+            dialog
+                .title(format!("Save changes to “{name}”?"))
+                .w_96()
+                .child(div().text_sm().child("Unsaved changes will be lost."))
+                .footer(
+                    DialogFooter::new()
+                        .child(Button::new("guard-cancel").outline().label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
+                        .child(Button::new("guard-discard").danger().label("Discard changes").on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let discard = discard.clone();
+                            let _ = this_discard.update(cx, |app, cx| {
+                                app.dirty = false;
+                                discard(app, window, cx);
+                            });
+                        }))
+                        .child(Button::new("guard-save").primary().label("Save and continue").on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let save = save.clone();
+                            let _ = this_save.update(cx, |app, cx| {
+                                app.pending_after_save = Some(save);
+                                app.save(window, cx);
+                            });
+                        })),
+                )
+        });
     }
 
     /// Records an unsaved change (every mutation calls this). The edit count
@@ -146,11 +254,44 @@ impl AtlasApp {
         self.file.as_ref().map(|f| f.path().to_path_buf())
     }
 
-    /// Saves to the current file, or asks for one.
+    /// The file state, exactly as the design's state machine words it.
+    pub fn file_state_text(&self) -> String {
+        if !self.opened {
+            return "No household open".into();
+        }
+        if let Some((owner, since)) = &self.lock_holder {
+            return format!("Viewing only · {owner} opened {since}");
+        }
+        match (self.file_path(), self.dirty, self.saving, self.edited_while_saving) {
+            (Some(path), _, true, _) => format!("Saving · {}", path.display()),
+            (Some(path), true, false, true) => format!("Saved earlier changes · newer changes unsaved · {}", path.display()),
+            (Some(path), true, false, false) => format!("Unsaved changes · {}", path.display()),
+            (Some(path), false, false, _) => format!("Saved · {}", path.display()),
+            (None, true, _, _) => "Unsaved changes · no file".into(),
+            (None, false, _, _) => "Not saved to a file".into(),
+        }
+    }
+
+    /// `Save` when a file exists, `Save…` when Save must first ask for one.
+    pub fn save_command_label(&self) -> &'static str {
+        if self.file.is_some() && self.lock_holder.is_none() { "Save" } else { "Save…" }
+    }
+
+    /// The lock fact for Settings.
+    pub fn lock_text(&self) -> String {
+        match (&self.lock_holder, &self.file) {
+            (Some((owner, since)), _) => format!("Held by {owner} since {since} — viewing only"),
+            (None, Some(_)) => format!("Held by {} (this session)", self.owner),
+            (None, None) => "No file, no lock".into(),
+        }
+    }
+
+    /// Saves to the current file, or asks for one. A file held by someone
+    /// else is never written: Save as… keeps a copy under another path.
     pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.file.clone() {
-            Some(file) => self.save_in_background(file, false, window, cx),
-            None => self.open_save_as(window, cx),
+            Some(file) if self.lock_holder.is_none() => self.save_in_background(file, false, window, cx),
+            _ => self.open_save_as(window, cx),
         }
     }
 
@@ -194,17 +335,26 @@ impl AtlasApp {
                         let _ = old.release(&self.owner);
                     }
                     self.file = Some(file.clone());
+                    self.lock_holder = None;
                 }
                 if self.edits == edits {
                     self.dirty = false;
+                    self.edited_while_saving = false;
                 } else {
                     log::info!("household edited while saving; it stays unsaved");
+                    self.edited_while_saving = true;
                 }
+                self.note_result(format!("Saved to {}.", file.path().display()));
                 window.push_notification(format!("Saved to {}", file.path().display()), cx);
+                if let Some(then) = self.pending_after_save.take() {
+                    then(self, window, cx);
+                }
             }
             Err(err) => {
                 alerting::report(Level::Error, format!("save failed for {}: {err}", file.path().display()));
-                window.push_notification(format!("Couldn’t save: {err}"), cx);
+                self.pending_after_save = None;
+                self.note_result(format!("Not saved · {err}"));
+                window.push_notification(format!("Not saved: {err}"), cx);
             }
         }
         cx.notify();
@@ -218,23 +368,25 @@ impl AtlasApp {
         let path_state = self.lifecycle_form.path.clone();
         path_state.update(cx, |state, cx| state.set_value(suggested.display().to_string(), window, cx));
         let this = cx.entity().downgrade();
+        let copy = self.lock_holder.is_some();
         window.open_dialog(cx, move |dialog, _, _| {
             let this = this.clone();
             let browse = this.clone();
             dialog
-                .title("Save household as…")
+                .title(if copy { "Save a copy as…" } else { "Save household as…" })
                 .w_96()
                 .child(
                     v_flex()
                         .gap_3()
-                        .child(Form::vertical().child(Field::new().label("File (SQLite, one editor at a time)").child(Input::new(&path_state).id("save-as-path"))))
+                        .child(Form::vertical().child(Field::new().label("File (one household per file, one editor at a time)").child(Input::new(&path_state).id("save-as-path"))))
                         .child(
                             h_flex().gap_2().child(
                                 Button::new("browse-save").small().outline().icon(IconName::FolderOpen).label("Browse…").on_click(move |_, window, cx| {
                                     let _ = browse.update(cx, |app, cx| app.browse_for_new_path(window, cx));
                                 }),
                             ),
-                        ),
+                        )
+                        .when(copy, |this| this.child(div().text_xs().child("The original file is held by someone else; the copy must use a different path."))),
                 )
                 .footer(
                     DialogFooter::new()
@@ -252,13 +404,22 @@ impl AtlasApp {
             window.push_notification("Enter a file path.", cx);
             return;
         }
-        let file = HouseholdFile::new(PathBuf::from(text));
+        let target = PathBuf::from(&text);
+        if self.lock_holder.is_some() && self.file_path().as_deref() == Some(target.as_path()) {
+            window.push_notification("That file is held by someone else; choose a different path for the copy.", cx);
+            return;
+        }
+        let file = HouseholdFile::new(target);
         window.close_dialog(cx);
         self.save_in_background(file, true, window, cx);
     }
 
-    /// Opens a household file (path field + native browse).
+    /// Opens a household file (path field + native browse), after the guard.
     pub fn open_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.guard_unsaved(window, cx, Rc::new(|app, window, cx| app.open_open_dialog(window, cx)));
+    }
+
+    fn open_open_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let path_state = self.lifecycle_form.path.clone();
         let default = atlas_store::default_folder().display().to_string();
         path_state.update(cx, |state, cx| state.set_value(default, window, cx));
@@ -279,8 +440,7 @@ impl AtlasApp {
                                     let _ = browse.update(cx, |app, cx| app.browse_for_open(window, cx));
                                 }),
                             ),
-                        )
-                        .child(div().text_xs().child("Unsaved changes in the current household are discarded when another file opens.")),
+                        ),
                 )
                 .footer(
                     DialogFooter::new()
@@ -317,18 +477,23 @@ impl AtlasApp {
             let _ = this.update_in(cx, |app, window, cx| match loaded {
                 Ok(household) => {
                     log::info!("perf: load of {} took {:.1}ms off the UI thread", file.path().display(), crate::perf::ms(started.elapsed()));
+                    let mut lock_holder = None;
                     match lock {
-                        Some(Err(StoreError::Locked { owner, since, .. })) => window.push_notification(format!("Opened; note it is also open by {owner} since {since}."), cx),
+                        Some(Err(StoreError::Locked { owner, since, .. })) => {
+                            window.push_notification(format!("Viewing only: {owner} has it open since {since}. Save as… keeps a copy."), cx);
+                            lock_holder = Some((owner, since));
+                        }
                         Some(Err(err)) => window.push_notification(format!("Opened without a lock: {err}"), cx),
                         _ => {}
                     }
                     let name = household.name.clone();
-                    app.replace_household(household, Some(file), window, cx);
-                    window.push_notification(format!("Opened “{name}”"), cx);
+                    app.replace_household(household, Some(file), false, window, cx);
+                    app.lock_holder = lock_holder;
+                    app.note_result(format!("Opened “{name}”."));
                 }
                 Err(err) => {
                     alerting::report(Level::Error, format!("open failed for {}: {err}", file.path().display()));
-                    window.push_notification(format!("Couldn’t open: {err}"), cx);
+                    window.push_notification(format!("Could not open: {err}"), cx);
                 }
             });
         })
@@ -372,8 +537,13 @@ impl AtlasApp {
         .detach();
     }
 
-    /// New empty household (name, currency, reconciliation date, first person).
+    /// New empty household (name, currency, reconciliation date, first person),
+    /// after the guard.
     pub fn open_new_household(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.guard_unsaved(window, cx, Rc::new(|app, window, cx| app.open_new_household_dialog(window, cx)));
+    }
+
+    fn open_new_household_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let form_name = self.lifecycle_form.name.clone();
         let form_person = self.lifecycle_form.first_person.clone();
         let currency = self.lifecycle_form.currency.clone();
@@ -383,22 +553,28 @@ impl AtlasApp {
         let today = chrono::Local::now().date_naive();
         as_of.update(cx, |state, cx| state.set_date(today, window, cx));
         let this = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let this = this.clone();
+            let muted = cx.theme().muted_foreground;
             dialog
-                .title("New household")
+                .title("Create household")
                 .w_96()
                 .child(
-                    Form::vertical()
-                        .child(Field::new().label("Household name").required(true).child(Input::new(&form_name).id("new-household-name")))
-                        .child(Field::new().label("Base currency (USD by default)").child(Select::new(&currency)))
-                        .child(Field::new().label("Balances reconciled as of").child(DatePicker::new(&as_of)))
-                        .child(Field::new().label("First person (you)").required(true).child(Input::new(&form_person).id("new-household-person"))),
+                    v_flex()
+                        .gap_3()
+                        .child(
+                            Form::vertical()
+                                .child(Field::new().label("Household name").required(true).child(Input::new(&form_name).id("new-household-name")))
+                                .child(Field::new().label("Currency").child(Select::new(&currency)))
+                                .child(Field::new().label("Balances as of").child(DatePicker::new(&as_of)))
+                                .child(Field::new().label("Your name").required(true).child(Input::new(&form_person).id("new-household-person"))),
+                        )
+                        .child(div().text_xs().text_color(muted).child("Currency cannot be changed later. One currency per household; no conversion.")),
                 )
                 .footer(
                     DialogFooter::new()
                         .child(Button::new("cancel-new-household").outline().label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
-                        .child(Button::new("confirm-new-household").primary().label("Create").on_click(move |_, window, cx| {
+                        .child(Button::new("confirm-new-household").primary().label("Create household").on_click(move |_, window, cx| {
                             let _ = this.update(cx, |app, cx| app.create_household_from_form(window, cx));
                         })),
                 )
@@ -418,89 +594,123 @@ impl AtlasApp {
         let mut household = Household::empty(&name, currency, as_of);
         household.add_person(Person { id: PersonId::new(1), name: person.clone(), role: HouseholdRole::Owner });
         window.close_dialog(cx);
-        self.replace_household(household, None, window, cx);
+        self.replace_household(household, None, false, window, cx);
         self.dirty = true;
-        window.push_notification(format!("“{name}” created for {person} in {currency}; add accounts, then save from the Household menu."), cx);
+        self.note_result(format!("“{name}” created for {person} in {currency}. Not saved to a file."));
     }
 
-    /// Loads the fictitious sample household.
+    /// Loads the fictitious sample household, after the guard.
     pub fn load_sample(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.replace_household(fixtures::plan_household(), None, window, cx);
-        window.push_notification("Sample household loaded — fictitious people, accounts and amounts.", cx);
+        self.guard_unsaved(
+            window,
+            cx,
+            Rc::new(|app, window, cx| {
+                app.replace_household(fixtures::plan_household(), None, true, window, cx);
+                app.note_result("Sample household loaded — fictitious people, accounts and amounts.");
+            }),
+        );
     }
 
-    /// "Who is looking?" — a button per person (no secret by design).
+    /// "Who is looking?" — a radio per person, no secret by design. The
+    /// initial chooser (after a multi-person load) offers `Back to Welcome`
+    /// instead of a bypass into someone's data.
     pub fn open_viewer_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let people: Vec<(PersonId, String, String)> = self.household.people.iter().map(|p| (p.id, p.name.clone(), p.role.label().to_string())).collect();
         if people.is_empty() {
-            window.push_notification("Add a person first.", cx);
+            window.push_notification("Add a person to choose a viewer.", cx);
             return;
         }
+        let current = people.iter().position(|(id, _, _)| *id == self.viewer.person).unwrap_or(0);
+        let choice = self.lifecycle_form.viewer_choice.clone();
+        choice.update(cx, |c, _| c.index = current);
+        let initial = self.viewer_pending;
+        let draft_at_risk = self.decision.is_some() || self.decision_step > 0;
         let this = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, cx| {
             let this = this.clone();
             let muted = cx.theme().muted_foreground;
+            let selected = choice.read(cx).index;
+            let choice_entity = choice.clone();
+            let labels: Vec<String> = people.iter().map(|(_, name, role)| format!("{name} — {role}")).collect();
+            let ids: Vec<PersonId> = people.iter().map(|(id, _, _)| *id).collect();
+            let continue_this = this.clone();
+            let back_this = this.clone();
             dialog
                 .title("Who is looking?")
                 .w_96()
                 .child(
                     v_flex()
-                        .gap_2()
-                        .child(div().text_xs().text_color(muted).child("Every screen is filtered by this person's access policies. People are identified by choice, without a password."))
-                        .children(people.iter().map(|(id, name, role)| {
-                            let id = *id;
-                            let this = this.clone();
-                            Button::new(SharedString::from(format!("pick-viewer-{}", id.raw())))
-                                .w_full()
-                                .outline()
-                                .label(format!("{name} — {role}"))
-                                .on_click(move |_, window, cx| {
-                                    let _ = this.update(cx, |app, cx| {
-                                        app.set_viewer(Viewer::person(id), cx);
-                                        window.close_dialog(cx);
-                                    });
-                                })
+                        .gap_3()
+                        .child(
+                            RadioGroup::vertical("viewer-choice")
+                                .children(labels)
+                                .selected_index(Some(selected))
+                                .on_change(move |index, _, cx| choice_entity.update(cx, |c, cx| { c.index = *index; cx.notify(); })),
+                        )
+                        .child(div().text_xs().text_color(muted).child("This changes what Atlas shows. It does not secure the household file."))
+                        .when(draft_at_risk, |this| this.child(div().text_xs().text_color(muted).child("Switching to another person discards the purchase draft."))),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(if initial {
+                            Button::new("viewer-back").outline().label("Back to Welcome").on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                let _ = back_this.update(cx, |app, cx| app.close_household_now(cx));
+                            })
+                        } else {
+                            Button::new("viewer-cancel").outline().label("Cancel").on_click(|_, window, cx| window.close_dialog(cx))
+                        })
+                        .child(Button::new("viewer-continue").primary().label("Continue").on_click(move |_, window, cx| {
+                            let id = ids.get(selected).copied();
+                            window.close_dialog(cx);
+                            if let Some(id) = id {
+                                let _ = continue_this.update(cx, |app, cx| {
+                                    app.set_viewer(Viewer::person(id), cx);
+                                    app.viewer_pending = false;
+                                    cx.notify();
+                                });
+                            }
                         })),
                 )
         });
     }
 
-    /// The title-bar Household menu.
     /// The Household ▸ menu in the title bar. `this` is the handle the menu
     /// items act through; the shell renders the menu, so it cannot come from
     /// a `Context<AtlasApp>` here.
     pub fn render_household_menu(&self, this: WeakEntity<Self>) -> impl IntoElement {
         let dirty = self.dirty;
         let label = if dirty { format!("{} •", self.household.name) } else { self.household.name.clone() };
+        let save_label = self.save_command_label();
         DropdownButton::new("household-menu")
             .small()
             .button(Button::new("household-menu-button").small().ghost().icon(IconName::FolderOpen).label(label))
             .dropdown_menu(move |menu, _, _| {
+                let new = this.clone();
+                let open = this.clone();
+                let sample = this.clone();
                 let save = this.clone();
                 let save_as = this.clone();
-                let open = this.clone();
-                let new = this.clone();
-                let sample = this.clone();
-                let who = this.clone();
-                menu.item(PopupMenuItem::new(if dirty { "Save •" } else { "Save" }).icon(IconName::Save).on_click(move |_, window, cx| {
+                let close = this.clone();
+                menu.item(PopupMenuItem::new("New household…").icon(IconName::Plus).on_click(move |_, window, cx| {
+                    let _ = new.update(cx, |app, cx| app.open_new_household(window, cx));
+                }))
+                .item(PopupMenuItem::new("Open household…").icon(IconName::FolderOpen).on_click(move |_, window, cx| {
+                    let _ = open.update(cx, |app, cx| app.open_open(window, cx));
+                }))
+                .item(PopupMenuItem::new("Explore sample").on_click(move |_, window, cx| {
+                    let _ = sample.update(cx, |app, cx| app.load_sample(window, cx));
+                }))
+                .item(PopupMenuItem::separator())
+                .item(PopupMenuItem::new(save_label).icon(IconName::Save).on_click(move |_, window, cx| {
                     let _ = save.update(cx, |app, cx| app.save(window, cx));
                 }))
                 .item(PopupMenuItem::new("Save as…").on_click(move |_, window, cx| {
                     let _ = save_as.update(cx, |app, cx| app.open_save_as(window, cx));
                 }))
-                .item(PopupMenuItem::new("Open…").icon(IconName::FolderOpen).on_click(move |_, window, cx| {
-                    let _ = open.update(cx, |app, cx| app.open_open(window, cx));
-                }))
                 .item(PopupMenuItem::separator())
-                .item(PopupMenuItem::new("New household…").icon(IconName::Plus).on_click(move |_, window, cx| {
-                    let _ = new.update(cx, |app, cx| app.open_new_household(window, cx));
-                }))
-                .item(PopupMenuItem::new("Load sample household").on_click(move |_, window, cx| {
-                    let _ = sample.update(cx, |app, cx| app.load_sample(window, cx));
-                }))
-                .item(PopupMenuItem::separator())
-                .item(PopupMenuItem::new("Who is looking?…").icon(IconName::Eye).on_click(move |_, window, cx| {
-                    let _ = who.update(cx, |app, cx| app.open_viewer_picker(window, cx));
+                .item(PopupMenuItem::new("Close household").on_click(move |_, window, cx| {
+                    let _ = close.update(cx, |app, cx| app.close_household(window, cx));
                 }))
             })
     }
@@ -508,6 +718,19 @@ impl AtlasApp {
     /// The viewer's display name.
     pub fn viewer_display_name(&self) -> String {
         self.household.entity_name(EntityRef::Person(self.viewer.person))
+    }
+
+    /// The viewer's name and household role (`Person A · Owner`).
+    pub fn viewer_display_name_with_role(&self) -> String {
+        match self.household.person(self.viewer.person) {
+            Some(person) => format!("{} · {}", person.name, person.role.label()),
+            None => "No one yet".into(),
+        }
+    }
+
+    /// Whether gpui's frame-time overlay was requested at launch.
+    pub fn perf_overlay(&self) -> bool {
+        self.perf_overlay
     }
 }
 

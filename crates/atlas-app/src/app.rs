@@ -1,6 +1,6 @@
-//! `AtlasApp`: the content view. It owns the household, the viewer, the active
-//! section and the derived screen models; screens are pure rendering over
-//! those models. The window's root view — title bar, sidebar, status bar —
+//! `AtlasApp`: the content view. It owns the household, the viewer, the
+//! current route and the derived screen models; screens are pure rendering
+//! over those models. The window's root view — title bar, sidebar, status bar —
 //! is [`crate::shell::Shell`], which embeds this view cached.
 
 use atlas_core::authz::Viewer;
@@ -10,7 +10,7 @@ use atlas_core::model::Household;
 use atlas_core::{EngineError, Money};
 use chrono::NaiveDate;
 use gpui_kit::component::{
-    ActiveTheme as _, WindowExt as _,
+    ActiveTheme as _, Sizable as _, WindowExt as _,
     alert::Alert,
     button::{Button, ButtonVariants as _},
     scroll::ScrollableElement as _,
@@ -23,8 +23,9 @@ use crate::launch::{Launch, Start};
 use crate::derived::Lazy;
 use crate::perf;
 use crate::widgets::grid;
-use crate::screens::{
-    self, Section,
+use crate::nav::{Destination, Route};
+use crate::models::{
+    self,
     entities::EntityModels,
     household::HouseholdOverview,
     liquidity::LiquidityModel,
@@ -40,7 +41,7 @@ use crate::scenario_entry::ScenarioForms;
 use crate::decision_entry::DecisionForm;
 use atlas_core::decision::{Decision, PurchasePlan};
 use crate::privacy_entry::PrivacyForms;
-use crate::screens::privacy::PrivacyModel;
+use crate::models::privacy::PrivacyModel;
 use atlas_core::ids::RuleId;
 use atlas_core::rules::TieBreak;
 use crate::rules_entry::RuleForm;
@@ -70,7 +71,29 @@ use gpui_kit::component::{
 pub struct AtlasApp {
     pub(crate) household: Household,
     pub(crate) viewer: Viewer,
-    pub(crate) section: Section,
+    /// The surface on show.
+    pub(crate) route: Route,
+    /// Routes visited before the current one, newest last (for "Back to …").
+    pub(crate) history: Vec<Route>,
+    /// Whether a household is open at all; `false` shows Welcome.
+    pub(crate) opened: bool,
+    /// The fictitious sample is loaded (shell marker, fixed horizon).
+    pub(crate) is_sample: bool,
+    /// The household has several people and nobody has chosen who is looking
+    /// yet: content stays behind the chooser until they do.
+    pub(crate) viewer_pending: bool,
+    /// The last accepted action's result sentence (status bar lane).
+    pub(crate) last_result: Option<String>,
+    /// Another editor holds the file: (owner, since). Viewing only.
+    pub(crate) lock_holder: Option<(String, String)>,
+    /// A startup failure shown on Welcome.
+    pub(crate) startup_notice: Option<String>,
+    /// The last save finished after further edits: those are still unsaved.
+    pub(crate) edited_while_saving: bool,
+    /// What to do once a `Save and continue` save has finished.
+    pub(crate) pending_after_save: Option<crate::lifecycle::Continuation>,
+    /// gpui's frame-time overlay was requested at launch.
+    pub(crate) perf_overlay: bool,
     pub(crate) horizon: NaiveDate,
     pub(crate) sidebar_collapsed: bool,
     /// Derived models: dropped when their inputs change, computed on first
@@ -138,6 +161,15 @@ pub struct AtlasApp {
     pub(crate) _subscriptions: Vec<Subscription>,
 }
 
+/// Viewer-aware object counts for Settings.
+#[derive(Clone, Debug)]
+pub struct DisclosureCounts {
+    pub accounts: String,
+    pub series: String,
+    pub reservations: String,
+    pub policies: String,
+}
+
 /// The retained state of every virtualised table (`widgets::grid`). Created
 /// once with the window; their rows come from the screen models.
 pub struct Grids {
@@ -150,10 +182,10 @@ pub struct Grids {
 impl Grids {
     fn new(window: &mut Window, cx: &mut App) -> Self {
         Grids {
-            timeline_occurrences: grid::new_grid(screens::timeline::OCCURRENCE_COLUMNS.to_vec(), window, cx),
-            timeline_actuals: grid::new_grid(screens::timeline::ACTUAL_COLUMNS.to_vec(), window, cx),
-            tax_events: grid::new_grid(screens::taxes::EVENT_COLUMNS.to_vec(), window, cx),
-            rule_fees: grid::new_grid(screens::rules::FEE_COLUMNS.to_vec(), window, cx),
+            timeline_occurrences: grid::new_grid(models::timeline::OCCURRENCE_COLUMNS.to_vec(), window, cx),
+            timeline_actuals: grid::new_grid(models::timeline::ACTUAL_COLUMNS.to_vec(), window, cx),
+            tax_events: grid::new_grid(models::taxes::EVENT_COLUMNS.to_vec(), window, cx),
+            rule_fees: grid::new_grid(models::rules::FEE_COLUMNS.to_vec(), window, cx),
         }
     }
 }
@@ -323,7 +355,7 @@ pub struct ReservationForm {
 
 impl ReservationForm {
     fn new(household: &Household, viewer: Viewer, window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
-        let account_ids = screens::liquidity::editable_accounts(household, viewer);
+        let account_ids = models::liquidity::editable_accounts(household, viewer);
         let account_names: Vec<SharedString> = account_ids
             .iter()
             .filter_map(|id| household.account(*id))
@@ -355,11 +387,16 @@ impl AtlasApp {
         let owner = launch.owner.clone();
         let resolved = Self::resolve_start(launch, &owner);
         let household = resolved.household;
+        let opened = launch.start != Start::Welcome && resolved.failure.is_none();
+        let is_sample = launch.start == Start::Sample;
+        let explicit_viewer = launch.viewer_id.is_some() || launch.viewer.is_some();
         let viewer = Viewer::person(match launch.viewer_id {
             Some(id) => PersonId::new(id),
-            None if launch.viewer == 'b' => household.people.get(1).map(|p| p.id).unwrap_or(fixtures::ids::PERSON_B),
+            None if launch.viewer == Some('b') => household.people.get(1).map(|p| p.id).unwrap_or(fixtures::ids::PERSON_B),
             None => household.people.first().map(|p| p.id).unwrap_or(fixtures::ids::PERSON_A),
         });
+        let viewer_pending = opened && !explicit_viewer && household.people.len() > 1;
+        let route = if opened { launch.route } else { Route::Welcome };
         let horizon = household.as_of.checked_add_months(Months::new(12)).unwrap_or(fixtures::default_horizon()).max(fixtures::default_horizon().min(household.as_of.checked_add_months(Months::new(12)).unwrap_or(household.as_of)));
         let horizon = if launch.start == Start::Sample { fixtures::default_horizon() } else { horizon };
         for notice in &resolved.notices {
@@ -405,11 +442,21 @@ impl AtlasApp {
                 this.set_e05_amount_text(&text, cx);
             }
         }));
-        log::info!("Atlas Financer window: section={} viewer={}", launch.section.slug(), viewer.person);
+        log::info!("Atlas Financer window: route={} viewer={} opened={opened} viewer_pending={viewer_pending}", route.slug(), viewer.person);
         AtlasApp {
             household,
             viewer,
-            section: launch.section,
+            route,
+            history: Vec::new(),
+            opened,
+            is_sample,
+            viewer_pending,
+            last_result: None,
+            lock_holder: resolved.lock_holder,
+            startup_notice: resolved.failure,
+            edited_while_saving: false,
+            pending_after_save: None,
+            perf_overlay: launch.perf_overlay,
             horizon,
             sidebar_collapsed: false,
             overview: Lazy::stale(),
@@ -896,9 +943,9 @@ impl AtlasApp {
         cx.notify();
     }
 
-    /// The scenario the overlay toggles apply (see [`screens::overlay_scenario`]).
+    /// The scenario the overlay toggles apply (see [`models::overlay_scenario`]).
     pub fn overlay_scenario(&self) -> Option<ScenarioId> {
-        screens::overlay_scenario(&self.household, self.viewer)
+        models::overlay_scenario(&self.household, self.viewer)
     }
 
     /// Toggles the scenario overlay on the timeline.
@@ -1071,23 +1118,23 @@ impl AtlasApp {
         if self.decision.is_some() {
             self.evaluate_decision();
         }
-        log::info!("perf: refresh_derived invalidated every screen model in {:.1}ms (section={}: its model is computed on the next frame)", perf::ms(started.elapsed()), self.section.slug());
+        log::info!("perf: refresh_derived invalidated every screen model in {:.1}ms (route={}: its model is computed on the next frame)", perf::ms(started.elapsed()), self.route.slug());
     }
 
-    /// Whether `section`'s derived model is currently computed (perf tests).
-    pub fn is_model_computed(&self, section: Section) -> bool {
-        match section {
-            Section::Household => self.overview.is_computed(),
-            Section::People | Section::Companies | Section::Accounts => self.entities.is_computed(),
-            Section::Liquidity => self.liquidity.is_computed(),
-            Section::Timeline => self.timeline.is_computed(),
-            Section::Projections => self.projection.is_computed(),
-            Section::Assumptions => self.assumptions.is_computed(),
-            Section::Taxes => self.taxes.is_computed(),
-            Section::Rules => self.rules.is_computed(),
-            Section::Scenarios => self.scenarios.is_computed(),
-            Section::Privacy => self.privacy.is_computed(),
-            Section::Decisions | Section::Settings => true,
+    /// Whether the derived model behind `route` is currently computed (perf tests).
+    pub fn is_model_computed(&self, route: Route) -> bool {
+        match route {
+            Route::Today => self.overview.is_computed(),
+            Route::People | Route::Person(_) | Route::Companies | Route::Company(_) | Route::Accounts | Route::Account(_) => self.entities.is_computed(),
+            Route::Earmarks => self.liquidity.is_computed(),
+            Route::Upcoming | Route::Series | Route::SeriesDetail(_) | Route::Actuals => self.timeline.is_computed(),
+            Route::ForecastPath => self.projection.is_computed(),
+            Route::Assumptions | Route::Derive | Route::Sensitivity => self.assumptions.is_computed(),
+            Route::Taxes | Route::TaxPacks => self.taxes.is_computed(),
+            Route::Rules | Route::Rule(_) | Route::CreateRule | Route::RuleActivity | Route::Funding => self.rules.is_computed(),
+            Route::Scenarios | Route::ScenarioCompare => self.scenarios.is_computed(),
+            Route::Policies | Route::Grants | Route::Audit => self.privacy.is_computed(),
+            Route::Welcome | Route::Purchase | Route::PurchaseResult | Route::Extraction | Route::Settings => true,
         }
     }
 
@@ -1499,17 +1546,91 @@ impl AtlasApp {
         self.selected_account
     }
 
-    /// Switches the main area to `section`.
-    pub fn navigate(&mut self, section: Section, cx: &mut Context<Self>) {
-        if self.section != section {
-            log::info!("navigate: {} → {}", self.section.slug(), section.slug());
-            self.section = section;
+    /// Opens `route`, remembering where it came from for "Back to …".
+    pub fn navigate(&mut self, route: Route, cx: &mut Context<Self>) {
+        if self.route != route {
+            log::info!("navigate: {} → {}", self.route.slug(), route.slug());
+            if self.route != Route::Welcome {
+                self.history.push(self.route);
+                if self.history.len() > 32 {
+                    self.history.remove(0);
+                }
+            }
+            self.route = route;
             cx.notify();
         }
     }
 
-    pub fn section(&self) -> Section {
-        self.section
+    /// Returns to the previous route, or to the current route's parent.
+    pub fn go_back(&mut self, cx: &mut Context<Self>) {
+        let target = self.history.pop().unwrap_or_else(|| self.route.parent());
+        log::info!("navigate: back {} → {}", self.route.slug(), target.slug());
+        self.route = target;
+        cx.notify();
+    }
+
+    pub fn route(&self) -> Route {
+        self.route
+    }
+
+    /// The sidebar destination of the current route, if any.
+    pub fn destination(&self) -> Option<Destination> {
+        self.route.destination()
+    }
+
+    /// Whether a household is open (otherwise Welcome is on show).
+    pub fn is_opened(&self) -> bool {
+        self.opened
+    }
+
+    pub fn is_sample(&self) -> bool {
+        self.is_sample
+    }
+
+    /// Whether content waits behind the "Who is looking?" chooser.
+    pub fn viewer_pending(&self) -> bool {
+        self.viewer_pending
+    }
+
+    /// The last accepted action's result sentence.
+    pub fn last_result(&self) -> Option<&str> {
+        self.last_result.as_deref()
+    }
+
+    /// Records the result sentence of an accepted action (status-bar lane).
+    pub(crate) fn note_result(&mut self, sentence: impl Into<String>) {
+        let sentence = sentence.into();
+        log::info!("result: {sentence}");
+        self.last_result = Some(sentence);
+    }
+
+    /// The forecast end date: twelve months after the reconciliation date,
+    /// or the sample's fixed horizon.
+    pub fn horizon(&self) -> NaiveDate {
+        self.horizon
+    }
+
+    /// Opens the Figure meanings reference, on `term` when given.
+    pub fn open_figure_meanings(&mut self, term: Option<crate::widgets::meanings::Term>, window: &mut Window, cx: &mut Context<Self>) {
+        crate::widgets::meanings::open_sheet(window, cx, term);
+    }
+
+    /// Object counts as `visible of total · hidden not disclosed`, for Settings.
+    pub fn disclosure_counts(&self) -> DisclosureCounts {
+        use atlas_core::ids::ObjectRef;
+        let h = &self.household;
+        let visible = |object: ObjectRef| !matches!(h.disclosure_for(self.viewer, object), Disclosure::Hidden | Disclosure::Aggregate);
+        let line = |visible: usize, total: usize| if visible == total { format!("{total}") } else { format!("{visible} visible of {total} · {} not disclosed", total - visible) };
+        let accounts = h.accounts.iter().filter(|a| visible(ObjectRef::Account(a.id))).count();
+        let series = h.series.iter().filter(|s| visible(ObjectRef::Series(s.id))).count();
+        let reservations = h.reservations.iter().filter(|r| visible(ObjectRef::Reservation(r.id))).count();
+        let policies = h.policies.iter().filter(|p| !matches!(p.disclosure(self.viewer), Disclosure::Hidden | Disclosure::Aggregate)).count();
+        DisclosureCounts {
+            accounts: line(accounts, h.accounts.len()),
+            series: line(series, h.series.len()),
+            reservations: line(reservations, h.reservations.len()),
+            policies: line(policies, h.policies.len()),
+        }
     }
 
     pub fn household(&self) -> &Household {
@@ -1549,11 +1670,25 @@ impl AtlasApp {
             self.mark_dirty();
         }
         // The decision builder must only offer sources this viewer may see.
+        self.reset_decision_state();
+        // Selections and the route's object may not be visible any more.
+        self.selected_account = None;
+        self.selected_company = None;
+        self.selected_person = None;
+        self.history.clear();
+        if let Some(destination) = self.route.destination() {
+            self.route = destination.home();
+        }
+        self.refresh_derived();
+        cx.notify();
+    }
+
+    /// Drops the purchase draft and its result: the default plan for the
+    /// viewer, step 1, no result. The form entities follow on `rebuild_forms`.
+    pub(crate) fn reset_decision_state(&mut self) {
         self.decision_plan = atlas_core::decision::default_plan_for(&self.household, self.household.as_of, self.viewer);
         self.decision = None;
         self.decision_step = 0;
-        self.refresh_derived();
-        cx.notify();
     }
 
     fn viewer_name(&self) -> String {
@@ -1583,79 +1718,78 @@ impl AtlasApp {
     }
 
     fn render_section(&self, cx: &mut Context<Self>) -> AnyElement {
-        match self.section {
-            Section::Household => match self.overview_result() {
-                Ok(overview) => screens::household::render(overview, &self.household, cx).into_any_element(),
-                Err(err) => v_flex()
-                    .id("screen-household")
-                    .test_support()
-                    .w_full()
-                    .gap_4()
-                    .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Household"))
-                    .child(
-                        Alert::error("overview-error", format!("The household overview could not be calculated: {err}"))
-                            .title("Calculation failed"),
-                    )
-                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
-                        "The failure was logged and, when alerts are configured, posted to the team. Check the household's accounts and policies, then reopen the screen.",
-                    ))
-                    .into_any_element(),
+        if !self.opened || self.route == Route::Welcome {
+            return crate::screens::welcome::render(self, cx);
+        }
+        if self.viewer_pending {
+            return crate::screens::welcome::render_gate(self, cx);
+        }
+        match self.route {
+            Route::Welcome => crate::screens::welcome::render(self, cx),
+            Route::Settings => crate::screens::settings::render(self, cx),
+            // Bridge: every route not rebuilt yet renders through the previous
+            // screen for its data, so the application stays complete.
+            Route::Today => match self.overview_result() {
+                Ok(overview) => models::household::render(overview, &self.household, cx).into_any_element(),
+                Err(err) => self.render_engine_failure(Route::Today, "the household overview", err, cx),
             },
-            Section::People | Section::Companies | Section::Accounts => match self.entities_result() {
-                Ok(models) => {
-                    match self.section {
-                        Section::People => screens::people::render(models, &self.household, self.selected_person, cx).into_any_element(),
-                        Section::Companies => screens::companies::render(models, &self.household, self.selected_company, cx).into_any_element(),
-                        _ => screens::accounts::render(models, &self.household, self.viewer, self.selected_account, cx).into_any_element(),
-                    }
-                }
-                Err(err) => self.render_engine_failure(self.section, err, cx),
+            Route::People | Route::Person(_) | Route::Companies | Route::Company(_) | Route::Accounts | Route::Account(_) => match self.entities_result() {
+                Ok(models) => match self.route {
+                    Route::People | Route::Person(_) => models::people::render(models, &self.household, self.selected_person, cx).into_any_element(),
+                    Route::Companies | Route::Company(_) => models::companies::render(models, &self.household, self.selected_company, cx).into_any_element(),
+                    _ => models::accounts::render(models, &self.household, self.viewer, self.selected_account, cx).into_any_element(),
+                },
+                Err(err) => self.render_engine_failure(self.route, "this screen", err, cx),
             },
-            Section::Liquidity => match self.liquidity_result() {
-                Ok(model) => screens::liquidity::render(model, &self.household, self.viewer, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Section::Liquidity, err, cx),
+            Route::Earmarks | Route::Funding => match self.liquidity_result() {
+                Ok(model) => models::liquidity::render(model, &self.household, self.viewer, cx).into_any_element(),
+                Err(err) => self.render_engine_failure(Route::Earmarks, "liquidity", err, cx),
             },
-            Section::Timeline => match self.timeline_result() {
-                Ok(model) => screens::timeline::render(model, &self.timeline_controls, &self.grids, &self.household, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Section::Timeline, err, cx),
+            Route::Upcoming | Route::Series | Route::SeriesDetail(_) | Route::Actuals => match self.timeline_result() {
+                Ok(model) => models::timeline::render(model, &self.timeline_controls, &self.grids, &self.household, cx).into_any_element(),
+                Err(err) => self.render_engine_failure(Route::Upcoming, "the timeline", err, cx),
             },
-            Section::Projections => match self.projection_result() {
-                Ok(model) => screens::projections::render(model, &self.household, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Section::Projections, err, cx),
+            Route::ForecastPath => match self.projection_result() {
+                Ok(model) => models::projections::render(model, &self.household, cx).into_any_element(),
+                Err(err) => self.render_engine_failure(Route::ForecastPath, "this forecast", err, cx),
             },
-            Section::Assumptions => match self.assumptions_result() {
-                Ok(model) => screens::assumptions::render(model, &self.household, self.viewer, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Section::Assumptions, err, cx),
+            Route::Assumptions | Route::Derive | Route::Sensitivity => match self.assumptions_result() {
+                Ok(model) => models::assumptions::render(model, &self.household, self.viewer, cx).into_any_element(),
+                Err(err) => self.render_engine_failure(Route::Assumptions, "the assumptions", err, cx),
             },
-            Section::Taxes => match self.taxes_result() {
-                Ok(model) => screens::taxes::render(model, &self.tax_controls, &self.grids, &self.household, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Section::Taxes, err, cx),
+            Route::Taxes | Route::TaxPacks | Route::Extraction => match self.taxes_result() {
+                Ok(model) => models::taxes::render(model, &self.tax_controls, &self.grids, &self.household, cx).into_any_element(),
+                Err(err) => self.render_engine_failure(Route::Taxes, "the tax assessment", err, cx),
             },
-            Section::Rules => match self.rules_result() {
-                Ok(model) => screens::rules::render(model, &self.grids, &self.household, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Section::Rules, err, cx),
+            Route::Rules | Route::Rule(_) | Route::CreateRule | Route::RuleActivity => match self.rules_result() {
+                Ok(model) => models::rules::render(model, &self.grids, &self.household, cx).into_any_element(),
+                Err(err) => self.render_engine_failure(Route::Rules, "the rules", err, cx),
             },
-            Section::Scenarios => match self.scenarios_result() {
-                Ok(model) => screens::scenarios::render(model, &self.household, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Section::Scenarios, err, cx),
+            Route::Scenarios | Route::ScenarioCompare => match self.scenarios_result() {
+                Ok(model) => models::scenarios::render(model, &self.household, cx).into_any_element(),
+                Err(err) => self.render_engine_failure(Route::Scenarios, "the scenarios", err, cx),
             },
-            Section::Decisions => screens::decisions::render(self.decision_step, &self.decision_form, self.decision.as_ref(), &self.household, &self.viewer_name(), cx).into_any_element(),
-            Section::Privacy => screens::privacy::render(self.privacy(), &self.household, &self.viewer_name(), cx).into_any_element(),
-            Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
+            Route::Purchase | Route::PurchaseResult => models::decisions::render(self.decision_step, &self.decision_form, self.decision.as_ref(), &self.household, &self.viewer_name(), cx).into_any_element(),
+            Route::Policies | Route::Grants | Route::Audit => models::privacy::render(self.privacy(), &self.household, &self.viewer_name(), cx).into_any_element(),
         }
     }
 
-    fn render_engine_failure(&self, section: Section, err: &EngineError, cx: &mut Context<Self>) -> AnyElement {
+    /// The failure state of a derived screen: the heading, the safe reason,
+    /// where the failure went, and a retry.
+    pub(crate) fn render_engine_failure(&self, route: Route, what: &str, err: &EngineError, cx: &mut Context<Self>) -> AnyElement {
+        let reported = if alerting::is_configured() { "Reported to the team." } else { "Written to logs only." };
         v_flex()
-            .id(SharedString::from(format!("screen-{}", section.slug())))
+            .id(SharedString::from(format!("screen-{}", route.slug())))
             .test_support()
             .w_full()
             .gap_4()
-            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(section.label()))
-            .child(Alert::error("engine-error", format!("This screen could not be calculated: {err}")).title("Calculation failed"))
-            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
-                "The failure was logged and, when alerts are configured, posted to the team.",
-            ))
+            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(route.title()))
+            .child(Alert::error("engine-error", format!("Could not calculate {what}: {err}")).title("Unavailable"))
+            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(reported.to_string()))
+            .child(Button::new("retry-calculation").small().outline().label("Retry").on_click(cx.listener(|this, _, _, cx| {
+                this.refresh_derived();
+                cx.notify();
+            })))
             .into_any_element()
     }
 }

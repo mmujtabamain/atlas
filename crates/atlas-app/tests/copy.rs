@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use atlas_app::screens::Section;
+use atlas_app::models::Section;
 use atlas_core::authz::Viewer;
 use atlas_core::forecast::{Case, ForecastOptions, forecast};
 use atlas_core::ids::EntityRef;
@@ -369,8 +369,8 @@ fn sample_household_renders_without_plan_references() {
 #[test]
 fn overlay_scenario_is_the_first_scenario_the_viewer_may_see() {
     let household = fixtures::plan_household();
-    assert_eq!(atlas_app::screens::overlay_scenario(&household, Viewer::person(fixtures::ids::PERSON_A)), Some(fixtures::ids::BUY_CAR));
-    assert_eq!(atlas_app::screens::overlay_scenario(&household, Viewer::person(fixtures::ids::PERSON_B)), Some(fixtures::ids::BUY_CAR));
+    assert_eq!(atlas_app::models::overlay_scenario(&household, Viewer::person(fixtures::ids::PERSON_A)), Some(fixtures::ids::BUY_CAR));
+    assert_eq!(atlas_app::models::overlay_scenario(&household, Viewer::person(fixtures::ids::PERSON_B)), Some(fixtures::ids::BUY_CAR));
     let empty = Household::empty("Fresh", atlas_core::Currency::USD, household.as_of);
-    assert_eq!(atlas_app::screens::overlay_scenario(&empty, Viewer::person(fixtures::ids::PERSON_A)), None, "no scenario, no toggle");
+    assert_eq!(atlas_app::models::overlay_scenario(&empty, Viewer::person(fixtures::ids::PERSON_A)), None, "no scenario, no toggle");
 }

@@ -4,7 +4,7 @@
 //! Sidebar items are registered by gpui-kit as `<group>-0-<item>` inside the
 //! `main-sidebar` scope: People is `0-0-1`, Settings is `4-0-1`.
 
-use atlas_app::screens::Section;
+use atlas_app::models::Section;
 use atlas_app::{AtlasApp, Launch, Shell};
 use atlas_core::fixtures;
 use atlas_core::ids::ObjectRef;
@@ -329,7 +329,7 @@ fn paying_and_releasing_an_earmark_keeps_free_cash(cx: &mut TestAppContext) {
 
 #[test]
 fn timeline_filters_narrow_the_occurrences() {
-    use atlas_app::screens::timeline::{TimelineFilter, TimelineModel};
+    use atlas_app::models::timeline::{TimelineFilter, TimelineModel};
     use atlas_core::authz::Viewer;
     use atlas_core::ids::EntityRef;
     use atlas_core::timeline::OccurrenceStatus;
