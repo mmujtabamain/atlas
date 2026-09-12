@@ -46,7 +46,7 @@ pub struct ScenarioForms {
     pub monthly_gross: Entity<InputState>,
     pub reason: Entity<InputState>,
     pub compose_name: Entity<InputState>,
-    scenario_ids: Vec<ScenarioId>,
+    pub(crate) scenario_ids: Vec<ScenarioId>,
     series_ids: Vec<SeriesId>,
     company_ids: Vec<CompanyId>,
 }
@@ -65,6 +65,11 @@ fn selected_row(state: &Choice, cx: &App) -> usize {
 }
 
 impl ScenarioForms {
+    /// The row of a scenario among the dialog's options.
+    pub fn scenario_row(&self, id: ScenarioId) -> Option<usize> {
+        self.scenario_ids.iter().position(|s| *s == id)
+    }
+
     pub fn new(household: &Household, window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
         let scenario_ids: Vec<ScenarioId> = household.scenarios.iter().map(|s| s.id).collect();
         let scenario_names: Vec<SharedString> = household.scenarios.iter().map(|s| SharedString::from(s.name.clone())).collect();
