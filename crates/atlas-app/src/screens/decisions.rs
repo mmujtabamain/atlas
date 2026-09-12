@@ -49,6 +49,7 @@ pub fn render(step: usize, form: &DecisionForm, decision: Option<&Result<Decisio
     v_flex()
         .id("screen-decisions")
         .test_support()
+        .w_full()
         .gap_6()
         .child(page_header(
             "Decisions",

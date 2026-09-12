@@ -101,6 +101,7 @@ pub fn render(model: &RulesModel, household: &Household, cx: &mut Context<AtlasA
     v_flex()
         .id("screen-rules")
         .test_support()
+        .w_full()
         .gap_6()
         .child(page_header(
             "Rules",

@@ -100,6 +100,7 @@ pub fn render(model: &TimelineModel, controls: &TimelineControls, household: &Ho
     v_flex()
         .id("screen-timeline")
         .test_support()
+        .w_full()
         .gap_6()
         .child(
             h_flex().justify_between().items_start().gap_4().child(page_header(

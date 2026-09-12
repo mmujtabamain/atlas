@@ -23,6 +23,7 @@ use crate::app::AtlasApp;
 use crate::widgets::labels;
 use crate::widgets::master::{master_detail, master_item, page_header};
 use crate::widgets::table::{money_cell, muted_cell};
+use crate::widgets::figure::card;
 
 pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, selected: Option<AccountId>, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let viewer_name = household.entity_name(EntityRef::Person(viewer.person));
@@ -77,6 +78,7 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
     v_flex()
         .id("screen-accounts")
         .test_support()
+        .w_full()
         .gap_6()
         .child(
             h_flex().justify_between().items_start().gap_4().child(page_header(
@@ -154,9 +156,9 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                         h_flex()
                             .flex_wrap()
                             .gap_8()
-                            .child(div().min_w_48().child(model.ledger.figure(viewer_name, false)))
+                            .child(card(model.ledger.figure(viewer_name, false)))
                             .child(
-                                div().min_w_48().child(
+                                card(
                                     v_flex()
                                         .gap_1()
                                         .child(div().text_xs().text_color(theme.muted_foreground).child("Pending, unsettled"))
@@ -171,12 +173,12 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                                 ),
                             )
                             .when(derived_visible, |this| {
-                                this.child(div().min_w_48().child(model.reserved.figure(viewer_name, false)))
-                                    .child(div().min_w_48().child(model.free.figure(viewer_name, true)))
+                                this.child(card(model.reserved.figure(viewer_name, false)))
+                                    .child(card(model.free.figure(viewer_name, true)))
                             })
                             .when(!derived_visible, |this| {
                                 this.child(
-                                    div().min_w_48().text_sm().text_color(theme.muted_foreground).child("Reserved and free cash are not disclosed under a balance-only policy (§7.2)."),
+                                    div().w_64().flex_shrink_0().text_sm().text_color(theme.muted_foreground).child("Reserved and free cash are not disclosed under a balance-only policy (§7.2)."),
                                 )
                             }),
                     ),

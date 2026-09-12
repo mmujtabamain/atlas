@@ -26,7 +26,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::AtlasApp;
-use crate::widgets::figure::ExplainedFigure;
+use crate::widgets::figure::{ExplainedFigure, card};
 use crate::widgets::labels;
 use crate::widgets::master::page_header;
 
@@ -146,6 +146,7 @@ pub fn render(model: &AssumptionsModel, household: &Household, viewer: Viewer, c
     v_flex()
         .id("screen-assumptions")
         .test_support()
+        .w_full()
         .gap_6()
         .child(
             h_flex().justify_between().items_start().gap_4().child(page_header(
@@ -300,7 +301,7 @@ fn render_derivation(model: &AssumptionsModel, household: &Household, viewer_nam
                                 .flex_wrap()
                                 .gap_8()
                                 .items_start()
-                                .child(div().min_w_64().child(figure.figure(viewer_name, true)))
+                                .child(card(figure.figure(viewer_name, true)))
                                 .child(
                                     v_flex()
                                         .flex_1()

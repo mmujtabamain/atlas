@@ -26,7 +26,7 @@ use gpui_kit::*;
 
 use crate::app::AtlasApp;
 use crate::widgets::explain;
-use crate::widgets::figure::ExplainedFigure;
+use crate::widgets::figure::{ExplainedFigure, card};
 use crate::widgets::labels;
 use crate::widgets::master::page_header;
 use crate::widgets::table::{money_cell, muted_cell};
@@ -96,6 +96,7 @@ pub fn render(model: &ProjectionModel, household: &Household, viewer: Viewer, cx
     v_flex()
         .id("screen-projections")
         .test_support()
+        .w_full()
         .gap_6()
         .child(page_header(
             "Projections",
@@ -156,10 +157,10 @@ pub fn render(model: &ProjectionModel, household: &Household, viewer: Viewer, cx
                             h_flex()
                                 .flex_wrap()
                                 .gap_8()
-                                .child(div().min_w_48().child(model.start.figure(&viewer_name, false)))
-                                .child(div().min_w_48().child(model.end.figure(&viewer_name, true)))
+                                .child(card(model.start.figure(&viewer_name, false)))
+                                .child(card(model.end.figure(&viewer_name, true)))
                                 .child(
-                                    div().min_w_48().child(
+                                    card(
                                         v_flex().gap_1().child(model.lowest.figure(&viewer_name, false)).child(
                                             div().text_xs().text_color(theme.muted_foreground).child(match f.lowest_date {
                                                 Some(date) => format!("on {}", date.format("%d %b %Y")),
@@ -168,7 +169,7 @@ pub fn render(model: &ProjectionModel, household: &Household, viewer: Viewer, cx
                                         ),
                                     ),
                                 )
-                                .child(div().min_w_48().child(model.injection.figure(&viewer_name, false))),
+                                .child(card(model.injection.figure(&viewer_name, false))),
                         )
                         .child(
                             h_flex()
@@ -308,19 +309,15 @@ fn render_transfer_points(model: &ProjectionModel, household: &Household, cx: &A
 fn render_assumptions(model: &ProjectionModel, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     GroupBox::new().id("projection-assumptions").title("This path depends on (§10.2)").child(
-        v_flex().gap_2().children(model.forecast.assumptions.iter().enumerate().map(|(index, a)| {
-            h_flex()
-                .gap_3()
-                .items_start()
-                .child(div().w_5().flex_shrink_0().text_color(theme.muted_foreground).child(format!("{}.", index + 1)))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_1()
-                        .child(h_flex().gap_2().flex_wrap().items_center().child(a.text.clone()).child(labels::certainty_tag(a.certainty)))
-                        .child(div().text_xs().text_color(theme.muted_foreground).child(a.source.describe())),
-                )
+        // Full-width rows, not wrap rows with a flex_1 sentence (see the
+        // household screen): the difference is ~1,500 taffy measure callbacks
+        // per assumption per frame.
+        v_flex().w_full().gap_2().children(model.forecast.assumptions.iter().enumerate().map(|(index, a)| {
+            v_flex()
+                .w_full()
+                .gap_1()
+                .child(div().w_full().child(format!("{}. {}", index + 1, a.text)))
+                .child(h_flex().gap_2().items_center().child(labels::certainty_tag(a.certainty)).child(div().text_xs().text_color(theme.muted_foreground).child(a.source.describe())))
         })),
     )
 }

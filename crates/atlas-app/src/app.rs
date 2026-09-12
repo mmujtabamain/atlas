@@ -1525,6 +1525,11 @@ impl AtlasApp {
             )
     }
 
+    /// The sidebar's layout width: `w_64` expanded, gpui-kit's icon width collapsed.
+    fn sidebar_width(&self) -> Pixels {
+        if self.sidebar_collapsed { px(48.) } else { px(256.) }
+    }
+
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let collapsed = self.sidebar_collapsed;
         let theme = cx.theme();
@@ -1607,6 +1612,7 @@ impl AtlasApp {
                 Err(err) => v_flex()
                     .id("screen-household")
                     .test_support()
+                    .w_full()
                     .gap_4()
                     .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Household"))
                     .child(
@@ -1691,6 +1697,7 @@ impl AtlasApp {
         v_flex()
             .id(SharedString::from(format!("screen-{}", section.slug())))
             .test_support()
+            .w_full()
             .gap_4()
             .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(section.label()))
             .child(Alert::error("engine-error", format!("This screen could not be calculated: {err}")).title("Calculation failed"))
@@ -1744,6 +1751,7 @@ impl Render for AtlasApp {
         // The summary (histogram snapshot + file write) costs a few ms in a
         // debug build; keep it out of this frame's `build` figure.
         self.perf.restart_build_clock();
+        let content_width = window.viewport_size().width - self.sidebar_width();
         let tree = v_flex()
             .size_full()
             .bg(cx.theme().background)
@@ -1761,10 +1769,15 @@ impl Render for AtlasApp {
                     .child(self.render_sidebar(cx))
                     .child(
                         // The main column owns the scroll region; its inset is inside it.
+                        // Its width is set in pixels rather than `flex_1()` on purpose:
+                        // with an auto width taffy sizes the whole screen from its
+                        // content on every pass of every ancestor, which multiplied the
+                        // per-frame text measurements ~3× (see perf.rs; measured on the
+                        // Privacy screen: 8,300 → 2,600 measure callbacks per frame).
                         v_flex()
                             .id("main-column")
-                            .flex_1()
-                            .min_w_0()
+                            .w(content_width)
+                            .flex_none()
                             .h_full()
                             .p_6()
                             .gap_6()

@@ -26,7 +26,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{AtlasApp, TaxControls};
-use crate::widgets::figure::ExplainedFigure;
+use crate::widgets::figure::{ExplainedFigure, card};
 use crate::widgets::labels;
 use crate::widgets::master::page_header;
 use crate::widgets::table::{money_cell, muted_cell};
@@ -126,6 +126,7 @@ pub fn render(model: &TaxModel, controls: &TaxControls, household: &Household, v
     v_flex()
         .id("screen-taxes")
         .test_support()
+        .w_full()
         .gap_6()
         .child(page_header(
             "Taxes",
@@ -251,8 +252,8 @@ fn render_events(model: &TaxModel, household: &Household, viewer_name: &str, cx:
                     h_flex()
                         .flex_wrap()
                         .gap_8()
-                        .children(model.by_entity.iter().map(|(_, f)| div().min_w_64().child(f.figure(viewer_name, false))))
-                        .child(div().min_w_64().child(model.reserve.figure(viewer_name, true))),
+                        .children(model.by_entity.iter().map(|(_, f)| card(f.figure(viewer_name, false))))
+                        .child(card(model.reserve.figure(viewer_name, true))),
                 )
                 .child(div().text_xs().text_color(theme.muted_foreground).child(
                     "Attribution stays with the entity that owes the tax (§12.6). An assessment balance payable after the horizon is a tax reserve (§12.4), not a posting in this window; a negative balance is a receivable, not cash (V018).",
@@ -366,7 +367,7 @@ fn render_e05(model: &TaxModel, controls: &TaxControls, viewer_name: &str, cx: &
                                     .child(money_cell(s.incremental.money(), cx).w_40().flex_shrink_0())
                             }))),
                     )
-                    .child(h_flex().flex_wrap().gap_8().children(model.e05_incrementals.iter().map(|f| div().min_w_64().child(f.figure(viewer_name, false)))))
+                    .child(h_flex().flex_wrap().gap_8().children(model.e05_incrementals.iter().map(|f| card(f.figure(viewer_name, false)))))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
                         "Why both eligibility and dated liquidity must constrain tax minimisation: the cheaper split is only available when the second year's rules and the household's cash allow it (E05, §13.6).",
                     ))

@@ -12,6 +12,7 @@ pub fn render(household: &Household, viewer_name: &str, cx: &App) -> impl IntoEl
     v_flex()
         .id("screen-settings")
         .test_support()
+        .w_full()
         .gap_6()
         .child(
             v_flex()

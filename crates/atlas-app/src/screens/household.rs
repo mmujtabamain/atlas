@@ -21,7 +21,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::widgets::explain;
-use crate::widgets::figure::ExplainedFigure;
+use crate::widgets::figure::{ExplainedFigure, card};
 use crate::widgets::labels;
 use crate::widgets::table::{money_cell, muted_cell};
 
@@ -96,6 +96,7 @@ pub fn render(overview: &HouseholdOverview, household: &Household, viewer: Viewe
     v_flex()
         .id("screen-household")
         .test_support()
+        .w_full()
         .gap_6()
         .child(
             v_flex()
@@ -118,7 +119,7 @@ pub fn render(overview: &HouseholdOverview, household: &Household, viewer: Viewe
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
                         "One bank balance is never one number: settled cash, earmarked cash and free cash are kept apart, and every figure opens its chain.",
                     ))
-                    .child(h_flex().flex_wrap().gap_8().children(overview.money.iter().map(|f| div().min_w_48().child(f.figure(viewer_name, f.id.as_ref() == "free-cash"))))),
+                    .child(h_flex().flex_wrap().gap_8().children(overview.money.iter().map(|f| card(f.figure(viewer_name, f.id.as_ref() == "free-cash"))))),
             ),
         )
         .child(
@@ -156,17 +157,19 @@ pub fn render(overview: &HouseholdOverview, household: &Household, viewer: Viewe
             GroupBox::new()
                 .id("assumptions")
                 .title("Assumptions this projection depends on (§10.2)")
-                .child(v_flex().gap_2().children(overview.assumptions.iter().enumerate().map(|(index, assumption)| {
-                    h_flex()
-                        .gap_3()
-                        .items_start()
-                        .child(div().w_5().flex_shrink_0().text_color(theme.muted_foreground).child(format!("{}.", index + 1)))
+                // Plain full-width rows: a sentence in a flex_1/min_w_0 cell of a
+                // wrap row costs taffy ~1,500 measure callbacks per assumption per
+                // frame; a column with the tag on its own line costs ~100.
+                .child(v_flex().w_full().gap_2().children(overview.assumptions.iter().enumerate().map(|(index, assumption)| {
+                    v_flex()
+                        .w_full()
+                        .gap_1()
+                        .child(div().w_full().child(format!("{}. {}", index + 1, assumption.text)))
                         .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_1()
-                                .child(h_flex().gap_2().items_center().flex_wrap().child(assumption.text.clone()).child(labels::certainty_tag(assumption.certainty)))
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(labels::certainty_tag(assumption.certainty))
                                 .child(div().text_xs().text_color(theme.muted_foreground).child(match assumption.accepted_on {
                                     Some(date) => format!("{} · accepted {}", assumption.source.describe(), date.format("%d %b %Y")),
                                     None => format!("{} · not yet accepted", assumption.source.describe()),

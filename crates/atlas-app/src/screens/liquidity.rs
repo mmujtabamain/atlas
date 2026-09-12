@@ -24,7 +24,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::AtlasApp;
-use crate::widgets::figure::ExplainedFigure;
+use crate::widgets::figure::{ExplainedFigure, card};
 use crate::widgets::labels;
 use crate::widgets::master::page_header;
 use crate::widgets::table::{money_cell, muted_cell};
@@ -115,6 +115,7 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
     v_flex()
         .id("screen-liquidity")
         .test_support()
+        .w_full()
         .gap_6()
         .child(page_header(
             "Liquidity & reservations",
@@ -134,7 +135,7 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
         .child(
             GroupBox::new().id("boundary-figures").title(format!("{} — money definitions (§6)", model.boundary.label(household))).child(
                 h_flex().flex_wrap().gap_8().children(model.figures.iter().enumerate().map(|(index, f)| {
-                    div().min_w_48().child(f.figure(&viewer_name, index == 2))
+                    card(f.figure(&viewer_name, index == 2))
                 })),
             ),
         )
@@ -146,10 +147,10 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
                         h_flex()
                             .flex_wrap()
                             .gap_8()
-                            .child(div().min_w_48().child(model.hard_floor.figure(&viewer_name, false)))
-                            .child(div().min_w_48().child(model.headroom.figure(&viewer_name, true)))
+                            .child(card(model.hard_floor.figure(&viewer_name, false)))
+                            .child(card(model.headroom.figure(&viewer_name, true)))
                             .child(
-                                div().min_w_48().child(
+                                card(
                                     v_flex()
                                         .gap_1()
                                         .child(div().text_xs().text_color(theme.muted_foreground).child("Displayed spendable (floored at zero)"))
@@ -195,7 +196,8 @@ fn render_runway(runway: &BreachReport, injection: &ExplainedFigure, model: &Liq
     let fact = |label: &str, value: String| {
         v_flex()
             .gap_1()
-            .min_w_48()
+            .w_64()
+            .flex_shrink_0()
             .child(div().text_xs().text_color(theme.muted_foreground).child(label.to_string()))
             .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(value))
     };
@@ -215,7 +217,7 @@ fn render_runway(runway: &BreachReport, injection: &ExplainedFigure, model: &Liq
                         .child(fact("Lowest path balance", format!("{}{}", runway.lowest.format(), runway.lowest_date.map(|d| format!(" on {}", d.format("%d %b %Y"))).unwrap_or_default())))
                         .child(fact("Days below the floor", runway.days_below.to_string()))
                         .child(fact("Integrated shortfall", format!("{} currency-days", runway.integrated_shortfall_currency_days)))
-                        .child(div().min_w_48().child(injection.figure(viewer_name, false))),
+                        .child(card(injection.figure(viewer_name, false))),
                 )
                 .child(div().text_xs().text_color(theme.muted_foreground).child(
                     "The path uses expected values of every planned occurrence in the baseline (§2.4: conditional, not available money). Maximum deficit is currency; integrated shortfall is currency-days and is not a capital requirement (E08). No breach is reported as “no breach through the horizon”, never as infinite runway (V044).",

@@ -150,6 +150,7 @@ pub fn render(model: &PrivacyModel, household: &Household, viewer_name: &str, cx
     v_flex()
         .id("screen-privacy")
         .test_support()
+        .w_full()
         .gap_6()
         .child(page_header(
             "Privacy & authorization",
@@ -173,6 +174,7 @@ fn render_policies(model: &PrivacyModel, household: &Household, cx: &mut Context
             .gap_4()
             .child(
                 h_flex()
+                    .w_full()
                     .justify_between()
                     .items_start()
                     .gap_4()
@@ -197,27 +199,33 @@ fn render_policies(model: &PrivacyModel, household: &Household, cx: &mut Context
                     .py_2()
                     .rounded(theme.radius)
                     .when(index % 2 == 1, |c| c.bg(theme.table_even))
+                    // Layout for taffy's sake (see perf.rs): the name and tags are one
+                    // definite-width row, the provenance sentence and the policy lines
+                    // are full-width rows. The old wrap row of sentences and tags cost
+                    // ~2,000 measure callbacks per policy per frame; this costs ~130.
                     .child(
                         h_flex()
+                            .w_full()
                             .gap_2()
                             .items_center()
-                            .flex_wrap()
                             .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(row.object_name.clone()))
                             .child(Tag::secondary().xsmall().outline().child(p.preset_label()))
                             .child(Tag::secondary().xsmall().outline().child(format!("v{}", p.version)))
-                            .child(if row.owned { Tag::secondary().xsmall().child("you own this") } else { labels::disclosure_tag(row.viewer_disclosure) })
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                                "{} · owners: {} · effective {} · changed by {} at {}{}",
-                                p.id,
-                                p.full_access.iter().map(|id| household.entity_name(atlas_core::ids::EntityRef::Person(*id))).collect::<Vec<_>>().join(", "),
-                                p.effective_from.format("%d %b %Y"),
-                                household.entity_name(atlas_core::ids::EntityRef::Person(p.changed_by)),
-                                p.changed_at.format("%d %b %Y %H:%M"),
-                                p.previous.as_ref().map(|prev| format!(" · previous: {prev}")).unwrap_or_default()
-                            ))),
+                            .child(if row.owned { Tag::secondary().xsmall().child("you own this") } else { labels::disclosure_tag(row.viewer_disclosure) }),
                     )
+                    .child(div().w_full().text_xs().text_color(theme.muted_foreground).child(format!(
+                        "{} · owners: {} · effective {} · changed by {} at {}{}",
+                        p.id,
+                        p.full_access.iter().map(|id| household.entity_name(atlas_core::ids::EntityRef::Person(*id))).collect::<Vec<_>>().join(", "),
+                        p.effective_from.format("%d %b %Y"),
+                        household.entity_name(atlas_core::ids::EntityRef::Person(p.changed_by)),
+                        p.changed_at.format("%d %b %Y %H:%M"),
+                        p.previous.as_ref().map(|prev| format!(" · previous: {prev}")).unwrap_or_default()
+                    )))
                     .when(row.owned || matches!(row.viewer_disclosure, Disclosure::Full), |this| {
-                        this.child(h_flex().flex_wrap().gap_x_4().gap_y_1().children(row.lines.iter().map(|l| div().text_xs().text_color(theme.muted_foreground).child(l.clone()))))
+                        // One wrapping sentence, not a wrap row of nine chips: same
+                        // density on screen, one text node for taffy instead of nine.
+                        this.child(div().w_full().text_xs().text_color(theme.muted_foreground).child(row.lines.join(" · ")))
                     })
                     .when(!p.previous_versions.is_empty(), |this| {
                         this.child(div().text_xs().text_color(theme.muted_foreground).child(format!(

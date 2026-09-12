@@ -146,7 +146,9 @@ const MAX_NESTING: usize = 6;
 pub fn render_chain(node: &ProvNode, depth: usize, cx: &App) -> AnyElement {
     let theme = cx.theme();
     let mono = theme.mono_font_family.clone();
-    let mut block = v_flex().gap_1();
+    // `w_full` everywhere in the chain: a definite width stops taffy from
+    // re-measuring every term for the block's content width at each level.
+    let mut block = v_flex().w_full().gap_1();
 
     if node.children().is_empty() {
         return block
@@ -174,6 +176,7 @@ pub fn render_chain(node: &ProvNode, depth: usize, cx: &App) -> AnyElement {
     }
     block = block.child(Separator::horizontal()).child(
         h_flex()
+            .w_full()
             .gap_2()
             .items_baseline()
             .font_weight(FontWeight::SEMIBOLD)
@@ -191,8 +194,9 @@ pub fn render_chain(node: &ProvNode, depth: usize, cx: &App) -> AnyElement {
     let nested: Vec<&ProvNode> = node.children().iter().filter(|c| !c.children().is_empty()).collect();
     if !nested.is_empty() && depth < MAX_NESTING {
         block = block.child(
-            v_flex().mt_2().gap_3().children(nested.into_iter().map(|child| {
+            v_flex().w_full().mt_2().gap_3().children(nested.into_iter().map(|child| {
                 v_flex()
+                    .w_full()
                     .pl_3()
                     .border_l_1()
                     .border_color(theme.border)
@@ -209,6 +213,7 @@ fn term_row(glyph: &str, label: &str, value: String, excluded: bool, mono: &Shar
     let theme = cx.theme();
     let color = if excluded { theme.muted_foreground } else { theme.foreground };
     h_flex()
+        .w_full()
         .gap_2()
         .items_baseline()
         .text_color(color)
@@ -227,6 +232,7 @@ fn term_row(glyph: &str, label: &str, value: String, excluded: bool, mono: &Shar
 
 fn note_row(note: &str, cx: &App) -> impl IntoElement {
     h_flex()
+        .w_full()
         .gap_2()
         .child(div().w_4().flex_shrink_0())
         .child(div().flex_1().min_w_0().text_xs().text_color(cx.theme().muted_foreground).child(note.to_string()))

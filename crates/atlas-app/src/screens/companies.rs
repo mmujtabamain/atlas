@@ -22,6 +22,7 @@ use crate::app::AtlasApp;
 use crate::widgets::labels;
 use crate::widgets::master::{master_detail, master_item, page_header};
 use crate::widgets::table::{money_cell, muted_cell};
+use crate::widgets::figure::card;
 
 pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, selected: Option<CompanyId>, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let viewer_name = household.entity_name(EntityRef::Person(viewer.person));
@@ -54,6 +55,7 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
     v_flex()
         .id("screen-companies")
         .test_support()
+        .w_full()
         .gap_6()
         .child(
             h_flex().justify_between().items_start().gap_4().child(page_header(
@@ -140,9 +142,9 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
                         h_flex()
                             .flex_wrap()
                             .gap_8()
-                            .child(div().min_w_48().child(model.cash.figure(viewer_name, false)))
-                            .child(div().min_w_48().child(model.committed.figure(viewer_name, false)))
-                            .child(div().min_w_48().child(model.ceiling.figure(viewer_name, true))),
+                            .child(card(model.cash.figure(viewer_name, false)))
+                            .child(card(model.committed.figure(viewer_name, false)))
+                            .child(card(model.ceiling.figure(viewer_name, true))),
                     )
                     .child(
                         v_flex()

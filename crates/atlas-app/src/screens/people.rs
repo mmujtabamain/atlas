@@ -48,6 +48,7 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
     v_flex()
         .id("screen-people")
         .test_support()
+        .w_full()
         .gap_6()
         .child(
             h_flex().justify_between().items_start().gap_4().child(page_header(

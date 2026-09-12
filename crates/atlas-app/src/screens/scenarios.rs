@@ -110,6 +110,7 @@ pub fn render(model: &ScenariosModel, household: &Household, cx: &mut Context<At
     v_flex()
         .id("screen-scenarios")
         .test_support()
+        .w_full()
         .gap_6()
         .child(page_header(
             "Scenarios",

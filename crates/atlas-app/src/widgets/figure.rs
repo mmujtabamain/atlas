@@ -19,6 +19,18 @@ use gpui_kit::*;
 use super::explain::{self, ExplainContent};
 use super::labels;
 
+/// One card in a row of figures (`h_flex().flex_wrap().gap_8()`).
+///
+/// Cards have a fixed width on purpose. With auto-width cards taffy has to
+/// measure every card's whole content — label, value, tags — again for each
+/// candidate wrap line, and that measurement repeats at every ancestor's
+/// sizing pass: the Household money row alone cost 5,200 measure callbacks
+/// per frame; fixed at 16 rem it costs 460 (see perf.rs / logs.log
+/// `taffy` figures). Long labels wrap inside the card.
+pub fn card(content: impl IntoElement) -> Div {
+    div().w_64().flex_shrink_0().child(content)
+}
+
 /// A labelled, explainable money figure.
 #[derive(IntoElement)]
 pub struct Figure {
@@ -52,7 +64,9 @@ impl RenderOnce for Figure {
         let why_id = SharedString::from(format!("why-{}", self.id));
         let content = self.content.clone();
 
-        let mut tags = h_flex().gap_1().flex_wrap().items_center();
+        // Definite width: an auto-width row of tags is re-measured by taffy at
+        // every ancestor pass (see perf.rs).
+        let mut tags = h_flex().w_full().gap_1().flex_wrap().items_center();
         if let Some(class) = node.money_class_label() {
             tags = tags.child(labels::money_class_tag(class));
         }
@@ -71,6 +85,7 @@ impl RenderOnce for Figure {
         );
 
         v_flex()
+            .w_full()
             .gap_1()
             .min_w_0()
             .child(div().text_xs().text_color(theme.muted_foreground).child(self.label))
