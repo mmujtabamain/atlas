@@ -5,7 +5,7 @@
 //! is itself derived. The viewer and their disclosure level are stated at the
 //! top so nobody mistakes an aggregate for a source figure.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use atlas_core::provenance::{Operation, ProvNode, Sign};
 use atlas_core::{Disclosure, Money};
@@ -19,24 +19,29 @@ use gpui_kit::*;
 use super::labels;
 
 /// Everything the sheet needs; shared by the figure that opens it.
+///
+/// Built once per screen model (not per frame) and handed around as an
+/// `Arc`: the figure, its "Why?" click handler and the open sheet all point
+/// at the same content, and the chain inside is the engine's own graph
+/// (`Calc::shared_node`), never a copy.
 #[derive(Clone, Debug)]
 pub struct ExplainContent {
     pub title: String,
     pub value: Money,
     /// Already projected for the viewer (M55).
-    pub node: ProvNode,
+    pub node: Arc<ProvNode>,
     pub viewer_name: String,
     pub disclosure: Disclosure,
 }
 
 impl ExplainContent {
-    pub fn new(title: impl Into<String>, value: Money, node: ProvNode, viewer_name: impl Into<String>, disclosure: Disclosure) -> Self {
+    pub fn new(title: impl Into<String>, value: Money, node: Arc<ProvNode>, viewer_name: impl Into<String>, disclosure: Disclosure) -> Self {
         ExplainContent { title: title.into(), value, node, viewer_name: viewer_name.into(), disclosure }
     }
 }
 
 /// Opens the explain sheet on the right (WindowExt owns the overlay layer).
-pub fn open_sheet(window: &mut Window, cx: &mut App, content: Rc<ExplainContent>) {
+pub fn open_sheet(window: &mut Window, cx: &mut App, content: Arc<ExplainContent>) {
     log::info!("explain sheet opened: {} = {} for {}", content.title, content.value.format(), content.viewer_name);
     window.open_sheet(cx, move |sheet, _window, cx| {
         let content = content.clone();
@@ -56,7 +61,7 @@ pub fn open_sheet(window: &mut Window, cx: &mut App, content: Rc<ExplainContent>
 /// The sheet body; also usable inline.
 pub fn render_explanation(content: &ExplainContent, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    let node = &content.node;
+    let node: &ProvNode = &content.node;
     let strength = node.result_strength();
     let mut header_tags = h_flex().gap_1().flex_wrap();
     if let Some(class) = node.money_class_label() {

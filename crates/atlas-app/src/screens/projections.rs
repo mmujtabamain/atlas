@@ -6,7 +6,7 @@
 
 use atlas_core::authz::Viewer;
 use atlas_core::forecast::{BoundaryForecast, Case, ForecastOptions, forecast};
-use atlas_core::ids::{EntityRef, ObjectRef, ScenarioId};
+use atlas_core::ids::{ObjectRef, ScenarioId};
 use atlas_core::liquidity::Boundary;
 use atlas_core::model::Household;
 use atlas_core::{Disclosure, EngineResult};
@@ -84,9 +84,8 @@ impl ProjectionModel {
     }
 }
 
-pub fn render(model: &ProjectionModel, household: &Household, viewer: Viewer, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+pub fn render(model: &ProjectionModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
-    let viewer_name = household.entity_name(EntityRef::Person(viewer.person));
     let f = &model.forecast;
     let boundary_index = model.boundaries.iter().position(|b| *b == f.boundary).unwrap_or(0);
     let boundaries = model.boundaries.clone();
@@ -157,11 +156,11 @@ pub fn render(model: &ProjectionModel, household: &Household, viewer: Viewer, cx
                             h_flex()
                                 .flex_wrap()
                                 .gap_8()
-                                .child(card(model.start.figure(&viewer_name, false)))
-                                .child(card(model.end.figure(&viewer_name, true)))
+                                .child(card(model.start.figure(false)))
+                                .child(card(model.end.figure(true)))
                                 .child(
                                     card(
-                                        v_flex().gap_1().child(model.lowest.figure(&viewer_name, false)).child(
+                                        v_flex().gap_1().child(model.lowest.figure(false)).child(
                                             div().text_xs().text_color(theme.muted_foreground).child(match f.lowest_date {
                                                 Some(date) => format!("on {}", date.format("%d %b %Y")),
                                                 None => "never below the start".to_string(),
@@ -169,7 +168,7 @@ pub fn render(model: &ProjectionModel, household: &Household, viewer: Viewer, cx
                                         ),
                                     ),
                                 )
-                                .child(card(model.injection.figure(&viewer_name, false))),
+                                .child(card(model.injection.figure(false))),
                         )
                         .child(
                             h_flex()

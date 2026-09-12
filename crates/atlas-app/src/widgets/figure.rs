@@ -5,7 +5,7 @@
 //! provenance node and a "Why?" button that opens the explain sheet. There is
 //! deliberately no way to render a bare derived number.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use atlas_core::authz::Viewer;
 use atlas_core::model::Household;
@@ -36,15 +36,16 @@ pub fn card(content: impl IntoElement) -> Div {
 pub struct Figure {
     id: SharedString,
     label: SharedString,
-    calc: Calc<Money>,
-    content: Rc<ExplainContent>,
+    money: Money,
+    node: Arc<ProvNode>,
+    content: Arc<ExplainContent>,
     emphasis: bool,
 }
 
 impl Figure {
     /// `id` must be stable and unique on the screen (`free-cash`, …).
-    pub fn new(id: impl Into<SharedString>, label: impl Into<SharedString>, calc: Calc<Money>, content: ExplainContent) -> Self {
-        Figure { id: id.into(), label: label.into(), calc, content: Rc::new(content), emphasis: false }
+    pub fn new(id: impl Into<SharedString>, label: impl Into<SharedString>, calc: &Calc<Money>, content: Arc<ExplainContent>) -> Self {
+        Figure { id: id.into(), label: label.into(), money: calc.money(), node: calc.shared_node(), content, emphasis: false }
     }
 
     /// Larger value text for the one figure a screen is about.
@@ -57,12 +58,13 @@ impl Figure {
 impl RenderOnce for Figure {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        let money = self.calc.money();
-        let node = self.calc.node();
+        let money = self.money;
+        let node: &ProvNode = &self.node;
         let value_color = if money.is_negative() { theme.danger } else { theme.foreground };
         let value_id = SharedString::from(format!("figure-{}", self.id));
         let why_id = SharedString::from(format!("why-{}", self.id));
-        let content = self.content.clone();
+        // The click handler shares the content with the figure (pointer copy).
+        let content = self.content;
 
         // Definite width: an auto-width row of tags is re-measured by taffy at
         // every ancestor pass (see perf.rs).
@@ -106,38 +108,54 @@ impl RenderOnce for Figure {
 
 /// A projected, explainable figure: the model half of a [`Figure`], computed
 /// once per state change and rendered by any screen.
+///
+/// Everything a frame needs is prepared here, once: the projected chain, its
+/// weakest disclosure level and the explain-sheet content. Rendering it (see
+/// [`ExplainedFigure::figure`]) copies two `Arc` pointers, so a screen with
+/// twenty figures costs the same per frame as one with none.
 #[derive(Clone, Debug)]
 pub struct ExplainedFigure {
     pub id: SharedString,
     pub label: SharedString,
     /// Node already projected for the viewer (M55).
     pub calc: Calc<Money>,
+    disclosure: Disclosure,
+    content: Arc<ExplainContent>,
 }
 
 impl ExplainedFigure {
     pub fn new(id: impl Into<SharedString>, label: impl Into<SharedString>, calc: &Calc<Money>, household: &Household, viewer: Viewer) -> Self {
+        let id = id.into();
+        let label = label.into();
         let projected = calc.node().project(&household.disclosure_fn(viewer));
-        ExplainedFigure { id: id.into(), label: label.into(), calc: Calc::new(calc.money(), projected) }
+        let calc = Calc::new(calc.money(), projected);
+        let disclosure = weakest_disclosure(calc.node());
+        let viewer_name = household.entity_name(atlas_core::ids::EntityRef::Person(viewer.person));
+        let content = Arc::new(ExplainContent::new(label.to_string(), calc.money(), calc.shared_node(), viewer_name, disclosure));
+        ExplainedFigure { id, label, calc, disclosure, content }
     }
 
     /// The weakest disclosure level present in the projected chain.
     pub fn disclosure(&self) -> Disclosure {
-        fn scan(node: &ProvNode) -> Disclosure {
-            let own = match node.operation() {
-                Operation::Aggregate { restricted_terms: 0 } => Disclosure::Hidden,
-                Operation::Aggregate { .. } => Disclosure::Aggregate,
-                _ => Disclosure::Full,
-            };
-            node.children().iter().map(scan).fold(own, Disclosure::min)
-        }
-        scan(self.calc.node())
+        self.disclosure
     }
 
-    pub fn content(&self, viewer_name: &str) -> ExplainContent {
-        ExplainContent::new(self.label.to_string(), self.calc.money(), self.calc.node().clone(), viewer_name, self.disclosure())
+    /// The explain-sheet content, shared (the chain is not copied).
+    pub fn content(&self) -> Arc<ExplainContent> {
+        Arc::clone(&self.content)
     }
 
-    pub fn figure(&self, viewer_name: &str, emphasis: bool) -> Figure {
-        Figure::new(self.id.clone(), self.label.clone(), self.calc.clone(), self.content(viewer_name)).emphasis(emphasis)
+    pub fn figure(&self, emphasis: bool) -> Figure {
+        Figure::new(self.id.clone(), self.label.clone(), &self.calc, self.content()).emphasis(emphasis)
     }
+}
+
+/// The weakest disclosure level anywhere in a projected chain.
+fn weakest_disclosure(node: &ProvNode) -> Disclosure {
+    let own = match node.operation() {
+        Operation::Aggregate { restricted_terms: 0 } => Disclosure::Hidden,
+        Operation::Aggregate { .. } => Disclosure::Aggregate,
+        _ => Disclosure::Full,
+    };
+    node.children().iter().map(weakest_disclosure).fold(own, Disclosure::min)
 }

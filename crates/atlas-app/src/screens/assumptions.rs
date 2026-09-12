@@ -168,7 +168,7 @@ pub fn render(model: &AssumptionsModel, household: &Household, viewer: Viewer, c
             ),
         )
         .child(render_register(model, household, &visible, cx))
-        .child(render_derivation(model, household, &viewer_name, cx))
+        .child(render_derivation(model, household, cx))
         .child(render_sensitivity(model, household, cx))
         .child(
             GroupBox::new().id("conditional-statement").title("How this conclusion is phrased (§10.1, V031)").child(
@@ -252,7 +252,7 @@ fn render_register(model: &AssumptionsModel, household: &Household, visible: &[&
     )
 }
 
-fn render_derivation(model: &AssumptionsModel, household: &Household, viewer_name: &str, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+fn render_derivation(model: &AssumptionsModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
     let series_index = model.derivable.iter().position(|s| *s == model.derivation_series).unwrap_or(0);
     let derivation_index = Derivation::ALL.iter().position(|d| *d == model.derivation).unwrap_or(0);
@@ -301,7 +301,7 @@ fn render_derivation(model: &AssumptionsModel, household: &Household, viewer_nam
                                 .flex_wrap()
                                 .gap_8()
                                 .items_start()
-                                .child(card(figure.figure(viewer_name, true)))
+                                .child(card(figure.figure(true)))
                                 .child(
                                     v_flex()
                                         .flex_1()

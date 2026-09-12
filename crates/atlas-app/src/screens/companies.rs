@@ -1,7 +1,6 @@
 //! Companies (§5.3, §8): a separate ledger per company — accounts, employees,
 //! constraints, cash — and what a household viewer may see of it (§8.7).
 
-use atlas_core::authz::Viewer;
 use atlas_core::ids::{CompanyId, EntityRef};
 use atlas_core::model::{Company, Household};
 use atlas_core::Disclosure;
@@ -24,8 +23,7 @@ use crate::widgets::master::{master_detail, master_item, page_header};
 use crate::widgets::table::{money_cell, muted_cell};
 use crate::widgets::figure::card;
 
-pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, selected: Option<CompanyId>, cx: &mut Context<AtlasApp>) -> impl IntoElement {
-    let viewer_name = household.entity_name(EntityRef::Person(viewer.person));
+pub fn render(models: &EntityModels, household: &Household, selected: Option<CompanyId>, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let selected = selected.filter(|id| models.company(*id).is_some()).or_else(|| models.companies.first().map(|c| c.id));
 
     let master = v_flex().gap_1().children(models.companies.iter().filter_map(|model| {
@@ -48,7 +46,7 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
     }));
 
     let detail: AnyElement = match selected.and_then(|id| household.company(id).zip(models.company(id))) {
-        Some((company, model)) => render_detail(company, model, household, &viewer_name, cx).into_any_element(),
+        Some((company, model)) => render_detail(company, model, household, cx).into_any_element(),
         None => div().text_color(cx.theme().muted_foreground).child("No company is visible to this viewer.").into_any_element(),
     };
 
@@ -80,7 +78,7 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
         .child(master_detail("companies-master-detail", master, detail, cx))
 }
 
-fn render_detail(company: &Company, model: &CompanyModel, household: &Household, viewer_name: &str, cx: &App) -> impl IntoElement {
+fn render_detail(company: &Company, model: &CompanyModel, household: &Household, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let full = matches!(model.disclosure, Disclosure::Full | Disclosure::SelectedFields);
     let owners: Vec<String> = company
@@ -114,7 +112,7 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
                 GroupBox::new().id("company-summary").title("Planning-safe output (§8.7)").child(
                     v_flex()
                         .gap_3()
-                        .child(model.ceiling.figure(viewer_name, true))
+                        .child(model.ceiling.figure(true))
                         .child(div().text_xs().text_color(theme.muted_foreground).child(
                             "Bank balances, client revenue, employee salaries, payroll and tax records are not disclosed to this viewer. The owner sees the complete company ledger.",
                         )),
@@ -142,9 +140,9 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
                         h_flex()
                             .flex_wrap()
                             .gap_8()
-                            .child(card(model.cash.figure(viewer_name, false)))
-                            .child(card(model.committed.figure(viewer_name, false)))
-                            .child(card(model.ceiling.figure(viewer_name, true))),
+                            .child(card(model.cash.figure(false)))
+                            .child(card(model.committed.figure(false)))
+                            .child(card(model.ceiling.figure(true))),
                     )
                     .child(
                         v_flex()

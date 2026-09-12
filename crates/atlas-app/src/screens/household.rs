@@ -119,7 +119,7 @@ pub fn render(overview: &HouseholdOverview, household: &Household, viewer: Viewe
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
                         "One bank balance is never one number: settled cash, earmarked cash and free cash are kept apart, and every figure opens its chain.",
                     ))
-                    .child(h_flex().flex_wrap().gap_8().children(overview.money.iter().map(|f| card(f.figure(viewer_name, f.id.as_ref() == "free-cash"))))),
+                    .child(h_flex().flex_wrap().gap_8().children(overview.money.iter().map(|f| card(f.figure(f.id.as_ref() == "free-cash"))))),
             ),
         )
         .child(
@@ -136,8 +136,8 @@ pub fn render(overview: &HouseholdOverview, household: &Household, viewer: Viewe
                                 .gap_6()
                                 .w_80()
                                 .flex_shrink_0()
-                                .child(overview.conditional.figure(viewer_name, true))
-                                .child(overview.unreserved.figure(viewer_name, false))
+                                .child(overview.conditional.figure(true))
+                                .child(overview.unreserved.figure(false))
                                 .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
                                     "{} postings entered the chain (expected case, baseline, taxes included once). Only the first term is money already received; the rest is conditional on the assumptions below (§2.4).",
                                     overview.occurrence_count

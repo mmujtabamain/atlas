@@ -69,7 +69,7 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
                                 .on_click(cx.listener(move |this, _, window, cx| this.delete_object(ObjectRef::Account(id), window, cx))),
                         ),
                 )
-                .child(render_detail(account, model, household, &viewer_name, cx))
+                .child(render_detail(account, model, household, cx))
                 .into_any_element()
         }
         None => div().text_color(cx.theme().muted_foreground).child("No account is visible to this viewer.").into_any_element(),
@@ -109,7 +109,7 @@ fn yes_no(value: bool) -> &'static str {
     if value { "Yes" } else { "No" }
 }
 
-fn render_detail(account: &Account, model: &AccountModel, household: &Household, viewer_name: &str, cx: &App) -> impl IntoElement {
+fn render_detail(account: &Account, model: &AccountModel, household: &Household, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let derived_visible = matches!(model.disclosure, Disclosure::Full | Disclosure::SelectedFields);
     let policy = household.policy_for(ObjectRef::Account(account.id));
@@ -156,7 +156,7 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                         h_flex()
                             .flex_wrap()
                             .gap_8()
-                            .child(card(model.ledger.figure(viewer_name, false)))
+                            .child(card(model.ledger.figure(false)))
                             .child(
                                 card(
                                     v_flex()
@@ -173,8 +173,8 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                                 ),
                             )
                             .when(derived_visible, |this| {
-                                this.child(card(model.reserved.figure(viewer_name, false)))
-                                    .child(card(model.free.figure(viewer_name, true)))
+                                this.child(card(model.reserved.figure(false)))
+                                    .child(card(model.free.figure(true)))
                             })
                             .when(!derived_visible, |this| {
                                 this.child(

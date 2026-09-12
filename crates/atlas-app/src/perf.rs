@@ -96,8 +96,6 @@ pub struct FrameSample {
     pub phases: Phases,
     /// Render start → next render start.
     pub interval: Option<Duration>,
-    /// Time spent cloning the screen model inside `render_content`.
-    pub content_clone: Duration,
     /// Time spent in the screen's render function inside `render_content`.
     pub content_render: Duration,
     /// Section slug the frame rendered.
@@ -204,7 +202,6 @@ pub struct FrameMeter {
     logged_window_info: bool,
     mouse_moves: Cell<u32>,
     wheel_events: Cell<u32>,
-    content_clone: Cell<Duration>,
     content_render: Cell<Duration>,
     /// gpui histograms at the previous summary, to report the delta.
     previous_snapshot: Option<profiler::FrameDurationSnapshot>,
@@ -232,7 +229,6 @@ impl FrameMeter {
             logged_window_info: false,
             mouse_moves: Cell::new(0),
             wheel_events: Cell::new(0),
-            content_clone: Cell::new(Duration::ZERO),
             content_render: Cell::new(Duration::ZERO),
             previous_snapshot: None,
         }
@@ -260,7 +256,6 @@ impl FrameMeter {
         self.frames += 1;
         self.started = Some(now);
         self.probe.set(ProbeState::default());
-        self.content_clone.set(Duration::ZERO);
         self.content_render.set(Duration::ZERO);
         self.pending = FrameSample {
             number: self.frames,
@@ -307,21 +302,9 @@ impl FrameMeter {
         );
     }
 
-    /// Adds one model clone's duration to this frame's `content clone` total.
+    /// Records how long `render_content` spent in the screen function.
     /// `&self` because it is called while the view is borrowed immutably.
-    pub fn add_content_clone(&self, elapsed: Duration) {
-        self.content_clone.set(self.content_clone.get() + elapsed);
-    }
-
-    /// Clone time recorded so far in this frame.
-    pub fn content_clone_so_far(&self) -> Duration {
-        self.content_clone.get()
-    }
-
-    /// Records how long `render_content` spent cloning the model and running
-    /// the screen function.
-    pub fn record_content(&self, clone: Duration, render: Duration) {
-        self.content_clone.set(clone);
+    pub fn record_content(&self, render: Duration) {
         self.content_render.set(render);
     }
 
@@ -330,7 +313,6 @@ impl FrameMeter {
         if let Some(started) = self.started {
             self.pending.build = started.elapsed();
         }
-        self.pending.content_clone = self.content_clone.get();
         self.pending.content_render = self.content_render.get();
     }
 
@@ -460,14 +442,13 @@ impl FrameMeter {
             stats.hitches += 1;
         }
         let detail = format!(
-            "frame #{} section={} build={} draw≈{} ({}) interval={} content(clone={} render={}) input(moves={} wheel={})",
+            "frame #{} section={} build={} draw≈{} ({}) interval={} content(render={}) input(moves={} wheel={})",
             sample.number,
             sample.section,
             fmt_ms(Some(sample.build)),
             fmt_ms(sample.draw),
             sample.phases.describe(),
             fmt_ms(sample.interval),
-            fmt_ms(Some(sample.content_clone)),
             fmt_ms(Some(sample.content_render)),
             sample.mouse_moves,
             sample.wheel_events,
@@ -599,7 +580,7 @@ mod tests {
         assert_eq!(meter.begin_frame("household"), None, "nothing to finish before the first frame");
         assert_eq!(meter.status_text(), "first frame");
         meter.count_mouse_move();
-        meter.record_content(Duration::from_millis(2), Duration::from_millis(5));
+        meter.record_content(Duration::from_millis(5));
         std::thread::sleep(Duration::from_millis(5));
         meter.end_build();
         // The probe "paints" a little later, as gpui's layout and paint would.
@@ -623,7 +604,6 @@ mod tests {
         assert!(draw >= finished.build, "draw includes the build: {finished:?}");
         assert!(finished.interval.unwrap() >= draw, "interval spans the whole frame: {finished:?}");
         assert_eq!(finished.phases, Phases { layout: Duration::from_millis(1), taffy: Duration::from_millis(1), prepaint: Duration::from_millis(1), paint: Duration::from_millis(1) });
-        assert_eq!(finished.content_clone, Duration::from_millis(2));
         assert_eq!(finished.content_render, Duration::from_millis(5));
         assert_eq!(finished.mouse_moves, 0, "the move was counted after frame 1 began, so it belongs to frame 2");
         assert_eq!(meter.last(), Some(finished));

@@ -256,8 +256,8 @@ fn render_result(decision: &Decision, household: &Household, viewer_name: &str, 
     let background = theme.background;
     let keeps_reserve = decision.statement.claim.contains("keeps");
     let winner = decision.strategies.preferred.map(|i| &decision.strategies.strategies[i]);
-    let immediate = decision.immediate_cash.clone();
-    let immediate_content = std::rc::Rc::new(ExplainContent::new("Household cash right after the purchase", immediate.money(), immediate.node().clone(), viewer_name, atlas_core::Disclosure::Full));
+    let immediate = &decision.immediate_cash;
+    let immediate_content = std::sync::Arc::new(ExplainContent::new("Household cash right after the purchase", immediate.money(), immediate.shared_node(), viewer_name, atlas_core::Disclosure::Full));
     v_flex()
         .gap_6()
         .child(

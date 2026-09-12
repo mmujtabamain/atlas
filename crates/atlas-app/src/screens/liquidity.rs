@@ -6,7 +6,7 @@
 use atlas_core::authz::Viewer;
 use atlas_core::breach::{self, BreachReport};
 use atlas_core::forecast::{Case, ForecastOptions, forecast};
-use atlas_core::ids::{EntityRef, ObjectRef, ReservationId};
+use atlas_core::ids::{ObjectRef, ReservationId};
 use atlas_core::liquidity::{Boundary, boundary_liquidity};
 use atlas_core::model::{Coverage, Household};
 use atlas_core::{Disclosure, EngineResult, Money};
@@ -108,7 +108,6 @@ impl LiquidityModel {
 
 pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
-    let viewer_name = household.entity_name(EntityRef::Person(viewer.person));
     let selected_index = model.boundaries.iter().position(|b| *b == model.boundary).unwrap_or(0);
     let boundaries = model.boundaries.clone();
 
@@ -135,7 +134,7 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
         .child(
             GroupBox::new().id("boundary-figures").title(format!("{} — money definitions (§6)", model.boundary.label(household))).child(
                 h_flex().flex_wrap().gap_8().children(model.figures.iter().enumerate().map(|(index, f)| {
-                    card(f.figure(&viewer_name, index == 2))
+                    card(f.figure(index == 2))
                 })),
             ),
         )
@@ -147,8 +146,8 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
                         h_flex()
                             .flex_wrap()
                             .gap_8()
-                            .child(card(model.hard_floor.figure(&viewer_name, false)))
-                            .child(card(model.headroom.figure(&viewer_name, true)))
+                            .child(card(model.hard_floor.figure(false)))
+                            .child(card(model.headroom.figure(true)))
                             .child(
                                 card(
                                     v_flex()
@@ -179,7 +178,7 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
             ),
         )
         .child(match (&model.runway, &model.minimum_injection) {
-            (Some(runway), Some(injection)) => render_runway(runway, injection, model, &viewer_name, cx).into_any_element(),
+            (Some(runway), Some(injection)) => render_runway(runway, injection, model, cx).into_any_element(),
             _ => GroupBox::new()
                 .id("runway")
                 .title("Runway against hard floors (M13)")
@@ -191,7 +190,7 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
         .child(render_reservations(model, household, viewer, cx))
 }
 
-fn render_runway(runway: &BreachReport, injection: &ExplainedFigure, model: &LiquidityModel, viewer_name: &str, cx: &App) -> impl IntoElement {
+fn render_runway(runway: &BreachReport, injection: &ExplainedFigure, model: &LiquidityModel, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let fact = |label: &str, value: String| {
         v_flex()
@@ -217,7 +216,7 @@ fn render_runway(runway: &BreachReport, injection: &ExplainedFigure, model: &Liq
                         .child(fact("Lowest path balance", format!("{}{}", runway.lowest.format(), runway.lowest_date.map(|d| format!(" on {}", d.format("%d %b %Y"))).unwrap_or_default())))
                         .child(fact("Days below the floor", runway.days_below.to_string()))
                         .child(fact("Integrated shortfall", format!("{} currency-days", runway.integrated_shortfall_currency_days)))
-                        .child(card(injection.figure(viewer_name, false))),
+                        .child(card(injection.figure(false))),
                 )
                 .child(div().text_xs().text_color(theme.muted_foreground).child(
                     "The path uses expected values of every planned occurrence in the baseline (§2.4: conditional, not available money). Maximum deficit is currency; integrated shortfall is currency-days and is not a capital requirement (E08). No breach is reported as “no breach through the horizon”, never as infinite runway (V044).",

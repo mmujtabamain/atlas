@@ -121,8 +121,7 @@ impl TaxModel {
     }
 }
 
-pub fn render(model: &TaxModel, controls: &TaxControls, household: &Household, viewer: Viewer, cx: &mut Context<AtlasApp>) -> impl IntoElement {
-    let viewer_name = household.entity_name(EntityRef::Person(viewer.person));
+pub fn render(model: &TaxModel, controls: &TaxControls, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     v_flex()
         .id("screen-taxes")
         .test_support()
@@ -138,8 +137,8 @@ pub fn render(model: &TaxModel, controls: &TaxControls, household: &Household, v
                 .title("Planning estimates only"),
         )
         .child(render_packs(model, household, cx))
-        .child(render_events(model, household, &viewer_name, cx))
-        .child(render_e05(model, controls, &viewer_name, cx))
+        .child(render_events(model, household, cx))
+        .child(render_e05(model, controls, cx))
 }
 
 fn render_packs(model: &TaxModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
@@ -221,7 +220,7 @@ fn render_packs(model: &TaxModel, household: &Household, cx: &mut Context<AtlasA
     )
 }
 
-fn render_events(model: &TaxModel, household: &Household, viewer_name: &str, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+fn render_events(model: &TaxModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
     let events = &model.assessment.events;
     GroupBox::new()
@@ -252,8 +251,8 @@ fn render_events(model: &TaxModel, household: &Household, viewer_name: &str, cx:
                     h_flex()
                         .flex_wrap()
                         .gap_8()
-                        .children(model.by_entity.iter().map(|(_, f)| card(f.figure(viewer_name, false))))
-                        .child(card(model.reserve.figure(viewer_name, true))),
+                        .children(model.by_entity.iter().map(|(_, f)| card(f.figure(false))))
+                        .child(card(model.reserve.figure(true))),
                 )
                 .child(div().text_xs().text_color(theme.muted_foreground).child(
                     "Attribution stays with the entity that owes the tax (§12.6). An assessment balance payable after the horizon is a tax reserve (§12.4), not a posting in this window; a negative balance is a receivable, not cash (V018).",
@@ -296,7 +295,7 @@ fn render_events(model: &TaxModel, household: &Household, viewer_name: &str, cx:
         )
 }
 
-fn render_e05(model: &TaxModel, controls: &TaxControls, viewer_name: &str, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+fn render_e05(model: &TaxModel, controls: &TaxControls, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
     let years = model.e05_strategies.first().map(|s| s.taxable_by_year.len()).unwrap_or(2);
     GroupBox::new().id("tax-e05").title("Incremental tax: with versus without a proposed extraction (§12.5, E05)").child(
@@ -367,7 +366,7 @@ fn render_e05(model: &TaxModel, controls: &TaxControls, viewer_name: &str, cx: &
                                     .child(money_cell(s.incremental.money(), cx).w_40().flex_shrink_0())
                             }))),
                     )
-                    .child(h_flex().flex_wrap().gap_8().children(model.e05_incrementals.iter().map(|f| card(f.figure(viewer_name, false)))))
+                    .child(h_flex().flex_wrap().gap_8().children(model.e05_incrementals.iter().map(|f| card(f.figure(false)))))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
                         "Why both eligibility and dated liquidity must constrain tax minimisation: the cheaper split is only available when the second year's rules and the household's cash allow it (E05, §13.6).",
                     ))

@@ -1,8 +1,7 @@
 //! People (§5.2, §7): roles, held accounts with shares, companies, income,
 //! and the person's attributed economic share — with its chain.
 
-use atlas_core::authz::Viewer;
-use atlas_core::ids::{EntityRef, PersonId};
+use atlas_core::ids::PersonId;
 use atlas_core::model::Household;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -22,8 +21,7 @@ use crate::widgets::labels;
 use crate::widgets::master::{master_detail, master_item, page_header};
 use crate::widgets::table::{money_cell, muted_cell};
 
-pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, selected: Option<PersonId>, cx: &mut Context<AtlasApp>) -> impl IntoElement {
-    let viewer_name = household.entity_name(EntityRef::Person(viewer.person));
+pub fn render(models: &EntityModels, household: &Household, selected: Option<PersonId>, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let selected = selected.or_else(|| household.people.first().map(|p| p.id));
 
     let master = v_flex().gap_1().children(household.people.iter().map(|person| {
@@ -41,7 +39,7 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
     }));
 
     let detail: AnyElement = match selected.and_then(|id| household.person(id).zip(models.person(id))) {
-        Some((person, model)) => render_detail(person, model, household, &viewer_name, cx).into_any_element(),
+        Some((person, model)) => render_detail(person, model, household, cx).into_any_element(),
         None => div().text_color(cx.theme().muted_foreground).child("No people in this household.").into_any_element(),
     };
 
@@ -69,7 +67,7 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
         .child(master_detail("people-master-detail", master, detail, cx))
 }
 
-fn render_detail(person: &atlas_core::model::Person, model: &super::entities::PersonModel, household: &Household, viewer_name: &str, cx: &App) -> impl IntoElement {
+fn render_detail(person: &atlas_core::model::Person, model: &super::entities::PersonModel, household: &Household, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let accounts: Vec<String> = household
         .accounts_of(person.id)
@@ -116,7 +114,7 @@ fn render_detail(person: &atlas_core::model::Person, model: &super::entities::Pe
             GroupBox::new().id("person-attribution").title("Economic attribution (§7)").child(
                 v_flex()
                     .gap_3()
-                    .child(model.attribution.figure(viewer_name, true))
+                    .child(model.attribution.figure(true))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
                         "The person's share of each held account. The household counts joint accounts once at 100%; attribution never double counts (V066).",
                     )),

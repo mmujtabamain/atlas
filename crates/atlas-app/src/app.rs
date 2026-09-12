@@ -1591,18 +1591,8 @@ impl AtlasApp {
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let started = std::time::Instant::now();
         let element = self.render_section(cx);
-        let clone = self.perf.content_clone_so_far();
-        self.perf.record_content(clone, started.elapsed().saturating_sub(clone));
+        self.perf.record_content(started.elapsed());
         element
-    }
-
-    /// Clones the screen model (measured — the clone is what the perf log
-    /// calls `content clone`) so the screen function can borrow `cx` mutably.
-    fn cloned<M: Clone>(&self, model: &M) -> M {
-        let started = std::time::Instant::now();
-        let cloned = model.clone();
-        self.perf.add_content_clone(started.elapsed());
-        cloned
     }
 
     fn render_section(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1626,69 +1616,44 @@ impl AtlasApp {
             },
             Section::People | Section::Companies | Section::Accounts => match &self.entities {
                 Ok(models) => {
-                    let models = self.cloned(models);
                     match self.section {
-                        Section::People => screens::people::render(&models, &self.household, self.viewer, self.selected_person, cx).into_any_element(),
-                        Section::Companies => screens::companies::render(&models, &self.household, self.viewer, self.selected_company, cx).into_any_element(),
-                        _ => screens::accounts::render(&models, &self.household, self.viewer, self.selected_account, cx).into_any_element(),
+                        Section::People => screens::people::render(models, &self.household, self.selected_person, cx).into_any_element(),
+                        Section::Companies => screens::companies::render(models, &self.household, self.selected_company, cx).into_any_element(),
+                        _ => screens::accounts::render(models, &self.household, self.viewer, self.selected_account, cx).into_any_element(),
                     }
                 }
                 Err(err) => self.render_engine_failure(self.section, err, cx),
             },
             Section::Liquidity => match &self.liquidity {
-                Ok(model) => {
-                    let model = self.cloned(model);
-                    screens::liquidity::render(&model, &self.household, self.viewer, cx).into_any_element()
-                }
+                Ok(model) => screens::liquidity::render(model, &self.household, self.viewer, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Liquidity, err, cx),
             },
             Section::Timeline => match &self.timeline {
-                Ok(model) => {
-                    let model = self.cloned(model);
-                    screens::timeline::render(&model, &self.timeline_controls, &self.household, self.viewer, cx).into_any_element()
-                }
+                Ok(model) => screens::timeline::render(model, &self.timeline_controls, &self.household, self.viewer, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Timeline, err, cx),
             },
             Section::Projections => match &self.projection {
-                Ok(model) => {
-                    let model = self.cloned(model);
-                    screens::projections::render(&model, &self.household, self.viewer, cx).into_any_element()
-                }
+                Ok(model) => screens::projections::render(model, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Projections, err, cx),
             },
             Section::Assumptions => match &self.assumptions {
-                Ok(model) => {
-                    let model = self.cloned(model);
-                    screens::assumptions::render(&model, &self.household, self.viewer, cx).into_any_element()
-                }
+                Ok(model) => screens::assumptions::render(model, &self.household, self.viewer, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Assumptions, err, cx),
             },
             Section::Taxes => match &self.taxes {
-                Ok(model) => {
-                    let model = self.cloned(model);
-                    screens::taxes::render(&model, &self.tax_controls, &self.household, self.viewer, cx).into_any_element()
-                }
+                Ok(model) => screens::taxes::render(model, &self.tax_controls, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Taxes, err, cx),
             },
             Section::Rules => match &self.rules {
-                Ok(model) => {
-                    let model = self.cloned(model);
-                    screens::rules::render(&model, &self.household, cx).into_any_element()
-                }
+                Ok(model) => screens::rules::render(model, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Rules, err, cx),
             },
             Section::Scenarios => match &self.scenarios {
-                Ok(model) => {
-                    let model = self.cloned(model);
-                    screens::scenarios::render(&model, &self.household, cx).into_any_element()
-                }
+                Ok(model) => screens::scenarios::render(model, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Scenarios, err, cx),
             },
             Section::Decisions => screens::decisions::render(self.decision_step, &self.decision_form, self.decision.as_ref(), &self.household, &self.viewer_name(), cx).into_any_element(),
-            Section::Privacy => {
-                let model = self.cloned(&self.privacy);
-                screens::privacy::render(&model, &self.household, &self.viewer_name(), cx).into_any_element()
-            }
+            Section::Privacy => screens::privacy::render(&self.privacy, &self.household, &self.viewer_name(), cx).into_any_element(),
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
         }
     }
