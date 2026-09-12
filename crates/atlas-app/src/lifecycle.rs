@@ -125,9 +125,17 @@ impl AtlasApp {
         }
     }
 
-    /// Records an unsaved change (every mutation calls this).
+    /// Records an unsaved change (every mutation calls this). The edit count
+    /// lets a save that finishes in the background tell whether the household
+    /// changed while it was writing.
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+        self.edits += 1;
+    }
+
+    /// Whether a save is in flight (the status bar says so).
+    pub fn is_saving(&self) -> bool {
+        self.saving
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -140,20 +148,66 @@ impl AtlasApp {
 
     /// Saves to the current file, or asks for one.
     pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match &self.file {
-            Some(file) => match file.save(&self.household) {
-                Ok(()) => {
-                    self.dirty = false;
-                    window.push_notification(format!("Saved to {}", file.path().display()), cx);
-                    cx.notify();
-                }
-                Err(err) => {
-                    alerting::report(Level::Error, format!("save failed for {}: {err}", file.path().display()));
-                    window.push_notification(format!("Couldn’t save: {err}"), cx);
-                }
-            },
+        match self.file.clone() {
+            Some(file) => self.save_in_background(file, false, window, cx),
             None => self.open_save_as(window, cx),
         }
+    }
+
+    /// Writes the household to `file` on a background thread — the SQLite
+    /// rewrite (backup copy, sixteen tables, commit) is I/O the UI must not
+    /// wait on — and finishes on the foreground: `dirty` clears only if
+    /// nothing was edited while the file was being written, and a save-as
+    /// (`take_over`) acquires the lock and becomes the current file.
+    fn save_in_background(&mut self, file: HouseholdFile, take_over: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving {
+            log::info!("save requested while a save is in flight; ignored");
+            return;
+        }
+        let household = self.household.clone();
+        let owner = self.owner.clone();
+        let edits = self.edits;
+        self.saving = true;
+        cx.notify();
+        log::info!("saving {} to {} in the background", household.name, file.path().display());
+        let started = std::time::Instant::now();
+        let write = cx.background_spawn(async move {
+            let result = file.save(&household).and_then(|_| if take_over { file.acquire(&owner, true).map(|_| ()) } else { Ok(()) });
+            (file, result)
+        });
+        cx.spawn(async move |this, cx| {
+            let (file, result) = write.await;
+            let _ = this.update_in(cx, |app, window, cx| app.finish_save(file, result, take_over, edits, started.elapsed(), window, cx));
+        })
+        .detach();
+    }
+
+    fn finish_save(&mut self, file: HouseholdFile, result: Result<(), StoreError>, take_over: bool, edits: u64, took: std::time::Duration, window: &mut Window, cx: &mut Context<Self>) {
+        self.saving = false;
+        match result {
+            Ok(()) => {
+                log::info!("perf: save of {} took {:.1}ms off the UI thread", file.path().display(), crate::perf::ms(took));
+                if take_over {
+                    if let Some(old) = self.file.take()
+                        && old.path() != file.path()
+                    {
+                        let _ = old.release(&self.owner);
+                    }
+                    self.file = Some(file.clone());
+                }
+                if self.edits == edits {
+                    self.dirty = false;
+                } else {
+                    log::info!("household edited while saving; it stays unsaved");
+                }
+                window.push_notification(format!("Saved to {}", file.path().display()), cx);
+            }
+            Err(err) => {
+                alerting::report(Level::Error, format!("save failed for {}: {err}", file.path().display()));
+                window.push_notification(format!("Couldn’t save: {err}"), cx);
+            }
+        }
+        cx.notify();
     }
 
     /// Saves under a new path (the field is prefilled with a sensible default).
@@ -199,22 +253,8 @@ impl AtlasApp {
             return;
         }
         let file = HouseholdFile::new(PathBuf::from(text));
-        match file.save(&self.household).and_then(|_| file.acquire(&self.owner, true).map(|_| ())) {
-            Ok(()) => {
-                if let Some(old) = self.file.take() {
-                    let _ = old.release(&self.owner);
-                }
-                window.push_notification(format!("Saved to {}", file.path().display()), cx);
-                self.file = Some(file);
-                self.dirty = false;
-                window.close_dialog(cx);
-                cx.notify();
-            }
-            Err(err) => {
-                alerting::report(Level::Error, format!("save-as failed for {}: {err}", file.path().display()));
-                window.push_notification(format!("Couldn’t save there: {err}"), cx);
-            }
-        }
+        window.close_dialog(cx);
+        self.save_in_background(file, true, window, cx);
     }
 
     /// Opens a household file (path field + native browse).
@@ -252,6 +292,8 @@ impl AtlasApp {
         });
     }
 
+    /// Loads the file on a background thread (SQLite read + JSON decode of
+    /// every table), then swaps the household in on the foreground.
     fn open_from_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.lifecycle_form.path.read(cx).value().trim().to_string();
         let file = HouseholdFile::new(PathBuf::from(&text));
@@ -259,23 +301,38 @@ impl AtlasApp {
             window.push_notification(format!("{text} does not exist."), cx);
             return;
         }
-        match file.load() {
-            Ok(household) => {
-                match file.acquire(&self.owner, false) {
-                    Ok(_) => {}
-                    Err(StoreError::Locked { owner, since, .. }) => window.push_notification(format!("Opened; note it is also open by {owner} since {since}."), cx),
-                    Err(err) => window.push_notification(format!("Opened without a lock: {err}"), cx),
+        window.close_dialog(cx);
+        let owner = self.owner.clone();
+        let started = std::time::Instant::now();
+        let read = cx.background_spawn(async move {
+            let loaded = file.load();
+            let lock = match &loaded {
+                Ok(_) => Some(file.acquire(&owner, false).map(|_| ())),
+                Err(_) => None,
+            };
+            (file, loaded, lock)
+        });
+        cx.spawn(async move |this, cx| {
+            let (file, loaded, lock) = read.await;
+            let _ = this.update_in(cx, |app, window, cx| match loaded {
+                Ok(household) => {
+                    log::info!("perf: load of {} took {:.1}ms off the UI thread", file.path().display(), crate::perf::ms(started.elapsed()));
+                    match lock {
+                        Some(Err(StoreError::Locked { owner, since, .. })) => window.push_notification(format!("Opened; note it is also open by {owner} since {since}."), cx),
+                        Some(Err(err)) => window.push_notification(format!("Opened without a lock: {err}"), cx),
+                        _ => {}
+                    }
+                    let name = household.name.clone();
+                    app.replace_household(household, Some(file), window, cx);
+                    window.push_notification(format!("Opened “{name}”"), cx);
                 }
-                window.close_dialog(cx);
-                let name = household.name.clone();
-                self.replace_household(household, Some(file), window, cx);
-                window.push_notification(format!("Opened “{name}”"), cx);
-            }
-            Err(err) => {
-                alerting::report(Level::Error, format!("open failed for {text}: {err}"));
-                window.push_notification(format!("Couldn’t open: {err}"), cx);
-            }
-        }
+                Err(err) => {
+                    alerting::report(Level::Error, format!("open failed for {}: {err}", file.path().display()));
+                    window.push_notification(format!("Couldn’t open: {err}"), cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Native open dialog when the platform has one; otherwise a notification.

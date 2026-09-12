@@ -715,10 +715,31 @@ fn real_data_new_household_entry_save_and_reopen(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|cx| {
         let app = app.read(cx);
+        assert!(!app.is_saving(), "the background save has finished");
         assert!(!app.is_dirty());
         assert_eq!(app.file_path(), Some(path.clone()));
     });
     assert!(path.exists(), "the SQLite file was written");
+
+    // 4b. The save runs off the UI thread (perf step 7): an edit made while
+    // the file is being written is not lost — the household stays unsaved.
+    let written_at = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    cx.update_window(window, |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.save(window, cx);
+            assert!(app.is_saving(), "the save is in flight");
+            app.mark_dirty();
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        assert!(!app.is_saving());
+        assert!(app.is_dirty(), "the edit that landed during the save keeps the household unsaved");
+    });
+    assert!(std::fs::metadata(&path).unwrap().modified().unwrap() > written_at, "the second save wrote the file");
 
     // 5. Reopen from the file in a fresh app: same household, same figures.
     let launch = Launch { start: Start::File(path.clone()), owner: "tester".into(), take_over: true, ..Launch::default() };

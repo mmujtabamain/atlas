@@ -122,6 +122,11 @@ pub struct AtlasApp {
     pub(crate) file: Option<atlas_store::HouseholdFile>,
     /// Unsaved changes since the last save/load.
     pub(crate) dirty: bool,
+    /// Mutations so far; a background save compares it to know whether the
+    /// household changed while the file was being written.
+    pub(crate) edits: u64,
+    /// A save is writing the file on a background thread.
+    pub(crate) saving: bool,
     /// Lock owner name for the household file.
     pub(crate) owner: String,
     pub(crate) lifecycle_form: crate::lifecycle::LifecycleForm,
@@ -450,6 +455,8 @@ impl AtlasApp {
             privacy_forms,
             file,
             dirty: false,
+            edits: 0,
+            saving: false,
             owner,
             lifecycle_form,
             entry_forms,

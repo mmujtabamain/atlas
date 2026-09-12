@@ -142,11 +142,13 @@ impl Shell {
                 household.reservations.len(),
                 household.policies.len()
             )))
-            .right(div().text_color(muted).child(match (app.file_path(), app.is_dirty()) {
-                (Some(path), true) => format!("{} • unsaved", path.display()),
-                (Some(path), false) => format!("{}", path.display()),
-                (None, true) => "not saved yet • unsaved changes — Household ▸ Save as…".to_string(),
-                (None, false) => "in memory — Household ▸ Save as… to keep it".to_string(),
+            .right(div().text_color(muted).child(match (app.file_path(), app.is_dirty(), app.is_saving()) {
+                (Some(path), _, true) => format!("{} • saving…", path.display()),
+                (None, _, true) => "saving…".to_string(),
+                (Some(path), true, false) => format!("{} • unsaved", path.display()),
+                (Some(path), false, false) => format!("{}", path.display()),
+                (None, true, false) => "not saved yet • unsaved changes — Household ▸ Save as…".to_string(),
+                (None, false, false) => "in memory — Household ▸ Save as… to keep it".to_string(),
             }))
             .right(Separator::vertical().h_3())
             .right(div().text_color(muted).child(alerting::status_label()))
