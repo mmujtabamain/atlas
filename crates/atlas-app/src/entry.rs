@@ -162,6 +162,10 @@ impl EntryForms {
     pub fn series_id_at(&self, row: usize) -> Option<SeriesId> {
         self.series_ids.get(row).copied()
     }
+    /// The row of a recurrence option by its label prefix.
+    pub fn recurrence_row(&self, label: &str) -> Option<usize> {
+        RECURRENCES.iter().position(|r| r.starts_with(label))
+    }
 
     pub fn new(household: &Household, window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
         let people: Vec<PersonId> = household.people.iter().map(|p| p.id).collect();

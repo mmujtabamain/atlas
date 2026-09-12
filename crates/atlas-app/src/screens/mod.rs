@@ -3,9 +3,11 @@
 
 pub mod accounts;
 pub mod activity;
+pub mod assumptions;
 pub mod common;
 pub mod companies;
 pub mod earmarks;
+pub mod forecast;
 pub mod funding;
 pub mod people;
 pub mod settings;
