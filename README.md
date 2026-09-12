@@ -56,7 +56,9 @@ perf: summary 1.0s: 9 frames (fps≈8.6) build avg=2.0ms max=9.4ms · draw≈ av
   `ATLAS_PERF_OVERLAY=0` hides it.
 - Filters: `RUST_LOG=<filter>` (both sinks; the file keeps `atlas_*=debug` on top of it),
   `ATLAS_LOG_FILE_FILTER=<filter>` (file only), `ATLAS_LOG_FILE=<path>|off`.
-- Module docs: `crates/atlas-app/src/perf.rs` and `logging.rs`.
+- Module docs: `crates/atlas-app/src/perf.rs` and `logging.rs`. The investigation, the
+  numbers and the **layout rules that keep taffy cheap** are in `docs/perf.md` — read it
+  before writing a screen.
 
 The app boots with the fictitious *plan household* fixture (`atlas_core::fixtures`), whose
 numbers come from the plan's own worked examples (E01, E03, E07, §13.1, §10.2).
