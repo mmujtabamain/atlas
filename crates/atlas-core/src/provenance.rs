@@ -491,8 +491,8 @@ impl ProvNode {
                 if single_restricted_value && disclosed_money > 0 && matches!(self.operation, Operation::Sum) {
                     let level = restricted_level;
                     let (label, note) = match level {
-                        Disclosure::Hidden => ("Contributions (breakdown suppressed)", "one restricted contribution sits among disclosed terms; listing the others would reveal it as the difference, so only the authorized total is shown (§7.6, V073)"),
-                        _ => ("Contributions incl. an owner-authorized restricted one (breakdown suppressed)", "showing the other terms next to a single restricted contribution would reveal it as total − rest; the owner can authorize the disclosure explicitly (§7.6, V073)"),
+                        Disclosure::Hidden => ("Contributions (breakdown suppressed)", "one restricted contribution sits among disclosed terms; listing the others would reveal it as the difference, so only the authorized total is shown"),
+                        _ => ("Contributions incl. an owner-authorized restricted one (breakdown suppressed)", "showing the other terms next to a single restricted contribution would reveal it as the difference (total − rest); the owner can authorize the disclosure explicitly"),
                     };
                     // The single child carries the node's own value; the node's sign is its
                     // parent's business, so the child adds up with a plus.
@@ -508,7 +508,7 @@ impl ProvNode {
                         certainty: self.certainty,
                         subject: None,
                     };
-                    notes.push("suppression applied: one restricted contribution (§7.6)".into());
+                    notes.push("suppression applied: one restricted contribution".into());
                     return ProvNode { children: vec![collapsed], notes, ..self.clone() };
                 }
                 ProvNode {
@@ -558,11 +558,11 @@ fn merge_restricted(nodes: &[ProvNode], level: Disclosure) -> ProvNode {
     let (label, note) = match level {
         Disclosure::Hidden => (
             "Restricted contribution",
-            "the viewer is not authorized to learn what contributes here (§7.2)",
+            "the viewer is not authorized to learn what contributes here",
         ),
         _ => (
             "Owner-authorized restricted contribution",
-            "underlying account details not disclosed (§2.6)",
+            "underlying account details not disclosed",
         ),
     };
     ProvNode {
@@ -697,13 +697,13 @@ mod tests {
             pkr(100),
             vec![
                 ProvNode::input("Checking", pkr(100), "balance"),
-                ProvNode::excluded("Company Alpha operating", pkr(2_000_000), "business cash is not household cash (§8.5)"),
+                ProvNode::excluded("Company Alpha operating", pkr(2_000_000), "business cash is not household cash"),
             ],
         );
         assert!(node.verify_sums().is_empty());
         let text = node.render_chain();
         assert!(text.contains("(excluded) Company Alpha operating"));
-        assert!(text.contains("§8.5"));
+        assert!(text.contains("business cash is not household cash"));
     }
 
     #[test]
@@ -740,7 +740,7 @@ mod tests {
         assert!(!text.contains("Person A private savings"));
         assert!(!text.contains("500,000"), "the private balance is not derivable");
         assert!(!text.contains("1,400,000") && !text.contains("700,000"), "the other terms are coarsened away too");
-        assert!(text.contains("V073"));
+        assert!(text.contains("reveal it as the difference"));
 
         // With two restricted objects, the aggregate of both is an authorized disclosure.
         let other = AccountId::new(3);
@@ -814,7 +814,7 @@ mod tests {
             pkr(10),
             vec![
                 ProvNode::input("visible", pkr(10), "b"),
-                ProvNode::excluded("Company payroll", pkr(350), "business cash (§8.5)").subject(ObjectRef::Account(secret)),
+                ProvNode::excluded("Company payroll", pkr(350), "business cash").subject(ObjectRef::Account(secret)),
             ],
         );
         let projected = node.project(&|_| Disclosure::Hidden);

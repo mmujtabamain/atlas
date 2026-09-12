@@ -67,7 +67,7 @@ pub fn derive(household: &Household, series: SeriesId, derivation: Derivation) -
     };
     if history.len() < last_n.min(2) || history.is_empty() {
         return Err(EngineError::Insufficient(format!(
-            "{} has {} reconciled payment(s); the formula needs {last_n}. Zero observations mean unknown, not zero risk (M15).",
+            "{} has {} reconciled payment(s); the formula needs {last_n}. No history means unknown, not zero risk.",
             series_ref.name,
             history.len()
         )));
@@ -122,7 +122,7 @@ pub fn derive(household: &Household, series: SeriesId, derivation: Derivation) -
     .certainty(Certainty::HistoricallyDerived)
     .strength(ResultStrength::ExactAccounting)
     .note(format!(
-        "Sample: {} payments from {} to {}. A historical range is a descriptive sample statistic, not a bound on the next payment and not proof that employment continues (§10.7).",
+        "Sample: {} payments from {} to {}. A historical range describes past payments; it is not a bound on the next one and not proof that the income continues.",
         sample.len(),
         sample_from.format("%d %b %Y"),
         sample_to.format("%d %b %Y")
@@ -249,7 +249,7 @@ mod tests {
         let derived = derive(&household, ids::SALARY_A, Derivation::Mean { last_n: 4 }).unwrap();
         apply_derived(&mut household, &derived, AssumptionId::new(1)).unwrap();
         let assumption = household.assumption(AssumptionId::new(1)).unwrap();
-        assert_eq!(assumption.accepted_on, None, "a re-derived assumption must be accepted again (§2.5)");
+        assert_eq!(assumption.accepted_on, None, "a re-derived assumption must be accepted again");
         assert_eq!(assumption.freshness(household.as_of), crate::model::Freshness::NotAccepted);
         assert!(assumption.source.describe().contains("arithmetic mean of the last 4"));
         assert_eq!(household.series_by_id(ids::SALARY_A).unwrap().amount.expected(), pkr(505_000));

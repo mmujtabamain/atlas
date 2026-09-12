@@ -595,14 +595,14 @@ impl Household {
     pub fn set_policy(&mut self, mut policy: AccessPolicy, actor: PersonId, at: NaiveDateTime) -> EngineResult<u32> {
         if !self.may_administer(actor, policy.object) {
             self.record_audit(actor, None, AuditKind::AccessDenied, "policy change refused: the actor is not an owner of the object", None, at);
-            return Err(EngineError::Insufficient("only an owner of the object may change its access policy (F162)".into()));
+            return Err(EngineError::Insufficient("only an owner of the object may change its access policy".into()));
         }
         if policy.full_access.is_empty() {
             return Err(EngineError::Insufficient("a policy needs at least one owner with full access".into()));
         }
         for p in &policy.purposes {
             if Purpose::from_tag(p).is_none() {
-                return Err(EngineError::Insufficient(format!("unknown purpose “{p}”; purposes must be explicitly modelled contexts (§7.4)")));
+                return Err(EngineError::Insufficient(format!("unknown purpose “{p}”; a purpose must be one of the modelled contexts")));
             }
         }
         policy.changed_by = actor;
@@ -640,7 +640,7 @@ impl Household {
     pub fn add_grant(&mut self, mut grant: AccessGrant, actor: PersonId, at: NaiveDateTime) -> EngineResult<GrantId> {
         if !self.may_administer(actor, grant.object) {
             self.record_audit(actor, None, AuditKind::AccessDenied, "grant refused: the actor is not an owner of the object", None, at);
-            return Err(EngineError::Insufficient("only an owner of the object may grant access to it (F162)".into()));
+            return Err(EngineError::Insufficient("only an owner of the object may grant access to it".into()));
         }
         if let Some(end) = grant.effective_to
             && end < grant.effective_from
@@ -662,7 +662,7 @@ impl Household {
     pub fn revoke_grant(&mut self, id: GrantId, actor: PersonId, on: NaiveDate, at: NaiveDateTime) -> EngineResult<()> {
         let object = self.grants.iter().find(|g| g.id == id).map(|g| g.object).ok_or(EngineError::Insufficient(format!("unknown grant {id}")))?;
         if !self.may_administer(actor, object) {
-            return Err(EngineError::Insufficient("only an owner of the object may revoke a grant on it (F162)".into()));
+            return Err(EngineError::Insufficient("only an owner of the object may revoke a grant on it".into()));
         }
         if let Some(grant) = self.grants.iter_mut().find(|g| g.id == id) {
             grant.revoked_on = Some(on);
@@ -676,7 +676,7 @@ impl Household {
     pub fn explain_denial(&self, viewer: Viewer, object: ObjectRef) -> String {
         let kind = object_kind(object);
         match self.policy_for(self.governing_object(object)) {
-            None => format!("This {kind} has no access policy, so access fails closed (F162): nobody but a household owner can see or use it until a policy is set."),
+            None => format!("This {kind} has no access policy, so access fails closed: nobody but a household owner can see or use it until a policy is set."),
             Some(policy) => {
                 let level = policy.disclosure(viewer);
                 match level {
@@ -708,7 +708,7 @@ impl Household {
         for object in objects {
             let count = self.policies.iter().filter(|p| p.object == object).count();
             match count {
-                0 => problems.push(AuthorizationProblem { object, text: format!("{} has no access policy: hidden from everyone but a household owner and excluded from calculations (fails closed, F162)", object_kind(object)) }),
+                0 => problems.push(AuthorizationProblem { object, text: format!("{} has no access policy: hidden from everyone but a household owner and excluded from calculations (fails closed)", object_kind(object)) }),
                 1 => {
                     let policy = self.policy_for(object).expect("counted");
                     if policy.full_access.iter().any(|p| self.person(*p).is_none()) {

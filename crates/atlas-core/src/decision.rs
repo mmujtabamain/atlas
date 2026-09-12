@@ -410,7 +410,7 @@ fn incremental_annual_tax(household: &Household, person: PersonId, year: i32, ex
     let without = crate::tax::bracket_tax(&brackets, base, "annual tax without the extraction")?.money();
     let with = crate::tax::bracket_tax(&brackets, base.checked_add(extra)?, "annual tax with the extraction")?.money();
     let delta = with.checked_sub(without)?;
-    Ok((delta, format!("{pack}: annual brackets on a {year} base of {} plus the extraction; payable with the annual assessment, held as a tax reserve (§12.4)", base.format())))
+    Ok((delta, format!("{pack}: annual brackets on a {year} base of {} plus the extraction; payable with the annual assessment, held as a tax reserve", base.format())))
 }
 
 /// §13 — enumerates the permitted funding strategies for the down payment on
@@ -439,7 +439,7 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
         }
         // §7.3 / V067: authorization is evaluated before an object becomes a funding source.
         if household.calculation_access_for_purpose(ObjectRef::Account(source.account), crate::authz::Purpose::FundingSearch, on) == CalculationAccess::Excluded {
-            refused.push(format!("{} is not authorized for funding searches (§7.4); it was not considered", account.name));
+            refused.push(format!("{} is not authorized for funding searches; it was not considered", account.name));
             continue;
         }
         let balance = account_balance_on(household, source.account, on)?;
@@ -535,7 +535,7 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
         let cash = company_cash(household, route.company)?;
         let ceiling = cash.ceiling.money();
         let mut violations = Vec::new();
-        let mut caveats = vec![format!("{} cash-constraint ceiling {} is not proof of lawful distributable profit; legal capacity for a {} must be established before this route can be relied on (E07, M27).", company.name, ceiling.format(), route.method.label())];
+        let mut caveats = vec![format!("{} cash ceiling {} is not proof of lawful distributable profit; legal capacity for a {} must be established before this route can be relied on.", company.name, ceiling.format(), route.method.label())];
         match route.method {
             ExtractionMethod::Salary => {
                 let Some((rate_bp, rule_name)) = salary_withholding_bp(household, on) else {
@@ -549,7 +549,7 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
                         future_tax: Money::zero(currency),
                         future_tax_note: String::new(),
                         feasible: false,
-                        violations: vec!["no salary withholding rule is in force on the purchase date; the route's cash cost is unknown (M27: unknown eligibility prevents a tax-optimal conclusion)".into()],
+                        violations: vec!["no salary withholding rule is in force on the purchase date; the route's cash cost is unknown, so it cannot be ranked".into()],
                         caveats,
                         transfers: 0,
                     });
@@ -561,13 +561,13 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
                     Ok((withholding, fees))
                 })?;
                 if proceeds.gross.minor() > ceiling.minor() {
-                    violations.push(format!("gross salary {} exceeds the {} ceiling {} (committed payroll, tax remittance and operating buffer stay funded, E07)", proceeds.gross.format(), company.name, ceiling.format()));
+                    violations.push(format!("gross salary {} exceeds the {} ceiling {} (committed payroll, tax remittance and operating buffer stay funded)", proceeds.gross.format(), company.name, ceiling.format()));
                 }
                 let (future_tax, future_note) = match owner {
                     Some(person) => incremental_annual_tax(household, person, on.year(), proceeds.gross, on)?,
                     None => (Money::zero(currency), "no owner on record".into()),
                 };
-                caveats.push(format!("withholding {} at {}.{:02}% under {} is creditable against the annual assessment (M24)", proceeds.withholding.format(), rate_bp / 100, rate_bp % 100, rule_name));
+                caveats.push(format!("withholding {} at {}.{:02}% under {} is creditable against the annual assessment", proceeds.withholding.format(), rate_bp / 100, rate_bp % 100, rule_name));
                 let feasible = violations.is_empty();
                 strategies.push(Strategy {
                     name: format!("{} → owner salary → {}", company.name, name_of(route.to_account)),
@@ -580,7 +580,7 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
                         net: proceeds.net,
                         ending_balance: ceiling.checked_sub(proceeds.gross)?,
                         floor: cash.committed.money(),
-                        note: format!("gross-up: {} gross − {} withholding − {} fees = {} net (M25)", proceeds.gross.format(), proceeds.withholding.format(), proceeds.fees.format(), proceeds.net.format()),
+                        note: format!("gross-up: {} gross − {} withholding − {} fees = {} net", proceeds.gross.format(), proceeds.withholding.format(), proceeds.fees.format(), proceeds.net.format()),
                     }],
                     gross_total: proceeds.gross,
                     immediate_tax: proceeds.withholding,
@@ -605,7 +605,7 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
                     future_tax: Money::zero(currency),
                     future_tax_note: String::new(),
                     feasible: false,
-                    violations: vec!["no verified distribution-tax rule and no distributable-profit evidence: eligibility unknown, so the route cannot be ranked (M27)".into()],
+                    violations: vec!["no verified distribution-tax rule and no distributable-profit evidence: eligibility unknown, so the route cannot be ranked".into()],
                     caveats,
                     transfers: 0,
                 });
@@ -627,7 +627,7 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
             let proceeds = gross_up(shortfall, &|gross| Ok((gross.share_basis_points(rate_bp), Money::zero(currency))))?;
             let mut violations: Vec<String> = personal_first.violations.iter().filter(|v| !v.contains("short:")).cloned().collect();
             if proceeds.gross.minor() > ceiling.minor() {
-                violations.push(format!("gross salary {} exceeds the {} ceiling {} (E07)", proceeds.gross.format(), company.name, ceiling.format()));
+                violations.push(format!("gross salary {} exceeds the {} ceiling {}", proceeds.gross.format(), company.name, ceiling.format()));
             }
             let (future_tax, future_note) = match company.owners.first().map(|o| o.person) {
                 Some(person) => incremental_annual_tax(household, person, on.year(), proceeds.gross, on)?,
@@ -643,7 +643,7 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
                 net: proceeds.net,
                 ending_balance: ceiling.checked_sub(proceeds.gross)?,
                 floor: cash.committed.money(),
-                note: format!("gross-up of the {} shortfall at {}.{:02}% withholding (M25)", shortfall.format(), rate_bp / 100, rate_bp % 100),
+                note: format!("gross-up of the {} shortfall at {}.{:02}% withholding", shortfall.format(), rate_bp / 100, rate_bp % 100),
             });
             let feasible = violations.is_empty();
             strategies.push(Strategy {
@@ -657,7 +657,7 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
                 future_tax_note: future_note,
                 feasible,
                 violations,
-                caveats: vec![format!("{} legal capacity for an owner salary must be established (M27).", company.name)],
+                caveats: vec![format!("{} legal capacity for an owner salary must be established.", company.name)],
                 steps,
             });
         }
@@ -668,7 +668,7 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
         for strategy in strategies.iter_mut() {
             if strategy.tax_and_fees().minor() > cap.minor() {
                 strategy.feasible = false;
-                strategy.violations.push(format!("tax + fees {} exceed the maximum {} (§13.3)", strategy.tax_and_fees().format(), cap.format()));
+                strategy.violations.push(format!("tax + fees {} exceed the maximum {}", strategy.tax_and_fees().format(), cap.format()));
             }
         }
     }
@@ -685,7 +685,7 @@ pub fn funding_strategies(household: &Household, plan: &PurchasePlan) -> EngineR
     let preferred = strategies.iter().enumerate().filter(|(_, s)| s.feasible).min_by_key(|(_, s)| key(s)).map(|(i, _)| i);
     let feasible_count = strategies.iter().filter(|s| s.feasible).count();
     let status = match preferred {
-        Some(i) => format!("Best among {} enumerated candidates ({} feasible) under “{}”: {} — not a global optimum (§13.5, §32.2)", strategies.len(), feasible_count, plan.objective.label(), strategies[i].name),
+        Some(i) => format!("Best among {} enumerated candidates ({} feasible) under “{}”: {} — not a global optimum", strategies.len(), feasible_count, plan.objective.label(), strategies[i].name),
         None => format!("No feasible strategy among {} enumerated candidates under the constraints; the decision cannot be funded as specified", strategies.len()),
     };
     let search_space = format!(
@@ -882,7 +882,7 @@ pub fn plan_series(household: &Household, plan: &PurchasePlan, strategy: Option<
             && last.payment != payment
         {
             instalments.change_amount_from(final_on, AmountSpec::Exact(last.payment));
-            instalments.notes.push_str(&format!(" · final instalment {} (rounded schedule replayed, E06)", last.payment.format()));
+            instalments.notes.push_str(&format!(" · final instalment {} (rounded schedule replayed)", last.payment.format()));
         }
         out.push(instalments);
     }
@@ -959,7 +959,7 @@ pub fn evaluate(household: &Household, plan: &PurchasePlan, at_least: NaiveDate)
         ],
     )
     .strength(ResultStrength::ScenarioTested)
-    .note("Salary extraction, if any, enters as gross income on the same day and its withholding as a tax posting (M25); the terms above are the plan's own figures, the total is the forecast's.");
+    .note("Salary extraction, if any, enters as gross income on the same day and its withholding as a tax posting; the terms above are the decision's own figures, the total is the forecast's.");
     let after = |f: &BoundaryForecast| -> (Money, Option<NaiveDate>) {
         f.path.iter().filter(|p| p.date >= plan.purchase_on).min_by_key(|p| (p.balance.minor(), p.date)).map(|p| (p.balance, Some(p.date))).unwrap_or((f.end.money(), None))
     };
@@ -997,7 +997,7 @@ pub fn evaluate(household: &Household, plan: &PurchasePlan, at_least: NaiveDate)
                 Some(first) => format!("reserve crossed {} · worst {} below · {} days · recovery {}", first.format("%d %b %Y"), reserve_breach.worst_deficit.format(), reserve_breach.days_below, reserve_breach.recovery.map(|d| d.format("%d %b %Y").to_string()).unwrap_or_else(|| "not within the window".into())),
             },
             money: None,
-            how: "first passage below the reserve on the decision path (M13, E08)".into(),
+            how: "first day the decision path falls below the reserve".into(),
         },
         AffordabilityMetric { name: "Monthly repayment".into(), value: monthly_payment.format(), money: Some(monthly_payment), how: plan.financing.as_ref().map(|f| format!("annuity on {} over {} months at {}.{:02}% nominal", plan.financed().format(), f.months, f.annual_rate_basis_points / 100, f.annual_rate_basis_points % 100)).unwrap_or_else(|| "no financing".into()) },
         AffordabilityMetric { name: "Total financing cost".into(), value: total_financing_cost.format(), money: Some(total_financing_cost), how: "instalments × months − financed amount".into() },
@@ -1038,7 +1038,7 @@ pub fn evaluate(household: &Household, plan: &PurchasePlan, at_least: NaiveDate)
         name: "Goals delayed or made infeasible".into(),
         value: if goals.is_empty() { "no goals defined".into() } else { goals.iter().map(|g| format!("{}: {}", g.name, g.text)).collect::<Vec<_>>().join(" · ") },
         money: None,
-        how: "first date the household path holds reserve + goal amount, baseline vs decision (§20)".into(),
+        how: "first date the household path holds reserve + goal amount, baseline vs decision".into(),
     });
 
     // Company consequences.
@@ -1051,7 +1051,7 @@ pub fn evaluate(household: &Household, plan: &PurchasePlan, at_least: NaiveDate)
             company_consequences.push(format!("{}: cash at the end {} → {} ({}); lowest {} → {}", company.name, base.end.money().format(), over.end.money().format(), delta.format_signed(), base.lowest.money().format(), over.lowest.money().format()));
         }
     }
-    metrics.push(AffordabilityMetric { name: "Company cash consequences".into(), value: if company_consequences.is_empty() { "no company route considered".into() } else { company_consequences.join(" · ") }, money: None, how: "company boundary forecast with vs without the extraction (§8.5, E07)".into() });
+    metrics.push(AffordabilityMetric { name: "Company cash consequences".into(), value: if company_consequences.is_empty() { "no company route considered".into() } else { company_consequences.join(" · ") }, money: None, how: "company forecast with vs without the extraction".into() });
 
     // §19.2 grid (conservative case, E03 logic: the worst stated path).
     let mut grid = Vec::new();
@@ -1098,7 +1098,7 @@ pub fn evaluate(household: &Household, plan: &PurchasePlan, at_least: NaiveDate)
     }
     let grid_status = match best_index {
         Some(i) => format!(
-            "Best on the specified grid under “{}”: {} with a {} down payment — {} combinations evaluated, {} keep the {} reserve (conservative case; §13.5, §19.2)",
+            "Best on the specified grid under “{}”: {} with a {} down payment — {} combinations evaluated, {} keep the {} reserve (conservative case)",
             plan.objective.label(),
             grid[i].purchase_on.format("%d %b %Y"),
             grid[i].down_payment.format(),
@@ -1170,7 +1170,7 @@ pub fn evaluate(household: &Household, plan: &PurchasePlan, at_least: NaiveDate)
     let recommendation = Recommendation {
         action: match (winner, keeps_reserve) {
             (Some(w), true) => format!("Consider {} on {} with a {} down payment funded via “{}”.", plan.name.to_lowercase(), plan.purchase_on.format("%d %b %Y"), plan.down_payment.format(), w.name),
-            (Some(w), false) => format!("{} on {} with a {} down payment via “{}” does not keep the reserve in the conservative case; see the grid for combinations that do.", plan.name, plan.purchase_on.format("%d %b %Y"), plan.down_payment.format(), w.name),
+            (Some(w), false) => format!("{} on {} with a {} down payment via “{}” does not keep the reserve in the conservative case; see the purchase month × down payment table for combinations that do.", plan.name, plan.purchase_on.format("%d %b %Y"), plan.down_payment.format(), w.name),
             (None, _) => format!("{} on {} with a {} down payment cannot be funded under the constraints.", plan.name, plan.purchase_on.format("%d %b %Y"), plan.down_payment.format()),
         },
         objective: format!("{} while maintaining ≥ {} household reserve", plan.objective.label(), plan.reserve.format()),
@@ -1191,7 +1191,7 @@ pub fn evaluate(household: &Household, plan: &PurchasePlan, at_least: NaiveDate)
         alternatives: strategies.strategies.iter().enumerate().filter(|(i, _)| Some(*i) != strategies.preferred).map(|(_, s)| format!("{} — {}{}", s.name, if s.feasible { "feasible" } else { "infeasible" }, if s.violations.is_empty() { String::new() } else { format!(": {}", s.violations.join("; ")) })).collect(),
         assumptions: assumptions_text,
         applied_rules: with_decision.record.rules_applied.clone(),
-        explanation: "This is not an AI recommendation. It is the reported result of deterministic search under the inputs above: enumerated strategies and grid cells, ranked under the stated objective (§26).".into(),
+        explanation: "This is not an AI recommendation. It is the reported result of deterministic search under the inputs above: enumerated strategies and grid cells, ranked under the stated objective.".into(),
     };
 
     let mut dates: std::collections::BTreeSet<NaiveDate> = baseline.path.iter().map(|p| p.date).collect();
@@ -1351,7 +1351,7 @@ mod tests {
         // Tax rounds up to the minor unit, as a real assessment would.
         let cost = |gross: Money| -> EngineResult<(Money, Money)> { Ok((Money::new((gross.minor() * 42_000 + 1_045_499) / 1_045_500, gross.currency()), pkr(3_500))) };
         let result = gross_up(pkr(1_000_000), &cost).unwrap();
-        assert!(result.net.minor() >= pkr(1_000_000).minor(), "V014: at least the requested net");
+        assert!(result.net.minor() >= pkr(1_000_000).minor(), "at least the requested net");
         assert_eq!(result.gross, pkr(1_045_500));
         assert_eq!(result.withholding, pkr(42_000));
         assert_eq!(result.net, pkr(1_000_000));
@@ -1480,7 +1480,7 @@ mod tests {
         // 2,688,000+ gross exceeds Alpha's E07 ceiling (500,000): cheapest-tax-looking or not, it is rejected.
         assert!(!salary.feasible);
         assert!(salary.violations[0].contains("ceiling"));
-        assert!(salary.future_tax.is_positive(), "the annual brackets see the extra salary (M25: modelled separately)");
+        assert!(salary.future_tax.is_positive(), "the annual brackets see the extra salary (modelled separately)");
         // Preferred is the feasible personal strategy; status says "among enumerated".
         assert_eq!(report.preferred, Some(0));
         assert!(report.status.contains("not a global optimum"));
@@ -1490,16 +1490,16 @@ mod tests {
         let tight = funding_strategies(&household, &tighter).unwrap();
         let cost = |r: &StrategyReport| r.preferred.map(|i| r.strategies[i].tax_and_fees().minor());
         match (cost(&report), cost(&tight)) {
-            (Some(a), Some(b)) => assert!(b >= a, "V035: {b} < {a}"),
+            (Some(a), Some(b)) => assert!(b >= a, "a tighter reserve must not lower the cost: {b} < {a}"),
             (Some(_), None) => {}
-            (None, Some(_)) => panic!("V035: a tighter reserve made an infeasible problem feasible"),
+            (None, Some(_)) => panic!("a tighter reserve made an infeasible problem feasible"),
             (None, None) => {}
         }
         // A maximum tax cost below the fees makes every strategy infeasible.
         let mut capped = plan.clone();
         capped.max_tax_and_fees = Some(pkr(0));
         let capped = funding_strategies(&household, &capped).unwrap();
-        assert!(capped.strategies.iter().any(|s| s.violations.iter().any(|v| v.contains("§13.3"))));
+        assert!(capped.strategies.iter().any(|s| s.violations.iter().any(|v| v.contains("exceed the maximum"))));
     }
 
     #[test]

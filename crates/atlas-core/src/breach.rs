@@ -116,15 +116,15 @@ pub fn analyse(path: &[PathPoint], floor: Money, horizon: NaiveDate) -> EngineRe
     }
 
     let injection_node = ProvNode::formula(
-        "Minimum immediate injection K*",
+        "Cash needed today to never breach",
         worst,
-        "max over dates of [R − b_t]₊ (M13); valid when flows are fixed, cash is one pool and the injection has no cost or downstream effect",
+        "the largest shortfall below the floor on any date; valid when flows are fixed, cash is one pool and the injection has no cost or downstream effect",
         terms,
     )
     .money_class(MoneyClass::ConditionalFuture)
     .strength(ResultStrength::ConditionalPath)
     .note(format!(
-        "Integrated shortfall {} currency-days over {} day(s) below the floor measures duration and severity, not repeated new capital (E08).",
+        "Shortfall over time: {} currency-days across {} day(s) below the floor — how long and how deep, not repeated new capital.",
         (integrated / currency.minor_per_major() as i128),
         days_below
     ));
@@ -153,13 +153,13 @@ pub fn headroom_node(label: &str, balance: Money, floor: Money) -> EngineResult<
         headroom,
         vec![
             ProvNode::input("Settled cash", balance, "reconciled balance").money_class(MoneyClass::ConfirmedCurrent),
-            ProvNode::input("Hard floors", floor, "hard earmarks and bank minimums (§17)").money_class(MoneyClass::ReservedCurrent).minus(),
+            ProvNode::input("Hard floors", floor, "hard earmarks and bank minimums").money_class(MoneyClass::ReservedCurrent).minus(),
         ],
     )
     .money_class(MoneyClass::FreeCurrent);
     if headroom.is_negative() {
         node = node.note(format!(
-            "Deficit of {}: a displayed spendable amount of 0 is only permitted with this deficit shown next to it (§6.6).",
+            "Deficit of {}: spendable shows as 0 only because this deficit is shown next to it.",
             headroom.abs().format()
         ));
     }

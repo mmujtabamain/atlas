@@ -71,7 +71,7 @@ fn e03_down_payment_table_reproduces_under_the_conservative_case() {
         assert_eq!(result.lowest.money(), pkr(lowest), "{down} on {on}");
         assert_eq!(result.lowest_date, Some(lowest_on));
         assert_eq!(result.breach.worst_deficit, pkr(breach));
-        assert_eq!(result.end.node().result_strength(), ResultStrength::ScenarioTested, "V032: never a robust envelope");
+        assert_eq!(result.end.node().result_strength(), ResultStrength::ScenarioTested, "a named case is never a robust envelope");
     }
     // The decision builder's grid reproduces the same table from a plan.
     let mut household = e03_household(pkr(0), d(2026, 11, 15));

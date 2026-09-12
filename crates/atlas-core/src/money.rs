@@ -113,7 +113,7 @@ impl fmt::Display for Currency {
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum MoneyError {
     #[error(
-        "currency mismatch: {left} vs {right} (§32.1: amounts may not be added across currencies without a declared conversion)"
+        "currency mismatch: {left} vs {right} (amounts may not be added across currencies without a declared conversion)"
     )]
     CurrencyMismatch { left: Currency, right: Currency },
     #[error("arithmetic overflow in minor units")]
@@ -438,7 +438,7 @@ mod tests {
     fn refuses_cross_currency_arithmetic() {
         let err = pkr(1).checked_add(Money::from_major(1, Currency::EUR)).unwrap_err();
         assert!(matches!(err, MoneyError::CurrencyMismatch { .. }));
-        assert!(err.to_string().contains("§32.1"));
+        assert!(err.to_string().contains("declared conversion"));
     }
 
     #[test]

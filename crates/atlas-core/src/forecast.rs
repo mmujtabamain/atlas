@@ -60,7 +60,7 @@ pub fn household_projection(
         )
         .money_class(MoneyClass::ConfirmedCurrent)
         .certainty(Certainty::Confirmed)
-        .note("The only term already received (§2.1)."),
+        .note("The only term already received."),
     ];
     let mut total = liquidity.liquid_cash.money();
     let mut occurrences: Vec<Occurrence> = Vec::new();
@@ -110,7 +110,7 @@ pub fn household_projection(
                             ProvNode::excluded(
                                 format!("{} ({} transfers)", series.name, expanded.len()),
                                 sum,
-                                "transfer between included liquid accounts — net zero for the household (§15)",
+                                "transfer between included liquid accounts — net zero for the household",
                             )
                             .subject(ObjectRef::Series(series.id)),
                         );
@@ -150,17 +150,17 @@ pub fn household_projection(
         let low = expanded[0].amount.low();
         let high = expanded[0].amount.high();
         if low != high {
-            node = node.note(format!("each occurrence allowed in {}–{} (§10.4); the expected value is used here", low.format(), high.format()));
+            node = node.note(format!("each occurrence may fall anywhere in {}–{}; the expected value is used here", low.format(), high.format()));
         }
         if let Some(scenario_id) = series.scenario
             && let Some(sc) = household.scenario(scenario_id)
         {
-            node = node.note(format!("only inside scenario “{}” (§18)", sc.name));
+            node = node.note(format!("only inside scenario “{}”", sc.name));
         }
         if let Direction::Transfer { to } = series.direction
             && let Some(target) = household.account(to)
         {
-            node = node.note(format!("transfer to {} — leaves liquid cash but not net worth (§15.2)", target.name));
+            node = node.note(format!("transfer to {} — leaves liquid cash but not net worth", target.name));
         }
         if sign_is_minus {
             total = total.checked_sub(sum)?;
@@ -170,7 +170,7 @@ pub fn household_projection(
         }
         if expanded.iter().any(|o| o.fulfilled.is_positive()) {
             let received = Money::sum(currency, expanded.iter().map(|o| o.fulfilled))?;
-            node = node.note(format!("{} already received and reconciled; only the remainder is expected (§16, V012)", received.format()));
+            node = node.note(format!("{} already received and reconciled; only the remainder is expected", received.format()));
         }
         for occurrence in &expanded {
             let amount = occurrence.remaining_expected();
@@ -186,7 +186,7 @@ pub fn household_projection(
             ProvNode::excluded(
                 format!("{} cash flows ({count} occurrences)", household.entity_name(EntityRef::Company(company))),
                 sum,
-                "business boundary: company money is not household money (§8.5); see the company view",
+                "company money is not household money; see the company view",
             )
             .subject(ObjectRef::Company(company)),
         );
@@ -208,7 +208,7 @@ pub fn household_projection(
         .money_class(MoneyClass::ConditionalFuture)
         .strength(ResultStrength::ConditionalPath)
         .note(format!(
-            "Expected values of every included occurrence from {} through {}; only the first term is money already received (§2.1, §2.4).",
+            "Expected values of every included occurrence from {} through {}; only the first term is money already received.",
             household.as_of.format("%d %b %Y"),
             through.format("%d %b %Y")
         ));
@@ -220,7 +220,7 @@ pub fn household_projection(
     )
     .money_class(MoneyClass::ConditionalFuture)
     .strength(ResultStrength::ConditionalPath)
-    .note("An earmark reduces unreserved cash, not the bank balance; paying the obligation later reduces cash and releases the earmark (§2.1).");
+    .note("An earmark reduces unreserved cash, not the bank balance; paying the obligation later reduces cash and releases the earmark.");
 
     let assumptions = household
         .assumptions
@@ -280,7 +280,7 @@ mod tests {
         // The car down payment belongs to the Buy Car scenario and is absent from the baseline.
         assert!(!text.contains("Car down payment"));
         assert!(text.contains("150,000 already received"));
-        assert!(!text.contains("Card purchases"), "card spending does not touch liquid cash (V009)");
+        assert!(!text.contains("Card purchases"), "card spending does not touch liquid cash");
         assert!(projection.occurrences.windows(2).all(|w| w[0].due <= w[1].due));
         // The path starts at today's liquid cash and ends at the conditional total.
         assert_eq!(projection.path.first().map(|p| p.balance), Some(pkr(4_400_000)));
@@ -314,7 +314,7 @@ mod tests {
             notes: String::new(),
         });
         let after = household_projection(&household, horizon(), None).unwrap();
-        assert_eq!(after.conditional_cash.money(), before.conditional_cash.money(), "checking → savings is net zero (§15, V001)");
+        assert_eq!(after.conditional_cash.money(), before.conditional_cash.money(), "checking → savings is net zero");
         assert!(after.conditional_cash.node().render_chain().contains("(excluded) Move savings"));
     }
 
@@ -725,7 +725,7 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
         )
         .money_class(MoneyClass::ConfirmedCurrent)
         .certainty(Certainty::Confirmed)
-        .note("The only term already received (§2.4)."),
+        .note("The only term already received."),
     ];
     for series_id in &included_series {
         let Some(series) = household.series_by_id(*series_id) else { continue };
@@ -737,7 +737,7 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
             count += 1;
         }
         if sum.is_zero() {
-            terms.push(ProvNode::excluded(format!("{} ({count} postings)", series.name), Money::zero(currency), "nets to zero inside this boundary (§15)").subject(ObjectRef::Series(*series_id)));
+            terms.push(ProvNode::excluded(format!("{} ({count} postings)", series.name), Money::zero(currency), "nets to zero inside this boundary").subject(ObjectRef::Series(*series_id)));
             continue;
         }
         let class = if series.scenario.is_some() { MoneyClass::ConditionalFuture } else { MoneyClass::ExpectedFuture };
@@ -772,7 +772,7 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
             )
             .money_class(MoneyClass::ExpectedFuture)
             .certainty(Certainty::Contractual)
-            .note("Each tax enters cash once as a posting on its cash date (§12.3, M01); assessment balances payable after the horizon are a tax reserve, not a posting (§12.4).")
+            .note("Each tax enters cash once, as a posting on its cash date; what falls due after the horizon is a tax reserve, not a posting.")
             .minus(),
         );
     }
@@ -790,7 +790,7 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
             ProvNode::input(format!("Fees from user rules ({count} postings, contractual)"), fee_total.abs(), rules_applied.join(" · "))
                 .money_class(MoneyClass::ExpectedFuture)
                 .certainty(Certainty::Contractual)
-                .note("Fee events added by enabled rules in force on each date; conflicts resolved by priority, then scope specificity (§14.4, §14.7).")
+                .note("Fee events added by enabled rules in force on each date; conflicts resolved by priority, then scope specificity.")
                 .minus(),
         );
     }
@@ -798,19 +798,19 @@ pub fn forecast(household: &Household, boundary: Boundary, options: ForecastOpti
         .money_class(MoneyClass::ConditionalFuture)
         .strength(ResultStrength::ScenarioTested)
         .note(format!(
-            "One named path ({}); scenario-tested, not a robust envelope and not a probability (§10.6, V032).",
+            "One named path ({}); scenario-tested, not a range of outcomes and not a probability.",
             options.case.description()
         ));
     let lowest_node = ProvNode::formula(
         format!("Lowest projected cash — {} case", options.case.label().to_lowercase()),
         lowest,
-        "min over every posting instant of the boundary balance (§11.3)",
+        "the lowest the balance gets after any posting",
         vec![end_node.clone()],
     )
     .money_class(MoneyClass::ConditionalFuture)
     .strength(ResultStrength::ScenarioTested)
     .note(match lowest_date {
-        Some(date) => format!("Reached on {} after that day's postings in intraday order (§11.1).", date.format("%d %b %Y")),
+        Some(date) => format!("Reached on {} after that day's postings, in the order they happen.", date.format("%d %b %Y")),
         None => "No posting lowered the balance below its start.".to_string(),
     });
     let start_node = ProvNode::sum("Reconciled starting cash", start_total, Vec::new()).money_class(MoneyClass::ConfirmedCurrent).certainty(Certainty::Confirmed);
@@ -932,7 +932,7 @@ mod forecast_tests {
                 assert_eq!(result.breach.worst_deficit, pkr(1_000_000 - lowest));
             }
             assert!(result.end.node().verify_sums().is_empty());
-            assert_eq!(result.end.node().result_strength(), ResultStrength::ScenarioTested, "V032: a named case is scenario-tested, never robust");
+            assert_eq!(result.end.node().result_strength(), ResultStrength::ScenarioTested, "a named case is scenario-tested, never robust");
         }
     }
 
@@ -952,7 +952,7 @@ mod forecast_tests {
         household.series[0].recurrence = Recurrence::LastDayOfMonth { every_n_months: 1, from: d(2026, 10, 1), until: Until::Date(d(2026, 10, 31)) };
         let result = forecast(&household, Boundary::Account(AccountId::new(1)), ForecastOptions { through: d(2026, 10, 31), scenario: None, case: Case::Expected }).unwrap();
         let account = &result.accounts[0];
-        assert_eq!(account.lowest, pkr(-90_000), "the 09:00 rent debit overdraws before the 17:00 salary arrives (V010)");
+        assert_eq!(account.lowest, pkr(-90_000), "the 09:00 rent debit overdraws before the 17:00 salary arrives");
         assert_eq!(account.negative_from, Some(d(2026, 10, 31)));
         assert_eq!(account.end, pkr(410_000));
     }

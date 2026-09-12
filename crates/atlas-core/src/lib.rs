@@ -68,7 +68,7 @@ pub enum EngineError {
     UnknownReservation(ids::ReservationId),
     #[error("{0}")]
     Money(#[from] MoneyError),
-    #[error("no access policy for {0}: failing closed (F162)")]
+    #[error("no access policy for {0}: hidden and excluded until an owner sets one")]
     MissingPolicy(ids::ObjectRef),
     #[error("unknown assumption {0}")]
     UnknownAssumption(ids::AssumptionId),

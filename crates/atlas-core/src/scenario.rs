@@ -367,7 +367,7 @@ pub fn compare(household: &Household, boundary: Boundary, scenarios: &[ScenarioI
     let one_month = household.as_of.checked_add_months(chrono::Months::new(1)).unwrap_or(through).min(through);
     metrics.push(money_row(&format!("Balance on {}", one_month.format("%d %b %Y")), balance_on(&baseline.path, baseline.start.money(), one_month), balance_on(&overlaid.path, overlaid.start.money(), one_month), "balance after that day's postings")?);
     metrics.push(money_row(&format!("Balance on {} (end of window)", through.format("%d %b %Y")), baseline.end.money(), overlaid.end.money(), "conditional projected cash, this case")?);
-    metrics.push(money_row("Lowest balance", baseline.lowest.money(), overlaid.lowest.money(), "after intraday ordering (V010)")?);
+    metrics.push(money_row("Lowest balance", baseline.lowest.money(), overlaid.lowest.money(), "after each day's postings in order")?);
     metrics.push(MetricRow {
         name: "Date of lowest balance".into(),
         baseline: baseline.lowest_date.map(|d| d.format("%d %b %Y").to_string()).unwrap_or_else(|| "–".into()),
@@ -406,9 +406,9 @@ pub fn compare(household: &Household, boundary: Boundary, scenarios: &[ScenarioI
     };
     let base_tax = taxes(&baseline);
     let over_tax = taxes(&overlaid);
-    metrics.push(money_row("Total taxes paid in the window", base_tax, over_tax, "tax postings on the boundary's accounts (§12.3)")?);
-    metrics.push(MetricRow { name: "Incremental taxes".into(), baseline: "–".into(), scenario: over_tax.checked_sub(base_tax)?.format_signed(), delta: Some(over_tax.checked_sub(base_tax)?), note: "scenario minus baseline (E05 logic)".into() });
-    metrics.push(money_row("Fees from rules", fees(&baseline), fees(&overlaid), "fee events added by rules (§14.4)")?);
+    metrics.push(money_row("Total taxes paid in the window", base_tax, over_tax, "tax postings on the boundary's accounts")?);
+    metrics.push(MetricRow { name: "Incremental taxes".into(), baseline: "–".into(), scenario: over_tax.checked_sub(base_tax)?.format_signed(), delta: Some(over_tax.checked_sub(base_tax)?), note: "scenario minus baseline".into() });
+    metrics.push(money_row("Fees from rules", fees(&baseline), fees(&overlaid), "fee events added by rules")?);
     let debt = |f: &BoundaryForecast| -> Money {
         let mut total = Money::zero(currency);
         for account in &f.accounts {
@@ -423,12 +423,12 @@ pub fn compare(household: &Household, boundary: Boundary, scenarios: &[ScenarioI
         Some(days) => format!("{days} days, to {}", f.breach.first_breach.map(|d| d.format("%d %b %Y").to_string()).unwrap_or_default()),
         None => format!("beyond {}", f.through.format("%d %b %Y")),
     };
-    metrics.push(MetricRow { name: "Cash runway (first passage below the floor, M13)".into(), baseline: runway(&baseline), scenario: runway(&overlaid), delta: None, note: "days until the floor is first crossed; never “infinite” (E08)".into() });
+    metrics.push(MetricRow { name: "Cash runway (first day below the floor)".into(), baseline: runway(&baseline), scenario: runway(&overlaid), delta: None, note: "days until the floor is first crossed; never “infinite”".into() });
     for company in &household.companies {
         let base = forecast(household, Boundary::Company(company.id), ForecastOptions { through, scenario: None, case });
         let over = forecast(&overlaid_household, Boundary::Company(company.id), ForecastOptions { through, scenario: Some(primary), case });
         if let (Ok(base), Ok(over)) = (base, over) {
-            metrics.push(money_row(&format!("{} working capital at the end", company.name), base.end.money(), over.end.money(), "company cash stays company cash (§8.5)")?);
+            metrics.push(money_row(&format!("{} working capital at the end", company.name), base.end.money(), over.end.money(), "company cash stays company cash")?);
             let payroll: Money = company.employees.iter().filter(|e| e.end.is_none_or(|end| end >= through)).fold(Money::zero(currency), |acc, e| acc.checked_add(e.monthly_gross).unwrap_or(acc));
             let coverage = |cash: Money| if payroll.is_zero() { "no payroll".to_string() } else { format!("{:.1} months of payroll ({}/month)", cash.minor() as f64 / payroll.minor() as f64, payroll.format()) };
             metrics.push(MetricRow { name: format!("{} payroll coverage", company.name), baseline: coverage(base.lowest.money()), scenario: coverage(over.lowest.money()), delta: None, note: "lowest company cash divided by monthly gross payroll".into() });
@@ -496,7 +496,7 @@ pub fn compare(household: &Household, boundary: Boundary, scenarios: &[ScenarioI
     let end_delta = overlaid.end.money().checked_sub(baseline.end.money())?;
     let attribution_verified = attribution_total == end_delta;
     if !attribution_verified {
-        log::error!("F139 attribution does not sum to the end difference: {} vs {}", attribution_total.format(), end_delta.format());
+        log::error!("scenario attribution does not sum to the end difference: {} vs {}", attribution_total.format(), end_delta.format());
     }
 
     // Merged path for charts.
@@ -538,10 +538,10 @@ pub fn project_attribution(household: &Household, viewer: crate::authz::Viewer, 
         return (visible, None);
     }
     if restricted_objects.len() == 1 && !visible.is_empty() {
-        log::info!("F139 attribution breakdown suppressed for {}: one restricted object next to disclosed buckets (§7.6)", viewer.person);
+        log::info!("scenario attribution breakdown suppressed for {}: one restricted object next to disclosed buckets", viewer.person);
         return (
-            vec![AttributionLine { kind: "suppressed", label: "Contributions (breakdown suppressed: one restricted contribution would be the difference, §7.6)".into(), baseline: Money::zero(currency), scenario: Money::zero(currency), delta: end_delta, subject: None }],
-            Some("Breakdown suppressed: a single restricted contribution next to the disclosed ones would be revealed as the difference (§7.6, V073). The total difference is still authorized.".into()),
+            vec![AttributionLine { kind: "suppressed", label: "Contributions (breakdown suppressed: one restricted contribution would be the difference)".into(), baseline: Money::zero(currency), scenario: Money::zero(currency), delta: end_delta, subject: None }],
+            Some("Breakdown suppressed: a single restricted contribution next to the disclosed ones would be revealed as the difference. The total difference is still authorized.".into()),
         );
     }
     visible.push(restricted);
@@ -662,7 +662,7 @@ mod tests {
         assert!(err.to_string().contains("incompatible"));
         // Compatible: the raise with the car.
         let id = household.compose_scenarios("Raise + car", &[raise, ids::BUY_CAR], ids::PERSON_A).unwrap();
-        assert!(household.policy_for(ObjectRef::Scenario(id)).is_some(), "F162: a composition gets its own policy");
+        assert!(household.policy_for(ObjectRef::Scenario(id)).is_some(), "a composition gets its own policy");
         assert_eq!(household.scenario(id).unwrap().composed_of, vec![raise, ids::BUY_CAR]);
         assert!(household.apply_scenarios(&[id]).is_ok());
         // Ending a one-time event is refused by name.
@@ -674,7 +674,7 @@ mod tests {
     fn comparison_metrics_and_attribution_sum_exactly() {
         let household = fixtures::plan_household();
         let comparison = compare(&household, Boundary::Household, &[ids::LEAVE_JOB], fixtures::default_horizon(), Case::Expected).unwrap();
-        assert!(comparison.attribution_verified, "F139: buckets sum to the end difference");
+        assert!(comparison.attribution_verified, "buckets sum to the end difference");
         assert_eq!(comparison.attribution_total, comparison.end_delta);
         // Two salaries (Oct, Nov) of 500,000 gross are missing; the withholding they carried goes too.
         let salary = comparison.attribution.iter().find(|a| a.label.starts_with("Person A salary")).unwrap();

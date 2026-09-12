@@ -212,13 +212,13 @@ fn demo_rules_for(_owner: PersonId) -> Vec<Rule> {
         history: vec![RuleVersion { version: 1, changed_on: d(2026, 9, 1), summary: "created".into() }],
     };
     vec![
-        rule(RULE_FOREIGN_FEE, "DEMO foreign card fee", RuleScope::Category("Foreign card".into()), Trigger::Expense, Vec::new(), RuleAction::AddFee { basis_points: 150, fixed: None, label: "foreign transaction fee".into() }, 10, d(2026, 7, 1), None, None, "§14.4: the bank's 1.5% fee is a separate fee event next to the 5% tax event."),
-        rule(RULE_FOREIGN_FEE_WAIVER, "Visa promo: foreign fee waived Oct–Nov", RuleScope::Account(PERSON_A_VISA), Trigger::Expense, vec![Condition::CategoryIs("Foreign card".into())], RuleAction::AddFee { basis_points: 0, fixed: None, label: "promo waiver".into() }, 10, d(2026, 10, 1), Some(d(2026, 11, 30)), None, "Same priority as the category fee; wins on scope specificity while effective (§14.7)."),
+        rule(RULE_FOREIGN_FEE, "DEMO foreign card fee", RuleScope::Category("Foreign card".into()), Trigger::Expense, Vec::new(), RuleAction::AddFee { basis_points: 150, fixed: None, label: "foreign transaction fee".into() }, 10, d(2026, 7, 1), None, None, "The bank's 1.5% fee is a separate fee event next to the 5% tax event."),
+        rule(RULE_FOREIGN_FEE_WAIVER, "Visa promo: foreign fee waived Oct–Nov", RuleScope::Account(PERSON_A_VISA), Trigger::Expense, vec![Condition::CategoryIs("Foreign card".into())], RuleAction::AddFee { basis_points: 0, fixed: None, label: "promo waiver".into() }, 10, d(2026, 10, 1), Some(d(2026, 11, 30)), None, "Same priority as the category fee; wins on scope specificity while effective."),
         rule(RULE_TRANSFER_FEE, "Bank B transfer fee", RuleScope::Account(PERSON_A_CURRENT), Trigger::Transfer, vec![Condition::AmountAbove(pkr(50_000))], RuleAction::AddFee { basis_points: 0, fixed: Some(pkr(250)), label: "transfer fee".into() }, 5, d(2026, 1, 1), None, None, "A fixed 250 fee on transfers above 50,000 leaving the account."),
-        rule(RULE_FUND_FORBID_ALPHA, "Car purchase funding: not Company Alpha before Dec 1", RuleScope::Scenario(BUY_CAR), Trigger::Funding, Vec::new(), RuleAction::ForbidAccount { account: ALPHA_OPERATING, unless_after: Some(d(2026, 12, 1)) }, 40, d(2026, 9, 1), None, Some(BUY_CAR), "§14.5 step 3."),
-        rule(RULE_FUND_SHARED, "Car purchase funding: shared savings first", RuleScope::Scenario(BUY_CAR), Trigger::Funding, Vec::new(), RuleAction::PreferAccount { account: SHARED_SAVINGS, preserve: Some(pkr(1_000_000)) }, 30, d(2026, 9, 1), None, Some(BUY_CAR), "§14.5 step 1: use shared savings while preserving 1,000,000."),
-        rule(RULE_FUND_A_CURRENT, "Car purchase funding: then Person A current", RuleScope::Scenario(BUY_CAR), Trigger::Funding, Vec::new(), RuleAction::PreferAccount { account: PERSON_A_CURRENT, preserve: Some(pkr(300_000)) }, 20, d(2026, 9, 1), None, Some(BUY_CAR), "§14.5 step 2: then Person A's account while preserving 300,000."),
-        rule(RULE_BANK_SELECTION, "Ordinary expenses: Person B checking first", RuleScope::Category("Living".into()), Trigger::Expense, Vec::new(), RuleAction::BankSelection { prefer: PERSON_B_CHECKING, fallback: SHARED_SAVINGS, when_below: pkr(100_000) }, 10, d(2026, 1, 1), None, None, "§14.6: use shared savings only when B checking would fall below 100,000."),
+        rule(RULE_FUND_FORBID_ALPHA, "Car purchase funding: not Company Alpha before Dec 1", RuleScope::Scenario(BUY_CAR), Trigger::Funding, Vec::new(), RuleAction::ForbidAccount { account: ALPHA_OPERATING, unless_after: Some(d(2026, 12, 1)) }, 40, d(2026, 9, 1), None, Some(BUY_CAR), "Step 3 of the car funding order: Company Alpha only after 1 Dec."),
+        rule(RULE_FUND_SHARED, "Car purchase funding: shared savings first", RuleScope::Scenario(BUY_CAR), Trigger::Funding, Vec::new(), RuleAction::PreferAccount { account: SHARED_SAVINGS, preserve: Some(pkr(1_000_000)) }, 30, d(2026, 9, 1), None, Some(BUY_CAR), "Step 1 of the car funding order: use shared savings while preserving 1,000,000."),
+        rule(RULE_FUND_A_CURRENT, "Car purchase funding: then Person A current", RuleScope::Scenario(BUY_CAR), Trigger::Funding, Vec::new(), RuleAction::PreferAccount { account: PERSON_A_CURRENT, preserve: Some(pkr(300_000)) }, 20, d(2026, 9, 1), None, Some(BUY_CAR), "Step 2 of the car funding order: then Person A's account while preserving 300,000."),
+        rule(RULE_BANK_SELECTION, "Ordinary expenses: Person B checking first", RuleScope::Category("Living".into()), Trigger::Expense, Vec::new(), RuleAction::BankSelection { prefer: PERSON_B_CHECKING, fallback: SHARED_SAVINGS, when_below: pkr(100_000) }, 10, d(2026, 1, 1), None, None, "Use shared savings only when Person B's checking would fall below 100,000."),
     ]
 }
 
@@ -279,7 +279,7 @@ pub fn plan_household() -> Household {
     );
     person_a_current.minimum_balance = Some(pkr(300_000));
     person_a_current.fees = vec![Fee { description: "Cash withdrawal above 50,000".into(), fixed: None, basis_points: 25 }];
-    person_a_current.tax_treatment = "DEMO cash withdrawal withholding applies (§14.3)".into();
+    person_a_current.tax_treatment = "DEMO cash withdrawal withholding applies".into();
 
     let mut visa = account(
         PERSON_A_VISA,
@@ -291,7 +291,7 @@ pub fn plan_household() -> Household {
         Liquidity::Immediate,
         SourceOfTruth::Synchronized,
     );
-    visa.tax_treatment = "DEMO foreign card tax on non-PKR purchases (§14.4)".into();
+    visa.tax_treatment = "DEMO foreign card tax on non-PKR purchases".into();
     visa.withdrawals_permitted = false;
 
     let mut fixed_deposit = account(
@@ -378,12 +378,12 @@ pub fn plan_household() -> Household {
     ];
 
     let reservations = vec![
-        reservation(EMERGENCY_RESERVE, "Emergency reserve", SHARED_SAVINGS, pkr(800_000), Coverage::Disjoint, Hardness::Hard, "Household emergency fund (§17)"),
-        reservation(TAX_RESERVE, "Tax reserve", SHARED_SAVINGS, pkr(300_000), Coverage::Disjoint, Hardness::Hard, "Tax incurred, payable later (§12.4)"),
+        reservation(EMERGENCY_RESERVE, "Emergency reserve", SHARED_SAVINGS, pkr(800_000), Coverage::Disjoint, Hardness::Hard, "Household emergency fund"),
+        reservation(TAX_RESERVE, "Tax reserve", SHARED_SAVINGS, pkr(300_000), Coverage::Disjoint, Hardness::Hard, "Tax incurred, payable later"),
         reservation(SCHOOL_FEE_RESERVE, "School fee reserve", SHARED_SAVINGS, pkr(250_000), Coverage::Disjoint, Hardness::SoftUserRelaxable, "December school fees"),
-        reservation(A_LIQUIDITY_BUFFER, "Liquidity buffer", PERSON_A_CURRENT, pkr(400_000), Coverage::CoversAccountMinimum, Hardness::SoftUserRelaxable, "Includes the 300,000 bank minimum (§17)"),
-        reservation(ALPHA_COMMITTED_PAYROLL, "Committed payroll", ALPHA_OPERATING, pkr(700_000), Coverage::Disjoint, Hardness::Hard, "Next payroll run for employees #42 and #43 (E07)"),
-        reservation(ALPHA_TAX_REMITTANCE, "Tax remittance", ALPHA_OPERATING, pkr(200_000), Coverage::Disjoint, Hardness::Hard, "Withholding remittance due (E07)"),
+        reservation(A_LIQUIDITY_BUFFER, "Liquidity buffer", PERSON_A_CURRENT, pkr(400_000), Coverage::CoversAccountMinimum, Hardness::SoftUserRelaxable, "Includes the 300,000 bank minimum"),
+        reservation(ALPHA_COMMITTED_PAYROLL, "Committed payroll", ALPHA_OPERATING, pkr(700_000), Coverage::Disjoint, Hardness::Hard, "Next payroll run for employees #42 and #43"),
+        reservation(ALPHA_TAX_REMITTANCE, "Tax remittance", ALPHA_OPERATING, pkr(200_000), Coverage::Disjoint, Hardness::Hard, "Withholding remittance due"),
     ];
 
     let mut salary_a = series(
@@ -401,7 +401,7 @@ pub fn plan_household() -> Household {
     salary_a.settlement_lag_days = 1;
     salary_a.intraday_order = 20;
     salary_a.tax_treatment = "Salary income tax (DEMO pack)".into();
-    salary_a.notes = "One linked movement: −500,000 on Company Alpha payroll, +500,000 for Person A (§8.4); the employee payroll run is a separate series.".into();
+    salary_a.notes = "One linked movement: −500,000 on Company Alpha payroll, +500,000 for Person A; the employee payroll run is a separate series.".into();
 
     let mut car_down_payment = series(
         CAR_DOWN_PAYMENT,
@@ -428,7 +428,7 @@ pub fn plan_household() -> Household {
         "Receivable",
     );
     receivable.settlement_lag_days = 2;
-    receivable.notes = "150,000 already received on 9 Sep (partial); the remainder is expected by 15 Nov (§16).".into();
+    receivable.notes = "150,000 already received on 9 Sep (partial); the remainder is expected by 15 Nov.".into();
 
     let mut card_purchases = series(
         CARD_PURCHASES,
@@ -441,7 +441,7 @@ pub fn plan_household() -> Household {
         Certainty::UserEstimated,
         "Card spending",
     );
-    card_purchases.notes = "Expense recognition on the card; the statement settlement is a separate transfer, not a second expense (§15.2, V009).".into();
+    card_purchases.notes = "Expense recognition on the card; the statement settlement is a separate transfer, not a second expense.".into();
 
     let series = vec![
         salary_a,
@@ -685,7 +685,7 @@ pub fn plan_household() -> Household {
         Scenario {
             id: BUY_CAR,
             name: "Buy car".into(),
-            description: "8,000,000 car, purchase window Oct–Mar, down payment 2,000,000–5,000,000, keep the 1,000,000 household reserve (§19).".into(),
+            description: "8,000,000 car, purchase window Oct–Mar, down payment 2,000,000–5,000,000, keep the 1,000,000 household reserve.".into(),
             private_to: None,
             changes: Vec::new(),
             composed_of: Vec::new(),
@@ -693,7 +693,7 @@ pub fn plan_household() -> Household {
         Scenario {
             id: LEAVE_JOB,
             name: "Leave job".into(),
-            description: "Person A resigns from Company Alpha; the last salary is paid on 30 Sep 2026 and a replacement is hired (§18.5, private).".into(),
+            description: "Person A resigns from Company Alpha; the last salary is paid on 30 Sep 2026 and a replacement is hired. Private to Person A.".into(),
             private_to: Some(a),
             changes: vec![
                 crate::scenario::ScenarioChange::EndSeries { series: SALARY_A, last_on: d(2026, 9, 30), reason: "resignation effective end of September 2026".into() },
@@ -707,7 +707,7 @@ pub fn plan_household() -> Household {
         Scenario {
             id: LEAVE_JOB_AND_CAR,
             name: "Leave job + buy car".into(),
-            description: "Composition (§18.3): both overlays applied together; compatible because they touch different series.".into(),
+            description: "Both scenarios applied together; compatible because they touch different series.".into(),
             private_to: Some(a),
             changes: Vec::new(),
             composed_of: vec![LEAVE_JOB, BUY_CAR],
@@ -728,7 +728,7 @@ pub fn plan_household() -> Household {
                 timing: TaxTiming::WithheldAtSource { creditable: true },
                 effective_from: d(year, 1, 1),
                 effective_to: Some(d(year, 12, 31)),
-                source: "§14.3 rule-engine example — fictitious, not any country's law".into(),
+                source: "Fictitious example — not any country's law".into(),
                 explanation: "0.6% on the full withdrawal once a single withdrawal exceeds 50,000; creditable at assessment.".into(),
             },
             TaxRule {
@@ -741,8 +741,8 @@ pub fn plan_household() -> Household {
                 timing: TaxTiming::Immediate,
                 effective_from: d(year, 1, 1),
                 effective_to: Some(d(year, 12, 31)),
-                source: "§14.4 rule-engine example — fictitious".into(),
-                explanation: "5% tax event on the card; the bank's 1.5% fee is a separate fee event (M7).".into(),
+                source: "Fictitious example — not any country's law".into(),
+                explanation: "5% tax event on the card; the bank's 1.5% fee is a separate fee event.".into(),
             },
             TaxRule {
                 id: TaxRuleId::new(if year == 2026 { 3 } else { 13 }),
@@ -754,8 +754,8 @@ pub fn plan_household() -> Household {
                 timing: TaxTiming::WithheldAtSource { creditable: true },
                 effective_from: d(year, 1, 1),
                 effective_to: Some(d(year, 12, 31)),
-                source: "fictitious".into(),
-                explanation: format!("{}% of gross salary withheld by the employer and credited against the annual assessment (M24).", withholding_bp / 100),
+                source: "Fictitious example — not any country's law".into(),
+                explanation: format!("{}% of gross salary withheld by the employer and credited against the annual assessment.", withholding_bp / 100),
             },
             TaxRule {
                 id: TaxRuleId::new(if year == 2026 { 4 } else { 14 }),
@@ -773,8 +773,8 @@ pub fn plan_household() -> Household {
                 timing: TaxTiming::AnnualAssessment { due_month: 9, due_day: 30 },
                 effective_from: d(year, 1, 1),
                 effective_to: Some(d(year, 12, 31)),
-                source: "fictitious brackets in the shape of M23".into(),
-                explanation: "Marginal brackets on the year's taxable income inside the window; creditable withholding is deducted at assessment; the balance is payable 30 Sep of the following year (§12.3).".into(),
+                source: "Fictitious brackets".into(),
+                explanation: "Marginal brackets on the year's taxable income inside the window; creditable withholding is deducted at assessment; the balance is payable 30 Sep of the following year.".into(),
             },
         ]
     };
@@ -782,14 +782,14 @@ pub fn plan_household() -> Household {
         TaxRulePack {
             name: "DEMO-JURISDICTION-2026-v2".into(),
             version: "v2".into(),
-            jurisdiction: "DEMO — fictitious rule-engine examples, not any country's law (§14.3)".into(),
+            jurisdiction: "DEMO — fictitious examples, not any country's law".into(),
             verified: false,
             rules: demo_rules(2026, 700),
         },
         TaxRulePack {
             name: "DEMO-JURISDICTION-2027-v1".into(),
             version: "v1".into(),
-            jurisdiction: "DEMO — fictitious, effective 2027 (§25: a 2027 forecast must not silently use 2026 rules)".into(),
+            jurisdiction: "DEMO — fictitious, effective 2027".into(),
             verified: false,
             rules: demo_rules(2027, 800),
         },
@@ -838,7 +838,7 @@ pub fn plan_household() -> Household {
     ];
 
     Household {
-        name: "Plan household (fictitious)".into(),
+        name: "Sample household".into(),
         base_currency: Currency::PKR,
         as_of: as_of(),
         people,
@@ -865,7 +865,7 @@ pub fn plan_household() -> Household {
             actor: a,
             object: None,
             kind: crate::authz::AuditKind::PolicyChanged { from_version: 0, to_version: 1 },
-            summary: "fixture policies 1–16 set with their presets (§7.2); every object has a policy, none inherited from a missing one".into(),
+            summary: "initial policies 1–16 set with their presets; every object has a policy".into(),
             policy_version: Some(1),
         }],
         history: vec![
@@ -945,7 +945,7 @@ pub fn e03_household(down_payment: Money, purchase_on: NaiveDate) -> Household {
     let range = |low, expected, high| AmountSpec::Range { low: pkr(low), expected: pkr(expected), high: pkr(high) };
     let clamp = InvalidDayPolicy::ClampToMonthEnd;
     Household {
-        name: "E03".into(),
+        name: "Down-payment example".into(),
         base_currency: crate::Currency::PKR,
         as_of: d(2026, 9, 10),
         people: vec![Person { id: a, name: "Person".into(), role: HouseholdRole::Owner }],
@@ -977,7 +977,7 @@ pub fn e03_household(down_payment: Money, purchase_on: NaiveDate) -> Household {
             amount: pkr(1_000_000),
             coverage: Coverage::Disjoint,
             hardness: Hardness::Hard,
-            purpose: "E03 floor".into(),
+            purpose: "Protected floor".into(),
             released_on: None,
         }],
         series: vec![

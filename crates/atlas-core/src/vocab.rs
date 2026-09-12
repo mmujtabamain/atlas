@@ -104,8 +104,8 @@ impl Certainty {
             Certainty::Contractual => "Agreed in a contract; still conditional until received.",
             Certainty::Expected => "Anticipated by the user without a contract.",
             Certainty::UserEstimated => "A figure the user typed in as a guess.",
-            Certainty::HistoricallyDerived => "Computed from past reconciled data by a disclosed formula (§10.7).",
-            Certainty::ScenarioOnly => "Exists only inside a named scenario overlay (§18).",
+            Certainty::HistoricallyDerived => "Computed from past reconciled payments by a shown formula.",
+            Certainty::ScenarioOnly => "Exists only inside a named scenario.",
             Certainty::Tentative => "Under consideration; may never happen.",
         }
     }
@@ -149,7 +149,7 @@ impl ResultStrength {
             ResultStrength::ExactAccounting => "Exact accounting calculation",
             ResultStrength::ConditionalPath => "Conditional path calculation",
             ResultStrength::ScenarioTested => "Scenario-tested",
-            ResultStrength::RobustFeasible => "Robust-feasible under U",
+            ResultStrength::RobustFeasible => "Robust-feasible under the declared uncertainty",
             ResultStrength::ProbabilityModel => "Probability-model result",
             ResultStrength::BestOnGrid => "Best on specified grid",
             ResultStrength::SolverCertified => "Solver-certified to stated tolerances",

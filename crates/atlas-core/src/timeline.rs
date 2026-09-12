@@ -726,6 +726,6 @@ mod tests {
         let mut all = expand(&rent, d(2026, 9, 11), d(2026, 9, 30));
         all.extend(expand(&salary, d(2026, 9, 11), d(2026, 9, 30)));
         all.sort_by_key(|o| o.sort_key());
-        assert_eq!(all[0].series, SeriesId::new(9), "the 09:00 rent debit sorts before the 17:00 salary (§11.1)");
+        assert_eq!(all[0].series, SeriesId::new(9), "the 09:00 rent debit sorts before the 17:00 salary");
     }
 }

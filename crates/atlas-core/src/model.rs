@@ -867,7 +867,7 @@ impl Household {
             None => self.tax_packs.push(TaxRulePack {
                 name: name.clone(),
                 version: "v1".into(),
-                jurisdiction: "User-authored — unverified until an official source is attached (§12.7)".into(),
+                jurisdiction: "Your own rules — unverified until an official source is attached".into(),
                 verified: false,
                 rules: vec![rule],
             }),
@@ -937,7 +937,7 @@ mod reconciliation_tests {
         let occurrences = household.expand_series(receivable, household.as_of, d(2027, 1, 31));
         assert_eq!(occurrences[0].status, OccurrenceStatus::PartiallyFulfilled);
         assert_eq!(occurrences[0].remaining_expected(), pkr(200_000));
-        assert_eq!(occurrences[0].settlement, d(2026, 11, 12), "two-day settlement lag (M05)");
+        assert_eq!(occurrences[0].settlement, d(2026, 11, 12), "two-day settlement lag");
     }
 
     #[test]

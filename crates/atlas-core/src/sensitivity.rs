@@ -46,7 +46,7 @@ pub struct SensitivityReport {
     pub caveat: &'static str,
 }
 
-pub const JOINT_CAVEAT: &str = "These separate limits do NOT guarantee safety when several assumptions change at once. Run joint stress analysis for combinations and shared causes (§10.8, M14).";
+pub const JOINT_CAVEAT: &str = "These separate limits do NOT guarantee safety when several assumptions change at once; combinations and shared causes need a joint stress test.";
 
 fn lowest_with(household: &Household, series: SeriesId, amount: Money, boundary: Boundary, options: ForecastOptions) -> EngineResult<Money> {
     let mut trial = household.clone();
@@ -208,7 +208,7 @@ mod tests {
         // Shared savings alone: the car down payment makes the account's path tight.
         let report = one_at_a_time(&household, Boundary::Account(ids::SHARED_SAVINGS), options()).unwrap();
         assert_eq!(report.caveat, JOINT_CAVEAT);
-        assert!(report.caveat.contains("do NOT guarantee safety"), "V043");
+        assert!(report.caveat.contains("do NOT guarantee safety"), "the joint caveat is always present");
         assert_eq!(report.coverage, ResultStrength::ConditionalPath);
         assert!(!report.breakpoints.is_empty());
         for point in &report.breakpoints {

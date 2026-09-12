@@ -350,7 +350,7 @@ mod tests {
         let options = ForecastOptions { through: fixtures::default_horizon(), scenario: None, case: Case::Expected };
         let before = forecast(&household, Boundary::Household, options).unwrap();
         let after = forecast(&loaded, Boundary::Household, options).unwrap();
-        assert_eq!(before.record.input_hash, after.record.input_hash, "§42: the same inputs reproduce the same result");
+        assert_eq!(before.record.input_hash, after.record.input_hash, "the same inputs reproduce the same result");
         assert_eq!(before.end.money(), after.end.money());
         let meta = file.peek().unwrap();
         assert_eq!(meta.name, household.name);

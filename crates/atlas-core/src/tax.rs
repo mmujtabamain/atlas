@@ -55,7 +55,7 @@ pub fn bracket_tax(brackets: &[Bracket], base: Money, label: &str) -> EngineResu
         ProvNode::sum(label.to_string(), total, terms)
             .money_class(MoneyClass::ConditionalFuture)
             .strength(ResultStrength::ExactAccounting)
-            .note(format!("M23 marginal brackets on a taxable base of {}; marginal, average and incremental rates differ (§12.7).", base.format())),
+            .note(format!("Marginal brackets on a taxable base of {}; marginal, average and incremental rates differ.", base.format())),
     ))
 }
 
@@ -269,19 +269,19 @@ pub fn assess(household: &Household, through: NaiveDate, scenario: Option<Scenar
             balance,
             vec![
                 ProvNode::sum(format!("Assessed tax on {} of income inside the window", base.format()), assessed.money(), assessed.node().children().to_vec()).money_class(MoneyClass::ConditionalFuture),
-                ProvNode::input("Creditable withholding in the year", creditable, "withheld-at-source events of the same entity and year (M24)").money_class(MoneyClass::ConditionalFuture).minus(),
+                ProvNode::input("Creditable withholding in the year", creditable, "withheld-at-source events of the same entity and year").money_class(MoneyClass::ConditionalFuture).minus(),
             ],
         )
         .money_class(MoneyClass::ConditionalFuture)
         .strength(ResultStrength::ConditionalPath)
         .note(format!(
-            "Income outside the forecast window is not assessed here; the full-year assessment needs reconciled history (§12.7 estimate). Payable {} (§12.3). Pack {} ({}).",
+            "Income outside the forecast window is not assessed here; a full-year assessment needs reconciled history, so this is an estimate. Payable {}. Pack {} ({}).",
             cash_date.format("%d %b %Y"),
             pack.name,
             if pack.verified { "verified" } else { "unverified — fictitious" }
         ));
         if balance.is_negative() {
-            chain = chain.note("A negative balance is a receivable until refunded, not current cash (M24, V018).");
+            chain = chain.note("A negative balance is a refund to come, not current cash.");
         }
         chain = ProvNode::sum(chain.label().to_string(), balance, chain.children().to_vec())
             .money_class(MoneyClass::ConditionalFuture)
@@ -325,7 +325,7 @@ pub fn assess(household: &Household, through: NaiveDate, scenario: Option<Scenar
                 ProvNode::sum(format!("{} — tax cash inside the window", household.entity_name(entity)), total, terms)
                     .money_class(MoneyClass::ConditionalFuture)
                     .strength(ResultStrength::ConditionalPath)
-                    .note("Attributed to the entity that owes it; a household summary may add these up but never loses the attribution (§12.6)."),
+                    .note("Attributed to the entity that owes it; a household summary may add these up but never loses the attribution."),
             ),
         ));
     }
@@ -341,7 +341,7 @@ pub fn assess(household: &Household, through: NaiveDate, scenario: Option<Scenar
         )
         .money_class(MoneyClass::ReservedCurrent)
         .strength(ResultStrength::ConditionalPath)
-        .note("The amount a tax reserve should hold (§12.4); it reduces unreserved cash, not the bank balance."),
+        .note("The amount a tax reserve should hold; it reduces unreserved cash, not the bank balance."),
     );
     let creditable_withholding = Money::sum(currency, events.iter().filter(|e| matches!(e.kind, TaxEventKind::Withheld { creditable: true })).map(|e| e.amount))?;
 
@@ -396,7 +396,7 @@ pub fn incremental_tax(with_action: Money, without_action: Money, label: &str) -
         )
         .money_class(MoneyClass::ConditionalFuture)
         .strength(ResultStrength::ConditionalPath)
-        .note("Incremental tax cost (§12.5): the two assessments differ only by the proposed action."),
+        .note("Incremental tax cost: the two assessments differ only by the proposed action."),
     ))
 }
 
@@ -505,7 +505,7 @@ mod tests {
             .iter()
             .find(|e| e.entity == EntityRef::Person(ids::PERSON_B) && e.rule_name == "DEMO salary withholding" && e.cash_date.year() == 2027)
             .expect("January salary withholding");
-        assert_eq!(jan_b.amount, pkr(24_000), "§25: the 2027 pack's 8% applies to the January payment");
+        assert_eq!(jan_b.amount, pkr(24_000), "the 2027 pack's 8% applies to the January payment");
         assert_eq!(jan_b.pack, "DEMO-JURISDICTION-2027-v1");
         // ATM withdrawal 80,000 > 50,000 threshold → 0.6% on the full amount = 480.
         let atm = assessment.events.iter().find(|e| e.rule_name == "DEMO cash withdrawal withholding").unwrap();
@@ -524,7 +524,7 @@ mod tests {
             .find(|e| e.entity == EntityRef::Person(ids::PERSON_A) && e.kind == TaxEventKind::AssessmentBalance { tax_year: 2026 })
             .expect("assessment");
         assert_eq!(a_2026.base_amount, pkr(2_000_000));
-        assert_eq!(a_2026.amount, pkr(140_000 - 105_000 - 3 * 480), "V017: creditable withholding reduces the balance due");
+        assert_eq!(a_2026.amount, pkr(140_000 - 105_000 - 3 * 480), "creditable withholding reduces the balance due");
         assert_eq!(a_2026.cash_date, NaiveDate::from_ymd_opt(2027, 9, 30).unwrap());
         assert!(a_2026.chain.verify_sums().is_empty());
         // The balance is payable after the horizon: it belongs in the tax reserve, not in the window's cash.

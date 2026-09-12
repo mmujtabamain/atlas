@@ -59,7 +59,7 @@ pub fn account_liquidity(household: &Household, id: AccountId) -> EngineResult<A
             Some(outer) => ProvNode::excluded(
                 format!("{} earmark", reservation.name),
                 reservation.amount,
-                format!("nested inside the {outer} earmark; adds nothing on top (§17)"),
+                format!("nested inside the {outer} earmark; adds nothing on top"),
             ),
             None => {
                 reserved_total = reserved_total.checked_add(reservation.amount)?;
@@ -82,11 +82,11 @@ pub fn account_liquidity(household: &Household, id: AccountId) -> EngineResult<A
             Some(reservation) => ProvNode::excluded(
                 "Bank minimum balance",
                 minimum,
-                format!("already inside the {} earmark (§17)", reservation.name),
+                format!("already inside the {} earmark", reservation.name),
             ),
             None => {
                 reserved_total = reserved_total.checked_add(minimum)?;
-                ProvNode::input("Bank minimum balance", minimum, "account constraint (§17)").note("Hard constraint")
+                ProvNode::input("Bank minimum balance", minimum, "account constraint").note("Hard constraint")
             }
         }
         .money_class(MoneyClass::ReservedCurrent)
@@ -106,16 +106,16 @@ pub fn account_liquidity(household: &Household, id: AccountId) -> EngineResult<A
     .money_class(MoneyClass::FreeCurrent)
     .strength(ResultStrength::ExactAccounting)
     .subject(ObjectRef::Account(id))
-    .note("Reservations constrain spendability; they are not cash postings (§11.1).");
+    .note("Reservations limit what can be spent; they are not cash postings.");
     if free_value.is_negative() {
         free = free.note(format!(
-            "Negative headroom: earmarks exceed settled cash by {} — kept signed, not floored (§6.6).",
+            "Negative headroom: earmarks exceed settled cash by {} — shown as a negative, not hidden behind a zero.",
             free_value.abs().format()
         ));
     }
     if !account.pending_balance.is_zero() {
         free = free.note(format!(
-            "Pending, unsettled postings of {} are not included (§6.4).",
+            "Pending, unsettled postings of {} are not included.",
             account.pending_balance.format()
         ));
     }
@@ -151,21 +151,21 @@ pub fn household_exclusion_reason(household: &Household, account: &Account) -> O
 /// scenario is unavailable to every other context (V067).
 pub fn household_exclusion_reason_for(household: &Household, account: &Account, purpose: crate::authz::Purpose, date: NaiveDate) -> Option<String> {
     if account.is_company_account() {
-        return Some("business cash is not household cash (§8.5)".into());
+        return Some("business cash is not household cash".into());
     }
     if !account.include_in_household {
-        return Some("excluded from the household boundary by its inclusion status (§7)".into());
+        return Some("excluded from household calculations by its own setting".into());
     }
     if household.calculation_access_for_purpose(ObjectRef::Account(account.id), purpose, date) == CalculationAccess::Excluded {
         return Some(if household.calculation_access_for(ObjectRef::Account(account.id)) == CalculationAccess::Excluded {
-            "excluded by its access policy (§7.3)".into()
+            "excluded by its access policy".into()
         } else {
-            format!("not authorized for {} (§7.4 purpose scope)", purpose.describe(household))
+            format!("not authorized for this purpose ({})", purpose.describe(household))
         });
     }
     if account.currency != household.base_currency {
         return Some(format!(
-            "held in {}; no conversion convention to {} is declared (§32.1)",
+            "held in {}; no conversion to {} is declared",
             account.currency, household.base_currency
         ));
     }
@@ -175,7 +175,7 @@ pub fn household_exclusion_reason_for(household: &Household, account: &Account, 
 fn joint_note(account: &Account) -> Option<String> {
     match &account.holder {
         Holder::Persons(shares) if shares.len() > 1 => Some(format!(
-            "joint {} — counted once at 100% for the household (§7)",
+            "joint {} — counted once at 100% for the household",
             shares.iter().map(|s| format!("{}%", s.basis_points / 100)).collect::<Vec<_>>().join("/")
         )),
         _ => None,
@@ -232,17 +232,17 @@ pub fn household_liquidity(household: &Household) -> EngineResult<HouseholdLiqui
             reserved_total = reserved_total.checked_add(per_account.reserved.money())?;
             reserved_terms.push(per_account.reserved.node().clone());
         } else {
-            asset_node = asset_node.note(format!("not liquid: {} (§6.4)", account.liquidity.describe().to_lowercase()));
+            asset_node = asset_node.note(format!("not liquid: {}", account.liquidity.describe().to_lowercase()));
         }
         asset_terms.push(asset_node);
     }
 
     let liquid_node = ProvNode::sum("Household liquid cash", liquid_total, liquid_terms)
         .money_class(MoneyClass::ConfirmedCurrent)
-        .note("Only settled, immediately accessible cash of included personal accounts (§6.4).");
+        .note("Only settled, immediately accessible cash of included personal accounts.");
     let reserved_node = ProvNode::sum("Household reserved cash", reserved_total, reserved_terms)
         .money_class(MoneyClass::ReservedCurrent)
-        .note("Non-overlapping earmarks and bank minimums on the included accounts (§6.5, §17).");
+        .note("Non-overlapping earmarks and bank minimums on the included accounts.");
     let free_total = liquid_total.checked_sub(reserved_total)?;
     let mut free_node = ProvNode::sum(
         "Household free current cash",
@@ -250,19 +250,19 @@ pub fn household_liquidity(household: &Household) -> EngineResult<HouseholdLiqui
         vec![liquid_node.clone(), reserved_node.clone().minus()],
     )
     .money_class(MoneyClass::FreeCurrent)
-    .note("Present and not reserved (§6.6). Nested minimums were not deducted twice.");
+    .note("Present and not reserved. Nested minimums were not deducted twice.");
     if free_total.is_negative() {
         free_node = free_node.note(format!(
-            "Negative headroom of {} — kept signed as a warning (§6.6).",
+            "Negative headroom of {} — kept negative as a warning.",
             free_total.abs().format()
         ));
     }
     let assets_node = ProvNode::sum("Total assets", assets_total, asset_terms)
         .money_class(MoneyClass::ConfirmedCurrent)
-        .note("Everything in the planning boundary with positive value (§6.1); company equity is not added (M04).");
+        .note("Everything in the planning boundary with positive value; company equity is not added.");
     let liabilities_node = ProvNode::sum("Liabilities", liabilities_total, liability_terms)
         .money_class(MoneyClass::ConfirmedCurrent)
-        .note("Everything owed (§6.2).");
+        .note("Everything owed.");
     let net_worth_total = assets_total.checked_sub(liabilities_total)?;
     let net_worth_node = ProvNode::sum(
         "Net worth",
@@ -270,7 +270,7 @@ pub fn household_liquidity(household: &Household) -> EngineResult<HouseholdLiqui
         vec![assets_node.clone(), liabilities_node.clone().minus()],
     )
     .money_class(MoneyClass::ConfirmedCurrent)
-    .note("Assets minus liabilities (§6.3).");
+    .note("Assets minus liabilities.");
 
     Ok(HouseholdLiquidity {
         liquid_cash: Calc::new(liquid_total, liquid_node),
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(liquidity.liquid_cash.money(), fixtures::pkr(4_400_000));
         assert_eq!(liquidity.reserved.money(), fixtures::pkr(1_350_000 + 400_000));
         assert_eq!(liquidity.free.money(), fixtures::pkr(4_400_000 - 1_750_000));
-        assert!(liquidity.excluded.iter().any(|(id, reason)| *id == fixtures::ids::ALPHA_OPERATING && reason.contains("§8.5")));
+        assert!(liquidity.excluded.iter().any(|(id, reason)| *id == fixtures::ids::ALPHA_OPERATING && reason.contains("business cash is not household cash")));
         let text = liquidity.liquid_cash.node().render_chain();
         assert!(text.contains("(excluded) Company Alpha operating"));
         assert!(text.contains("counted once at 100%"));
@@ -383,7 +383,7 @@ pub fn company_cash(household: &Household, id: CompanyId) -> EngineResult<Compan
     for account in household.company_accounts(id) {
         if account.currency != currency {
             cash_terms.push(
-                ProvNode::excluded(account.name.clone(), account.settled_balance, format!("held in {}; no conversion convention declared (§32.1)", account.currency))
+                ProvNode::excluded(account.name.clone(), account.settled_balance, format!("held in {}; no conversion declared", account.currency))
                     .subject(ObjectRef::Account(account.id)),
             );
             continue;
@@ -407,7 +407,7 @@ pub fn company_cash(household: &Household, id: CompanyId) -> EngineResult<Compan
                 committed_terms.push(
                     ProvNode::input("Working-capital floor", *floor, constraint.describe())
                         .money_class(MoneyClass::ReservedCurrent)
-                        .note("Hard constraint (§8.6)")
+                        .note("Hard constraint")
                         .subject(ObjectRef::Company(id)),
                 );
             }
@@ -416,7 +416,7 @@ pub fn company_cash(household: &Household, id: CompanyId) -> EngineResult<Compan
                 committed_terms.push(
                     ProvNode::input("Tax reserve", *reserve, constraint.describe())
                         .money_class(MoneyClass::ReservedCurrent)
-                        .note("Hard constraint (§8.6)")
+                        .note("Hard constraint")
                         .subject(ObjectRef::Company(id)),
                 );
             }
@@ -431,11 +431,11 @@ pub fn company_cash(household: &Household, id: CompanyId) -> EngineResult<Compan
         .money_class(MoneyClass::ConfirmedCurrent)
         .certainty(Certainty::Confirmed)
         .subject(ObjectRef::Company(id))
-        .note("Business cash is not household cash and never enters household free cash (§8.5).");
+        .note("Business cash is not household cash and never enters household free cash.");
     let committed_node = ProvNode::sum(format!("{} committed obligations", company.name), committed_total, committed_terms)
         .money_class(MoneyClass::ReservedCurrent)
         .subject(ObjectRef::Company(id))
-        .note("Disjoint earmarks and constraint floors; treated as constraints, not suggestions (§8.6).");
+        .note("Disjoint earmarks and constraint floors; treated as constraints, not suggestions.");
     let ceiling_total = cash_total.checked_sub(committed_total)?;
     let ceiling_node = ProvNode::sum(
         format!("{} cash-constraint ceiling", company.name),
@@ -445,16 +445,16 @@ pub fn company_cash(household: &Household, id: CompanyId) -> EngineResult<Compan
     .money_class(MoneyClass::FreeCurrent)
     .strength(ResultStrength::ExactAccounting)
     .subject(ObjectRef::Company(id))
-    .note("Before any extraction costs. A simple disjoint cash constraint, not a statement of what may lawfully leave the company (E07).");
+    .note("Before any extraction costs. A cash constraint only, not a statement of what may lawfully leave the company.");
     let extractable_node = ProvNode::formula(
         format!("{} lawfully extractable cash", company.name),
         ProvValue::Text("not yet determinable".into()),
-        "min over eligible routes m of NetReceipt(x_m) subject to payroll, working capital, taxes and distribution authority (M27)",
+        "the best net receipt over the eligible routes, subject to payroll, working capital, taxes and distribution authority",
         vec![ceiling_node.clone()],
     )
     .strength(ResultStrength::Unresolved)
     .subject(ObjectRef::Company(id))
-    .note("Each route (salary, permitted dividend, documented reimbursement, genuine shareholder-loan repayment) must be modelled independently with its legal capacity; book cash does not prove distributable profit (M27). Arrives with M9.");
+    .note("Each route (salary, permitted dividend, documented reimbursement, genuine shareholder-loan repayment) is evaluated on the Decisions screen with its own legal capacity; book cash does not prove distributable profit.");
 
     Ok(CompanyCash {
         company: id,
@@ -479,7 +479,7 @@ pub fn person_attribution(household: &Household, person: PersonId) -> EngineResu
         let share = account.holder.share_of(person);
         if account.currency != currency {
             terms.push(
-                ProvNode::excluded(account.name.clone(), account.settled_balance, format!("held in {}; no conversion convention declared (§32.1)", account.currency))
+                ProvNode::excluded(account.name.clone(), account.settled_balance, format!("held in {}; no conversion declared", account.currency))
                     .subject(ObjectRef::Account(account.id)),
             );
             continue;
@@ -502,7 +502,7 @@ pub fn person_attribution(household: &Household, person: PersonId) -> EngineResu
     let node = ProvNode::sum(format!("{name} — attributed share of held accounts"), total, terms)
         .money_class(MoneyClass::ConfirmedCurrent)
         .subject(ObjectRef::Person(person))
-        .note("Economic attribution only; the household view counts each joint account once at 100% (§7). Liabilities are attributed with their negative sign.");
+        .note("Economic attribution only; the household view counts each joint account once at 100%. Liabilities are attributed with their negative sign.");
     Ok(Calc::new(total, node))
 }
 
@@ -615,7 +615,7 @@ fn hard_floor_of(household: &Household, accounts: &[AccountId], share_of: impl F
             let amount = minimum.share_basis_points(share);
             total = total.checked_add(amount)?;
             terms.push(
-                ProvNode::input(format!("Bank minimum ({})", account.name), amount, "account constraint (§17)")
+                ProvNode::input(format!("Bank minimum ({})", account.name), amount, "account constraint")
                     .money_class(MoneyClass::ReservedCurrent)
                     .subject(ObjectRef::Account(*id)),
             );
@@ -625,7 +625,7 @@ fn hard_floor_of(household: &Household, accounts: &[AccountId], share_of: impl F
         total,
         ProvNode::sum("Hard floors", total, terms)
             .money_class(MoneyClass::ReservedCurrent)
-            .note("Hard earmarks and bank minimums only; user-relaxable preferences are not floors (§17)."),
+            .note("Hard earmarks and bank minimums only; user-relaxable preferences are not floors."),
     ))
 }
 
@@ -701,7 +701,7 @@ pub fn boundary_liquidity(household: &Household, boundary: Boundary) -> EngineRe
             let reserved_node = ProvNode::sum(format!("{name} — attributed reserved cash"), reserved, reserved_terms).money_class(MoneyClass::ReservedCurrent);
             let free_node = ProvNode::sum(format!("{name} — attributed free cash"), free, vec![liquid_node.clone(), reserved_node.clone().minus()])
                 .money_class(MoneyClass::FreeCurrent)
-                .note("Economic share view (§7); the household counts joint accounts once.");
+                .note("Economic share view; the household counts joint accounts once.");
             let hard_floor = hard_floor_of(household, &accounts, |a| a.holder.share_of(person))?;
             let headroom = crate::breach::headroom_node("Headroom over hard floors (attributed)", liquid, hard_floor.money())?;
             Ok(BoundaryLiquidity {

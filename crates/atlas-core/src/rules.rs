@@ -737,7 +737,7 @@ mod tests {
         let household = fixtures::plan_household();
         let before = funding_order(&household, d(2026, 11, 15), Some(ids::BUY_CAR));
         assert_eq!(before[0].account, ids::ALPHA_OPERATING);
-        assert!(before[0].forbidden, "Company Alpha is off limits before Dec 1 (§14.5)");
+        assert!(before[0].forbidden, "Company Alpha is off limits before Dec 1");
         assert_eq!(before[1].account, ids::SHARED_SAVINGS);
         assert_eq!(before[1].preserve, Some(pkr(1_000_000)));
         assert_eq!(before[2].account, ids::PERSON_A_CURRENT);
