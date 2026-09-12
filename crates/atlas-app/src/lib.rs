@@ -38,6 +38,7 @@ pub mod lifecycle;
 pub mod logging;
 pub mod models;
 pub mod nav;
+pub mod occurrence_entry;
 pub mod perf;
 pub mod privacy_entry;
 pub mod rules_entry;

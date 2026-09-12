@@ -6,7 +6,7 @@
 use atlas_core::authz::Viewer;
 use atlas_core::liquidity::Boundary;
 use atlas_core::model::Household;
-use gpui_kit::component::{input::InputEvent, select::SelectEvent};
+use gpui_kit::component::{input::{InputEvent, InputState}, select::SelectEvent, table::TableEvent};
 use gpui_kit::*;
 
 use crate::app::AtlasApp;
@@ -48,6 +48,35 @@ impl PlanChoices {
             rules: scope::choice(items.clone(), row(rules_on), window, cx),
             funding: scope::choice(items.clone(), row(rules_on), window, cx),
             overlay,
+        }
+    }
+}
+
+/// Retained controls of the Activity workspace: the series name search and
+/// the account filter of the actual-transactions register.
+pub struct ActivityControls {
+    pub series_search: Entity<InputState>,
+    pub actuals_account: Choice,
+    /// The accounts behind the `actuals_account` rows (row 0 is all).
+    pub accounts: Vec<atlas_core::ids::AccountId>,
+}
+
+impl ActivityControls {
+    pub fn new(household: &Household, viewer: Viewer, current: Option<atlas_core::ids::AccountId>, window: &mut Window, cx: &mut App) -> Self {
+        use atlas_core::ids::ObjectRef;
+        let accounts: Vec<atlas_core::ids::AccountId> = household
+            .accounts
+            .iter()
+            .filter(|a| matches!(household.disclosure_for(viewer, ObjectRef::Account(a.id)), atlas_core::Disclosure::Full | atlas_core::Disclosure::SelectedFields))
+            .map(|a| a.id)
+            .collect();
+        let mut items: Vec<SharedString> = vec!["All disclosed accounts".into()];
+        items.extend(accounts.iter().filter_map(|id| household.account(*id)).map(|a| SharedString::from(a.name.clone())));
+        let selected = current.and_then(|id| accounts.iter().position(|a| *a == id)).map(|p| p + 1).unwrap_or(0);
+        ActivityControls {
+            series_search: cx.new(|cx| InputState::new(window, cx).placeholder("name")),
+            actuals_account: scope::choice(items, selected, window, cx),
+            accounts,
         }
     }
 }
@@ -102,6 +131,28 @@ impl AtlasApp {
                 cx.notify();
             }));
         }
+        subscriptions.push(cx.subscribe_in(&self.activity_controls.series_search, window, |_, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        }));
+        subscriptions.push(cx.subscribe_in(&self.activity_controls.actuals_account, window, |this, state, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+            let SelectEvent::Confirm(_) = event;
+            let row = state.read(cx).selected_index(cx).map(|p| p.row).unwrap_or(0);
+            let account = if row == 0 { None } else { this.activity_controls.accounts.get(row - 1).copied() };
+            this.set_actuals_account(account, cx);
+        }));
+        // Row selection on the virtualised registers opens the inspectors.
+        subscriptions.push(cx.subscribe_in(&self.grids.timeline_occurrences, window, |this, _, event: &TableEvent, _, cx| {
+            if let TableEvent::SelectRow(row) = event {
+                this.select_occurrence_row(*row, cx);
+            }
+        }));
+        subscriptions.push(cx.subscribe_in(&self.grids.timeline_actuals, window, |this, _, event: &TableEvent, _, cx| {
+            if let TableEvent::SelectRow(row) = event {
+                this.select_actual_row(*row, cx);
+            }
+        }));
         // Whose money on the earmarks screen.
         subscriptions.push(cx.subscribe_in(&self.boundary_choice, window, |this, state, event: &SelectEvent<Vec<SharedString>>, _, cx| {
             let SelectEvent::Confirm(_) = event;

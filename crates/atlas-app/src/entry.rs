@@ -12,7 +12,7 @@ use atlas_core::timeline::{AmountSpec, DateSpec, Direction, EventSeries, Invalid
 use atlas_core::vocab::Certainty;
 use atlas_core::Money;
 use gpui_kit::component::{
-    IndexPath, WindowExt as _,
+    ActiveTheme as _, IndexPath, WindowExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     date_picker::{DatePicker, DatePickerState},
@@ -154,6 +154,13 @@ impl EntryForms {
     }
     pub fn entity_row(&self, entity: EntityRef) -> Option<usize> {
         self.entities.iter().position(|e| *e == entity)
+    }
+    /// The series' row among the series options (the `none` row not counted).
+    pub fn series_row(&self, series: SeriesId) -> Option<usize> {
+        self.series_ids.iter().position(|id| *id == series)
+    }
+    pub fn series_id_at(&self, row: usize) -> Option<SeriesId> {
+        self.series_ids.get(row).copied()
     }
 
     pub fn new(household: &Household, window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
@@ -368,7 +375,7 @@ impl AtlasApp {
                 f.7.update(cx, |s, cx| s.set_date(gpui_kit::base::Date::Single(None), window, cx));
                 let draft = draft.clone();
                 (
-                    "New event series".into(),
+                    "Add planned movement".into(),
                     Box::new(move |cx: &App| {
                         let EntryDraft { series_direction, series_ranged, .. } = draft.read(cx).clone();
                         let d1 = draft.clone();
@@ -442,15 +449,21 @@ impl AtlasApp {
                 f.0.update(cx, |s, cx| s.set_date(as_of, window, cx));
                 f.2.update(cx, |s, cx| s.set_value("", window, cx));
                 (
-                    "Record an actual transaction".into(),
-                    Box::new(move |_| {
-                        Form::vertical()
-                            .child(Field::new().label("Date").child(DatePicker::new(&f.0)))
-                            .child(Field::new().label("Account").child(Select::new(&f.1)))
-                            .child(Field::new().label("Signed amount (+ in, − out)").required(true).child(Input::new(&f.2).id("entry-actual-amount")))
-                            .child(Field::new().label("Description").child(Input::new(&f.3).id("entry-actual-description")))
-                            .child(Field::new().label("Fulfils the planned occurrence of").child(Select::new(&f.4)))
-                            .child(Field::new().label("… that was due on").child(DatePicker::new(&f.5)))
+                    "Record transaction".into(),
+                    Box::new(move |cx: &App| {
+                        let muted = cx.theme().muted_foreground;
+                        v_flex()
+                            .gap_3()
+                            .child(div().text_xs().text_color(muted).child("Recording a transaction does not update the statement balance."))
+                            .child(
+                                Form::vertical()
+                                    .child(Field::new().label("Date").child(DatePicker::new(&f.0)))
+                                    .child(Field::new().label("Account").child(Select::new(&f.1)))
+                                    .child(Field::new().label("Signed amount (+ in, − out)").required(true).child(Input::new(&f.2).id("entry-actual-amount")))
+                                    .child(Field::new().label("Description").child(Input::new(&f.3).id("entry-actual-description")))
+                                    .child(Field::new().label("Match to a planned occurrence").child(Select::new(&f.4)))
+                                    .child(Field::new().label("Original due date of that occurrence").child(DatePicker::new(&f.5))),
+                            )
                             .into_any_element()
                     }),
                     "entry-save-actual",
@@ -477,6 +490,16 @@ impl AtlasApp {
         };
         let body = std::rc::Rc::new(body);
         let wide = matches!(entry, Entry::Account | Entry::Series);
+        let commit_label: &'static str = match entry {
+            Entry::Person => "Add person",
+            Entry::Company => "Add company",
+            Entry::Account => "Add account",
+            Entry::Series => "Add movement",
+            Entry::Assumption => "Add assumption",
+            Entry::Scenario => "Add scenario",
+            Entry::Actual => "Record transaction",
+            Entry::Reconcile(_) => "Reconcile",
+        };
         window.open_dialog(cx, move |dialog, window, cx| {
             let this = this.clone();
             let body = body.clone();
@@ -489,7 +512,7 @@ impl AtlasApp {
                 .footer(
                     DialogFooter::new()
                         .child(Button::new("entry-cancel").outline().label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
-                        .child(Button::new(confirm_id).primary().label("Add").on_click({
+                        .child(Button::new(confirm_id).primary().label(commit_label).on_click({
                             let this = this.clone();
                             move |_, window, cx| {
                                 Self::confirm_entry(&this, entry, window, cx);
@@ -503,6 +526,10 @@ impl AtlasApp {
     fn confirm_entry(this: &WeakEntity<Self>, entry: Entry, window: &mut Window, cx: &mut App) -> bool {
         match this.update(cx, |app, cx| app.submit_entry(entry, window, cx)) {
             Ok(Ok(summary)) => {
+                let _ = this.update(cx, |app, cx| {
+                    app.note_result(summary.clone());
+                    cx.notify();
+                });
                 window.push_notification(summary, cx);
                 window.close_dialog(cx);
                 true

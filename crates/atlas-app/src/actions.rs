@@ -2,7 +2,7 @@
 //! contextual form openers (an account preselected), delete confirmations,
 //! and the links between workspaces that carry a supported context.
 
-use atlas_core::ids::{AccountId, CompanyId, ObjectRef, PersonId};
+use atlas_core::ids::{AccountId, CompanyId, ObjectRef, PersonId, SeriesId};
 use atlas_core::liquidity::Boundary;
 use atlas_core::Disclosure;
 use gpui_kit::component::{IndexPath, WindowExt as _, input::InputState, select::SelectState};
@@ -172,9 +172,33 @@ impl AtlasApp {
     }
 
     /// Activity / Actuals filtered to one account.
-    pub fn open_actuals_for(&mut self, account: AccountId, cx: &mut Context<Self>) {
-        self.actuals_account_filter = Some(account);
+    pub fn open_actuals_for(&mut self, account: AccountId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(row) = self.activity_controls.accounts.iter().position(|a| *a == account) {
+            Self::set_choice(&self.activity_controls.actuals_account, row + 1, window, cx);
+        }
+        self.set_actuals_account(Some(account), cx);
         self.navigate(Route::Actuals, cx);
+    }
+
+    /// Activity / Upcoming narrowed to one series.
+    pub fn open_upcoming_for_series(&mut self, series: SeriesId, cx: &mut Context<Self>) {
+        self.set_timeline_series(Some(series), cx);
+        self.navigate(Route::Upcoming, cx);
+    }
+
+    /// Forecast / Derive from history on a series.
+    pub fn open_derive_for_series(&mut self, series: SeriesId, cx: &mut Context<Self>) {
+        self.derivation_series = Some(series);
+        self.refresh_assumptions();
+        self.navigate(Route::Derive, cx);
+    }
+
+    /// The assumption form with `series` preselected as what it applies to.
+    pub fn open_assumption_for_series(&mut self, series: SeriesId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(row) = self.entry_forms.series_row(series) {
+            Self::set_choice(&self.entry_forms.assumption_series, row + 1, window, cx);
+        }
+        self.open_entry(Entry::Assumption, window, cx);
     }
 
     /// Forecast / Path with the account's path selected: the household path

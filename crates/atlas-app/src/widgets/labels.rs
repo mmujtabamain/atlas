@@ -69,3 +69,14 @@ pub fn hardness_tag(hardness: Hardness) -> Tag {
         Hardness::SoftUserRelaxable => neutral("User-relaxable"),
     }
 }
+
+/// An occurrence's live status: danger when overdue, warning when due or
+/// partly fulfilled, quiet otherwise.
+pub fn status_tag(status: atlas_core::timeline::OccurrenceStatus) -> Tag {
+    use atlas_core::timeline::OccurrenceStatus;
+    match status {
+        OccurrenceStatus::Overdue => Tag::danger().xsmall().outline().child(status.label()),
+        OccurrenceStatus::Due | OccurrenceStatus::PartiallyFulfilled => Tag::warning().xsmall().outline().child(status.label()),
+        _ => Tag::secondary().xsmall().outline().child(status.label()),
+    }
+}

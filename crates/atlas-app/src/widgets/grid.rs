@@ -243,6 +243,11 @@ pub fn new_grid(columns: Vec<GridColumn>, window: &mut Window, cx: &mut App) -> 
     cx.new(|cx| TableState::new(GridDelegate { columns, rows: Arc::new(Vec::new()) }, window, cx).row_selectable(false).col_selectable(false).col_movable(false).sortable(false))
 }
 
+/// A grid whose rows select on click (the table emits `TableEvent::SelectRow`).
+pub fn new_selectable_grid(columns: Vec<GridColumn>, window: &mut Window, cx: &mut App) -> Grid {
+    cx.new(|cx| TableState::new(GridDelegate { columns, rows: Arc::new(Vec::new()) }, window, cx).row_selectable(true).col_selectable(false).col_movable(false).sortable(false))
+}
+
 /// Points the grid at `rows` if they are not the rows it already shows.
 /// Called from a screen's render: a recomputed model is a new `Arc`, so the
 /// comparison is a pointer check and an untouched model costs nothing.

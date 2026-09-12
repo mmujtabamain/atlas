@@ -39,12 +39,20 @@ pub struct TimelineFilter {
     pub status: Option<OccurrenceStatus>,
     pub scenario: Option<ScenarioId>,
     pub through: NaiveDate,
+    /// Upcoming narrowed to one series (from a series detail).
+    pub series: Option<SeriesId>,
+    /// The actual-transactions register narrowed to one account. Actuals are
+    /// otherwise independent of the window and the plan.
+    pub actuals_account: Option<AccountId>,
 }
 
 /// Rows and lists for the screen, computed once per state change.
 #[derive(Clone, Debug)]
 pub struct TimelineModel {
     pub filter: TimelineFilter,
+    /// Every visible occurrence in the window under the plan, before the
+    /// entity/account/certainty/status filters (series previews use it).
+    pub all_occurrences: Vec<Occurrence>,
     pub occurrences: Vec<Occurrence>,
     /// The occurrences as grid rows — every string formatted here, once, so
     /// the virtualised table only paints (see `widgets::grid`).
@@ -55,8 +63,11 @@ pub struct TimelineModel {
     pub series: Vec<SeriesId>,
     pub hidden_series: usize,
     /// The actual transactions the viewer may see, with what each is
-    /// reconciled to, as grid rows.
+    /// reconciled to, as grid rows; `actual_ids` runs parallel to them.
     pub actual_rows: grid::Rows,
+    pub actual_ids: Vec<atlas_core::ids::TransactionId>,
+    /// Actuals the viewer may not see (their accounts are not disclosed).
+    pub hidden_actuals: usize,
     /// The scenario the overlay toggle applies (see [`super::overlay_scenario`]).
     pub overlay_scenario: Option<ScenarioId>,
 }
@@ -64,18 +75,25 @@ pub struct TimelineModel {
 /// Columns of the actual-transactions grid, in display order.
 pub const ACTUAL_COLUMNS: [GridColumn; 5] = [
     GridColumn::new("date", "Date", 104.),
-    GridColumn::new("account", "Account", 224.),
-    GridColumn::new("description", "Description", 360.),
-    GridColumn::new("amount", "Amount", 128.).right(),
-    GridColumn::new("reconciled", "Reconciled to", 400.),
+    GridColumn::new("account", "Account", 200.),
+    GridColumn::new("description", "Description", 300.),
+    GridColumn::new("amount", "Signed amount", 140.).right(),
+    GridColumn::new("reconciled", "Reconciled to", 360.),
 ];
 
-fn actual_rows(household: &Household, viewer: Viewer) -> grid::Rows {
-    Arc::new(
-        household
-            .actuals
-            .iter()
-            .filter(|t| matches!(household.disclosure_for(viewer, ObjectRef::Account(t.account)), Disclosure::Full | Disclosure::SelectedFields))
+fn actual_rows(household: &Household, viewer: Viewer, account: Option<AccountId>) -> (grid::Rows, Vec<atlas_core::ids::TransactionId>) {
+    let mut visible: Vec<&atlas_core::model::ActualTransaction> = household
+        .actuals
+        .iter()
+        .filter(|t| matches!(household.disclosure_for(viewer, ObjectRef::Account(t.account)), Disclosure::Full | Disclosure::SelectedFields))
+        .filter(|t| account.is_none_or(|a| t.account == a))
+        .collect();
+    // Newest first: the register is scanned as history.
+    visible.sort_by(|a, b| b.date.cmp(&a.date).then(b.id.raw().cmp(&a.id.raw())));
+    let ids = visible.iter().map(|t| t.id).collect();
+    let rows = Arc::new(
+        visible
+            .into_iter()
             .map(|t| {
                 let links: Vec<String> = household
                     .links
@@ -91,23 +109,22 @@ fn actual_rows(household: &Household, viewer: Viewer) -> grid::Rows {
                     Cell::muted(household.account(t.account).map(|a| a.name.clone()).unwrap_or_default()),
                     Cell::text(t.description.clone()),
                     Cell::money(t.amount),
-                    Cell::muted(if links.is_empty() { "unreconciled".to_string() } else { links.join(" · ") }),
+                    Cell::muted(if links.is_empty() { "Unreconciled".to_string() } else { links.join(" · ") }),
                 ])
             })
             .collect(),
-    )
+    );
+    (rows, ids)
 }
 
 /// Columns of the occurrences grid, in display order.
-pub const OCCURRENCE_COLUMNS: [GridColumn; 8] = [
-    GridColumn::new("due", "Due", 104.),
-    GridColumn::new("settles", "Settles", 104.),
-    GridColumn::new("available", "Available", 104.),
-    GridColumn::new("series", "Series · entity", 340.),
-    GridColumn::new("account", "Account", 224.),
-    GridColumn::new("expected", "Expected (signed)", 176.).right(),
-    GridColumn::new("certainty", "Certainty", 128.),
-    GridColumn::new("status", "Status", 128.),
+pub const OCCURRENCE_COLUMNS: [GridColumn; 6] = [
+    GridColumn::new("due", "Due · settles / available", 190.),
+    GridColumn::new("series", "Series · whose", 300.),
+    GridColumn::new("account", "Account", 200.),
+    GridColumn::new("expected", "Remaining (signed)", 160.).right(),
+    GridColumn::new("certainty", "Certainty", 130.),
+    GridColumn::new("status", "Status", 130.),
 ];
 
 /// One occurrence as a grid row: the strings the table paints.
@@ -150,10 +167,15 @@ fn occurrence_row(o: &Occurrence, household: &Household) -> Row {
         Direction::Income => Tone::Success,
         _ => Tone::Foreground,
     };
+    let clocks = if o.settlement == o.due && o.availability == o.due {
+        "Same day".to_string()
+    } else if o.settlement == o.availability {
+        format!("Settles and available {}", date(o.settlement))
+    } else {
+        format!("Settles {} · available {}", date(o.settlement), date(o.availability))
+    };
     Row::new(vec![
-        Cell::text(date(o.due)),
-        Cell::muted(date(o.settlement)),
-        Cell::muted(date(o.availability)),
+        Cell::stack(date(o.due), clocks),
         Cell::stack(o.label.clone(), subtitle),
         Cell::muted(account_text),
         Cell::Money { text: signed.into(), tone, line_through: !live, detail: detail.map(SharedString::from) },
@@ -180,10 +202,11 @@ impl TimelineModel {
             .collect();
         let hidden_series = household.series.iter().filter(|s| s.scenario.is_none() || s.scenario == filter.scenario).count() - series.len();
 
-        let occurrences: Vec<Occurrence> = household
-            .expand_all(household.as_of, filter.through, filter.scenario)
-            .into_iter()
-            .filter(|o| series.contains(&o.series))
+        let all_occurrences: Vec<Occurrence> = household.expand_all(household.as_of, filter.through, filter.scenario).into_iter().filter(|o| series.contains(&o.series)).collect();
+        let occurrences: Vec<Occurrence> = all_occurrences
+            .iter()
+            .cloned()
+            .filter(|o| filter.series.is_none_or(|s| o.series == s))
             .filter(|o| filter.entity.is_none_or(|e| o.entity == e))
             .filter(|o| filter.account.is_none_or(|a| o.account == a || o.linked_account == Some(a) || matches!(o.direction, Direction::Transfer { to } if to == a)))
             .filter(|o| filter.certainty.is_none_or(|c| o.certainty == c))
@@ -193,9 +216,10 @@ impl TimelineModel {
         let total_in = Money::sum(currency, occurrences.iter().filter(|o| o.direction == Direction::Income && o.is_live()).map(|o| o.remaining_expected()))?;
         let total_out = Money::sum(currency, occurrences.iter().filter(|o| o.direction == Direction::Expense && o.is_live()).map(|o| o.remaining_expected()))?;
         let rows = Arc::new(occurrences.iter().map(|o| occurrence_row(o, household)).collect());
-        let actual_rows = actual_rows(household, viewer);
+        let (actual_rows, actual_ids) = actual_rows(household, viewer, filter.actuals_account);
+        let hidden_actuals = household.actuals.iter().filter(|t| !matches!(household.disclosure_for(viewer, ObjectRef::Account(t.account)), Disclosure::Full | Disclosure::SelectedFields)).count();
         let overlay_scenario = super::overlay_scenario(household, viewer);
-        Ok(TimelineModel { filter, occurrences, rows, total_in, total_out, series, hidden_series, actual_rows, overlay_scenario })
+        Ok(TimelineModel { filter, all_occurrences, occurrences, rows, total_in, total_out, series, hidden_series, actual_rows, actual_ids, hidden_actuals, overlay_scenario })
     }
 }
 
