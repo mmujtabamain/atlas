@@ -20,6 +20,20 @@ fn let_dialog_settle() {
     std::thread::sleep(std::time::Duration::from_millis(400));
 }
 
+/// Dismisses the "saved" toasts and waits for them to leave. They sit in the
+/// top-right corner — over the "New …" buttons of every screen — and keep
+/// their hitbox while they animate out, so a click there in the same update
+/// lands on the toast instead of the button.
+fn dismiss_toasts(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle) {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.clear_notifications(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+}
+
 /// Scrolls the main column so content below the fold becomes visible. The
 /// wheel event is dispatched at the anchor's centre, so the anchor must be an
 /// element that is currently on screen (a filter control, a figure …).
@@ -593,10 +607,12 @@ fn real_data_new_household_entry_save_and_reopen(cx: &mut TestAppContext) {
         assert!(app.is_dirty());
     });
 
-    // 2. An account with an opening balance.
+    // 2. An account with an opening balance. The "saved" toast from step 1 sits
+    // in the top-right corner, over the "New account…" button, and keeps its
+    // hitbox while it animates out — so dismiss it and let it leave first.
+    dismiss_toasts(cx, window);
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
-        window.clear_notifications(cx);
         window.within("main-sidebar").click("0-0-3", cx);
         assert!(window.find("screen-accounts").visible());
         window.click("new-account", cx);
@@ -626,9 +642,9 @@ fn real_data_new_household_entry_save_and_reopen(cx: &mut TestAppContext) {
     });
 
     // 3. A monthly salary series.
+    dismiss_toasts(cx, window);
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
-        window.clear_notifications(cx);
         window.within("main-sidebar").click("1-0-1", cx);
         assert!(window.find("screen-timeline").visible());
         window.click("new-series", cx);
@@ -757,9 +773,9 @@ fn rules_inspector_simulation_and_editor(cx: &mut TestAppContext) {
     });
 
     // The editor: a 2% fee on the "Living" category, validated by the engine.
+    dismiss_toasts(cx, window);
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
-        window.clear_notifications(cx);
         window.click("new-rule", cx);
     })
     .unwrap();
@@ -1160,6 +1176,6 @@ fn status_bar_shows_the_frame_meter(cx: &mut TestAppContext) {
         assert!(last.draw.is_some(), "the paint probe painted: {last:?}");
         assert!(last.draw.unwrap() >= last.build, "draw covers the build: {last:?}");
         let status = meter.status_text();
-        assert!(status.contains("fps") && status.contains("build") && status.contains("draw"), "{status}");
+        assert!(status.contains("ms/frame = ") && status.contains("fps possible"), "{status}");
     });
 }
