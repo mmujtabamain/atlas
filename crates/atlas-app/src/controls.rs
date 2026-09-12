@@ -81,6 +81,68 @@ impl ActivityControls {
     }
 }
 
+/// Retained controls of Forecast / Assumptions, Derive and Sensitivity.
+pub struct AssumptionControls {
+    /// All / This run / one series per row.
+    pub applies: Choice,
+    pub applies_series: Vec<atlas_core::ids::SeriesId>,
+    /// All / Fresh / Stale / Not accepted / Expired.
+    pub freshness: Choice,
+    /// Series with derivation history the viewer may see.
+    pub derive_series: Choice,
+    pub derive_series_ids: Vec<atlas_core::ids::SeriesId>,
+    /// Household or one personal cash account.
+    pub sensitivity_path: Choice,
+    pub sensitivity_paths: Vec<Boundary>,
+}
+
+impl AssumptionControls {
+    pub fn new(household: &Household, viewer: Viewer, derivation_series: Option<atlas_core::ids::SeriesId>, sensitivity: Boundary, window: &mut Window, cx: &mut App) -> Self {
+        use atlas_core::ids::ObjectRef;
+        let visible_series = |id: atlas_core::ids::SeriesId| !matches!(household.disclosure_for(viewer, ObjectRef::Series(id)), atlas_core::Disclosure::Hidden | atlas_core::Disclosure::Aggregate);
+        let applies_series: Vec<atlas_core::ids::SeriesId> = household.series.iter().filter(|s| visible_series(s.id)).map(|s| s.id).collect();
+        let mut applies_items: Vec<SharedString> = vec!["All".into(), "This forecast run".into()];
+        applies_items.extend(applies_series.iter().filter_map(|id| household.series_by_id(*id)).map(|s| SharedString::from(s.name.clone())));
+        let freshness_items: Vec<SharedString> = ["All", "Fresh", "Stale", "Not accepted", "Expired"].into_iter().map(SharedString::from).collect();
+        let mut derive_series_ids: Vec<atlas_core::ids::SeriesId> = household.series.iter().filter(|s| !household.history_of(s.id).is_empty()).filter(|s| visible_series(s.id)).map(|s| s.id).collect();
+        derive_series_ids.sort_by_key(|id| id.raw());
+        let derive_items: Vec<SharedString> = if derive_series_ids.is_empty() {
+            vec!["No series has history".into()]
+        } else {
+            derive_series_ids.iter().filter_map(|id| household.series_by_id(*id)).map(|s| SharedString::from(s.name.clone())).collect()
+        };
+        let derive_selected = derivation_series.and_then(|id| derive_series_ids.iter().position(|s| *s == id)).unwrap_or(0);
+        let mut sensitivity_paths = vec![Boundary::Household];
+        sensitivity_paths.extend(
+            household
+                .accounts
+                .iter()
+                .filter(|a| a.kind.is_cash() && !a.is_company_account())
+                .filter(|a| matches!(household.disclosure_for(viewer, ObjectRef::Account(a.id)), atlas_core::Disclosure::Full | atlas_core::Disclosure::SelectedFields))
+                .map(|a| Boundary::Account(a.id)),
+        );
+        let path_items: Vec<SharedString> = sensitivity_paths.iter().map(|b| SharedString::from(b.label(household))).collect();
+        let path_selected = sensitivity_paths.iter().position(|b| *b == sensitivity).unwrap_or(0);
+        AssumptionControls {
+            applies: scope::choice(applies_items, 0, window, cx),
+            applies_series,
+            freshness: scope::choice(freshness_items, 0, window, cx),
+            derive_series: scope::choice(derive_items, derive_selected, window, cx),
+            derive_series_ids,
+            sensitivity_path: scope::choice(path_items, path_selected, window, cx),
+            sensitivity_paths,
+        }
+    }
+}
+
+/// The `Case` choice: conservative / expected / optimistic.
+pub fn case_choice(current: atlas_core::forecast::Case, window: &mut Window, cx: &mut App) -> Choice {
+    use atlas_core::forecast::Case;
+    let items: Vec<SharedString> = Case::ALL.iter().map(|c| SharedString::from(c.label())).collect();
+    let selected = Case::ALL.iter().position(|c| *c == current).unwrap_or(1);
+    scope::choice(items, selected, window, cx)
+}
+
 /// The boundaries the earmarks screen offers this viewer.
 pub fn boundaries_for(household: &Household, viewer: Viewer) -> Vec<Boundary> {
     use atlas_core::ids::ObjectRef;
@@ -151,6 +213,55 @@ impl AtlasApp {
         subscriptions.push(cx.subscribe_in(&self.grids.timeline_actuals, window, |this, _, event: &TableEvent, _, cx| {
             if let TableEvent::SelectRow(row) = event {
                 this.select_actual_row(*row, cx);
+            }
+        }));
+        // Forecast / Assumptions, Derive, Sensitivity.
+        for choice in [&self.assumption_controls.applies, &self.assumption_controls.freshness] {
+            subscriptions.push(cx.subscribe_in(choice, window, |_, _, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+                let SelectEvent::Confirm(_) = event;
+                cx.notify();
+            }));
+        }
+        subscriptions.push(cx.subscribe_in(&self.assumption_controls.derive_series, window, |this, state, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+            let SelectEvent::Confirm(_) = event;
+            let row = state.read(cx).selected_index(cx).map(|p| p.row).unwrap_or(0);
+            if let Some(series) = this.assumption_controls.derive_series_ids.get(row).copied() {
+                this.select_derivation_series(series, cx);
+            }
+        }));
+        subscriptions.push(cx.subscribe_in(&self.assumption_controls.sensitivity_path, window, |this, state, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+            let SelectEvent::Confirm(_) = event;
+            let row = state.read(cx).selected_index(cx).map(|p| p.row).unwrap_or(0);
+            if let Some(boundary) = this.assumption_controls.sensitivity_paths.get(row).copied() {
+                this.select_sensitivity_boundary(boundary, cx);
+            }
+        }));
+        // Forecast / Path scope and chart states.
+        subscriptions.push(cx.subscribe_in(&self.forecast_boundary_choice, window, |this, state, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+            let SelectEvent::Confirm(_) = event;
+            let row = state.read(cx).selected_index(cx).map(|p| p.row).unwrap_or(0);
+            if let Some(boundary) = this.forecast_boundaries.get(row).copied() {
+                this.forecast_selected_account = None;
+                this.select_projection_boundary(boundary, cx);
+            }
+        }));
+        subscriptions.push(cx.subscribe_in(&self.forecast_case_choice, window, |this, state, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+            let SelectEvent::Confirm(_) = event;
+            let row = state.read(cx).selected_index(cx).map(|p| p.row).unwrap_or(1);
+            if let Some(case) = atlas_core::forecast::Case::ALL.get(row).copied() {
+                this.select_projection_case(case, cx);
+            }
+        }));
+        for state in [&self.forecast_path_state, &self.account_path_state] {
+            subscriptions.push(cx.observe(state, |_, _, cx| cx.notify()));
+        }
+        subscriptions.push(cx.subscribe_in(&self.grids.forecast_values, window, |this, _, event: &TableEvent, _, cx| {
+            if let TableEvent::SelectRow(row) = event {
+                let row = *row;
+                this.forecast_path_state.update(cx, |s, cx| {
+                    s.selected = Some(row);
+                    cx.notify();
+                });
             }
         }));
         // Whose money on the earmarks screen.

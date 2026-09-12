@@ -15,5 +15,6 @@ pub mod master;
 pub mod meanings;
 pub mod record;
 pub mod scope;
+pub mod statement;
 pub mod states;
 pub mod table;

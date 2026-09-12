@@ -26,6 +26,8 @@ use gpui_kit::*;
 use crate::app::AtlasApp;
 use crate::widgets::explain;
 use crate::widgets::figure::{ExplainedFigure, card};
+use crate::widgets::grid::{self, Cell, GridColumn, Row};
+use crate::widgets::statement::{Line, Statement};
 use crate::widgets::labels;
 use crate::widgets::master::page_header;
 use crate::widgets::table::{money_cell, muted_cell};
@@ -47,9 +49,23 @@ pub struct ProjectionModel {
     pub lowest: ExplainedFigure,
     pub injection: ExplainedFigure,
     pub chart: Vec<ChartPoint>,
+    /// The path as exact rows for the `Values` table.
+    pub path_rows: grid::Rows,
+    /// The conditional statement of this run.
+    pub statement: Statement,
+    /// Assumptions the viewer may not read, counted only.
+    pub hidden_assumptions: usize,
     /// The scenario the overlay toggle applies (see [`super::overlay_scenario`]).
     pub overlay_scenario: Option<ScenarioId>,
 }
+
+/// Columns of the `Values` table.
+pub const PATH_COLUMNS: [GridColumn; 4] = [
+    GridColumn::new("date", "Date", 120.),
+    GridColumn::new("balance", "Balance after posting", 190.).right(),
+    GridColumn::new("change", "Change", 150.).right(),
+    GridColumn::new("floor", "Against the floor", 200.),
+];
 
 impl ProjectionModel {
     pub fn compute(household: &Household, viewer: Viewer, boundary: Boundary, case: Case, scenario: Option<ScenarioId>, through: NaiveDate) -> EngineResult<Self> {
@@ -73,12 +89,54 @@ impl ProjectionModel {
             .iter()
             .map(|p| ChartPoint { label: SharedString::from(p.date.format("%d %b").to_string()), balance: p.balance.minor() as f64 / per_major, floor })
             .collect();
+        let mut previous: Option<atlas_core::Money> = None;
+        let path_rows: grid::Rows = std::sync::Arc::new(
+            result
+                .path
+                .iter()
+                .map(|p| {
+                    let change = previous.map(|prev| p.balance - prev);
+                    previous = Some(p.balance);
+                    let against = match p.balance.checked_sub(result.floor) {
+                        Ok(headroom) if !headroom.is_negative() => format!("{} above", headroom.format()),
+                        Ok(deficit) => format!("{} below", deficit.abs().format()),
+                        Err(_) => String::new(),
+                    };
+                    Row::new(vec![
+                        Cell::text(p.date.format("%d %b %Y").to_string()),
+                        Cell::money(p.balance),
+                        Cell::muted(change.map(|c| c.format_signed()).unwrap_or_else(|| "start".into())),
+                        Cell::muted(against),
+                    ])
+                })
+                .collect(),
+        );
+        let visible_assumptions: Vec<Line> = result.assumptions.iter().filter(|a| a.private_to.is_none_or(|p| p == viewer.person)).map(|a| Line::from_assumption(a, household.as_of)).collect();
+        let hidden_assumptions = result.assumptions.len() - visible_assumptions.len();
+        let plan = scenario.and_then(|id| household.scenario(id)).map(|s| format!("with scenario “{}”", s.name)).unwrap_or_else(|| "baseline".into());
+        let statement = Statement {
+            claim: match result.breach.first_breach {
+                None => format!("If every listed assumption holds, {} cash ends at {} on {} and never falls below the {} floor.", boundary.label(household), result.end.money().format(), through.format("%d %b %Y"), result.floor.format()),
+                Some(first) => format!("If every listed assumption holds, {} cash ends at {} on {} but falls below the {} floor from {}.", boundary.label(household), result.end.money().format(), through.format("%d %b %Y"), result.floor.format(), first.format("%d %b %Y")),
+            },
+            through,
+            scope: format!("{} · {} case · {plan}", boundary.label(household), case.label()),
+            assumptions: visible_assumptions,
+            some_hidden: hidden_assumptions > 0,
+            strength: atlas_core::ResultStrength::ScenarioTested,
+            coverage: format!("One explicit path under the {} case: every planned movement at its {} value, in posting order.", case.label().to_lowercase(), case.label().to_lowercase()),
+            does_not_establish: "That the money will arrive; a probability of any outcome; that other cases behave the same.".into(),
+            excluded_shocks: "Unplanned movements, changes to rules or tax packs after this run, and anything outside the assumptions above.".into(),
+        };
         Ok(ProjectionModel {
             start: ExplainedFigure::new(format!("{slug}-proj-start"), "Reconciled starting cash", &result.start, household, viewer),
             end: ExplainedFigure::new(format!("{slug}-proj-end"), "Conditional projected cash at horizon", &result.end, household, viewer),
             lowest: ExplainedFigure::new(format!("{slug}-proj-lowest"), "Lowest projected cash", &result.lowest, household, viewer),
             injection: ExplainedFigure::new(format!("{slug}-proj-injection"), "Cash needed today to never breach", &result.breach.minimum_injection, household, viewer),
             chart,
+            path_rows,
+            statement,
+            hidden_assumptions,
             boundaries,
             overlay_scenario: super::overlay_scenario(household, viewer),
             forecast: result,

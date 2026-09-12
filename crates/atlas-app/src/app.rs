@@ -26,7 +26,7 @@ use crate::widgets::grid;
 use crate::nav::{Destination, Route};
 pub use crate::actions::with_app;
 use crate::actions::{AccountsControls, AppHandle};
-use crate::controls::{ActivityControls, PlanChoices};
+use crate::controls::{ActivityControls, AssumptionControls, PlanChoices};
 use crate::occurrence_entry::OccurrenceForm;
 use crate::models::{
     self,
@@ -119,6 +119,20 @@ pub struct AtlasApp {
     /// Forecast / Path: the account whose path is expanded, and the report tab.
     pub(crate) forecast_selected_account: Option<AccountId>,
     pub(crate) forecast_report_tab: usize,
+    /// Forecast / Path: `Whose money` and `Case` choices, the chart states,
+    /// and whether the statement lists every assumption.
+    pub(crate) forecast_boundary_choice: crate::widgets::scope::Choice,
+    pub(crate) forecast_boundaries: Vec<Boundary>,
+    pub(crate) forecast_case_choice: crate::widgets::scope::Choice,
+    pub(crate) forecast_path_state: Entity<crate::widgets::chart::PathState>,
+    pub(crate) account_path_state: Entity<crate::widgets::chart::PathState>,
+    pub(crate) forecast_show_all_assumptions: bool,
+    /// Forecast / Assumptions, Derive, Sensitivity: filters and choices, the
+    /// expanded rows, and whether the sensitivity result is behind its scope.
+    pub(crate) assumption_controls: AssumptionControls,
+    pub(crate) assumption_expanded: Option<AssumptionId>,
+    pub(crate) sensitivity_pending: bool,
+    pub(crate) sensitivity_expanded: Option<usize>,
     /// Earmarks: `Whose money` and the boundaries behind its rows; Active / Released.
     pub(crate) boundary_choice: crate::widgets::scope::Choice,
     pub(crate) boundaries: Vec<Boundary>,
@@ -206,6 +220,7 @@ pub struct DisclosureCounts {
 pub struct Grids {
     pub timeline_occurrences: grid::Grid,
     pub timeline_actuals: grid::Grid,
+    pub forecast_values: grid::Grid,
     pub tax_events: grid::Grid,
     pub rule_fees: grid::Grid,
 }
@@ -215,6 +230,7 @@ impl Grids {
         Grids {
             timeline_occurrences: grid::new_selectable_grid(models::timeline::OCCURRENCE_COLUMNS.to_vec(), window, cx),
             timeline_actuals: grid::new_selectable_grid(models::timeline::ACTUAL_COLUMNS.to_vec(), window, cx),
+            forecast_values: grid::new_selectable_grid(models::projections::PATH_COLUMNS.to_vec(), window, cx),
             tax_events: grid::new_grid(models::taxes::EVENT_COLUMNS.to_vec(), window, cx),
             rule_fees: grid::new_grid(models::rules::FEE_COLUMNS.to_vec(), window, cx),
         }
@@ -466,6 +482,8 @@ impl AtlasApp {
         let file = resolved.file;
         let (boundary_choice, boundaries) = crate::controls::boundary_choice(&household, viewer, boundary, _window, _cx);
         let plan_choices = PlanChoices::new(&household, viewer, false, false, false, false, false, _window, _cx);
+        let (forecast_boundary_choice, forecast_boundaries) = crate::controls::boundary_choice(&household, viewer, Boundary::Household, _window, _cx);
+        let forecast_case_choice = crate::controls::case_choice(Case::Expected, _window, _cx);
         log::info!("Atlas Financer window: route={} viewer={} opened={opened} viewer_pending={viewer_pending}", route.slug(), viewer.person);
         let mut app = AtlasApp {
             household,
@@ -494,6 +512,16 @@ impl AtlasApp {
             tax_entity_filter: None,
             forecast_selected_account: None,
             forecast_report_tab: 0,
+            forecast_boundary_choice,
+            forecast_boundaries,
+            forecast_case_choice,
+            forecast_path_state: _cx.new(|_| crate::widgets::chart::PathState::default()),
+            account_path_state: _cx.new(|_| crate::widgets::chart::PathState::default()),
+            forecast_show_all_assumptions: false,
+            assumption_controls: AssumptionControls::new(&household_for_controls, viewer, None, Boundary::Household, _window, _cx),
+            assumption_expanded: None,
+            sensitivity_pending: false,
+            sensitivity_expanded: None,
             boundary_choice,
             boundaries,
             earmarks_released_tab: false,
@@ -583,6 +611,14 @@ impl AtlasApp {
             self.boundary = Boundary::Household;
         }
         self.plan_choices = PlanChoices::new(&self.household, self.viewer, self.projection_scenario, self.timeline_filter.scenario.is_some(), self.sensitivity_scenario, self.tax_scenario, self.rules_scenario, window, cx);
+        let (forecast_boundary_choice, forecast_boundaries) = crate::controls::boundary_choice(&self.household, self.viewer, self.projection_boundary, window, cx);
+        self.forecast_boundary_choice = forecast_boundary_choice;
+        self.forecast_boundaries = forecast_boundaries;
+        if !self.forecast_boundaries.contains(&self.projection_boundary) {
+            self.projection_boundary = Boundary::Household;
+        }
+        self.forecast_case_choice = crate::controls::case_choice(self.projection_case, window, cx);
+        self.assumption_controls = AssumptionControls::new(&self.household, self.viewer, self.derivation_series, self.sensitivity_boundary, window, cx);
         self.subscribe_controls(window, cx);
     }
 
@@ -845,15 +881,21 @@ impl AtlasApp {
         cx.notify();
     }
 
+    /// Changes the sensitivity scope; the result on show is out of date
+    /// until `run_sensitivity` recomputes it.
     pub fn select_sensitivity_boundary(&mut self, boundary: Boundary, cx: &mut Context<Self>) {
-        self.sensitivity_boundary = boundary;
-        self.refresh_assumptions();
+        if self.sensitivity_boundary != boundary {
+            self.sensitivity_boundary = boundary;
+            self.sensitivity_pending = true;
+        }
         cx.notify();
     }
 
     pub fn set_sensitivity_scenario(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.sensitivity_scenario = on;
-        self.refresh_assumptions();
+        if self.sensitivity_scenario != on {
+            self.sensitivity_scenario = on;
+            self.sensitivity_pending = true;
+        }
         cx.notify();
     }
 
@@ -1865,12 +1907,16 @@ impl AtlasApp {
                 Err(err) => self.render_engine_failure(self.route, "the planned movements", err, cx),
             },
             Route::ForecastPath => match self.projection_result() {
-                Ok(model) => models::projections::render(model, &self.household, cx).into_any_element(),
+                Ok(model) => crate::screens::forecast::render_path(self, model, &self.household, cx),
                 Err(err) => self.render_engine_failure(Route::ForecastPath, "this forecast", err, cx),
             },
             Route::Assumptions | Route::Derive | Route::Sensitivity => match self.assumptions_result() {
-                Ok(model) => models::assumptions::render(model, &self.household, self.viewer, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Route::Assumptions, "the assumptions", err, cx),
+                Ok(model) => match self.route {
+                    Route::Derive => crate::screens::assumptions::render_derive(self, model, &self.household, cx),
+                    Route::Sensitivity => crate::screens::assumptions::render_sensitivity(self, model, &self.household, cx),
+                    _ => crate::screens::assumptions::render_register(self, model, &self.household, cx),
+                },
+                Err(err) => self.render_engine_failure(self.route, "the assumptions", err, cx),
             },
             Route::Taxes | Route::TaxPacks | Route::Extraction => match self.taxes_result() {
                 Ok(model) => models::taxes::render(model, &self.tax_controls, &self.grids, &self.household, cx).into_any_element(),
