@@ -29,6 +29,8 @@ pub struct DecisionDraft {
     pub objective: usize,
     pub source_allowed: Vec<bool>,
     pub route_allowed: Vec<bool>,
+    /// 0 = salary, 1 = dividend, per company route.
+    pub route_method: Vec<usize>,
     pub financing: bool,
     pub other_cost: bool,
     pub running_cost: bool,
@@ -127,6 +129,14 @@ impl DecisionForm {
             objective: Objective::ALL.iter().position(|o| *o == plan.objective).unwrap_or(0),
             source_allowed: personal_accounts.iter().map(|id| plan.sources.iter().find(|s| s.account == *id).map(|s| s.allowed).unwrap_or(true)).collect(),
             route_allowed: household.companies.iter().map(|c| plan.company_routes.iter().find(|r| r.company == c.id).map(|r| r.allowed).unwrap_or(false)).collect(),
+            route_method: household
+                .companies
+                .iter()
+                .map(|c| match plan.company_routes.iter().find(|r| r.company == c.id).map(|r| r.method) {
+                    Some(ExtractionMethod::Dividend) => 1,
+                    _ => 0,
+                })
+                .collect(),
             financing: plan.financing.is_some(),
             other_cost: !plan.other_costs.is_empty(),
             running_cost: plan.running_cost.is_some(),
@@ -228,7 +238,8 @@ impl AtlasApp {
                 for (index, (company, to)) in f.routes.iter().enumerate() {
                     let allowed = draft.route_allowed.get(index).copied().unwrap_or(false);
                     let to_account = *f.all_accounts.get(selected_row(to, cx)).ok_or("Pick the receiving account.")?;
-                    routes.push(CompanyRoute { company: *company, method: ExtractionMethod::Salary, allowed, to_account });
+                    let method = if draft.route_method.get(index).copied().unwrap_or(0) == 1 { ExtractionMethod::Dividend } else { ExtractionMethod::Salary };
+                    routes.push(CompanyRoute { company: *company, method, allowed, to_account });
                 }
                 plan.company_routes = routes;
                 plan.max_tax_and_fees = read_money(&f.max_tax, currency, cx, "Maximum tax + fees")?;
@@ -279,6 +290,9 @@ impl AtlasApp {
             }
             _ => {}
         }
+        if self.decision_plan != plan {
+            self.decision_result_stale = self.decision.is_some();
+        }
         self.decision_plan = plan;
         Ok(())
     }
@@ -327,14 +341,25 @@ impl AtlasApp {
         cx.notify();
     }
 
-    /// Saves the evaluated decision as a scenario (M9 ↔ M8).
+    /// Saves the evaluated decision as a scenario.
     pub fn save_decision_as_scenario(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.decision_result_stale {
+            window.push_notification("Recalculate first: the inputs changed after this result.", cx);
+            return;
+        }
+        if let Some(id) = self.decision_saved_scenario {
+            window.push_notification(format!("Already saved as {id}; open it from the result header."), cx);
+            return;
+        }
         let Some(Ok(decision)) = &self.decision else { return };
         let strategy = decision.strategies.preferred.map(|i| decision.strategies.strategies[i].clone());
         let plan = decision.plan.clone();
         let id = self.household.save_decision_as_scenario(&plan, strategy.as_ref(), self.viewer.person);
         log::info!("decision “{}” saved as scenario {id}", plan.name);
         self.scenario_selection = vec![id];
+        self.scenario_detail = Some(id);
+        self.decision_saved_scenario = Some(id);
+        self.note_result(format!("Saved “Decision: {}” as a scenario ({id}); it is stored when the household file is saved.", plan.name));
         self.mark_dirty();
         self.rebuild_forms(window, cx);
         self.refresh_derived();

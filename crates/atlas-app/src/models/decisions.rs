@@ -36,6 +36,14 @@ use crate::widgets::master::page_header;
 use crate::widgets::table::{money_cell, muted_cell, signed_money_cell};
 use atlas_core::EngineError;
 
+/// Columns of the result's `Values` table.
+pub const PATH_COLUMNS: [crate::widgets::grid::GridColumn; 4] = [
+    crate::widgets::grid::GridColumn::new("date", "Date", 130.),
+    crate::widgets::grid::GridColumn::new("baseline", "Baseline", 170.).right(),
+    crate::widgets::grid::GridColumn::new("purchase", "With the purchase", 190.).right(),
+    crate::widgets::grid::GridColumn::new("delta", "Difference", 150.).right(),
+];
+
 #[derive(Clone, Debug)]
 pub struct DecisionPoint {
     pub label: SharedString,

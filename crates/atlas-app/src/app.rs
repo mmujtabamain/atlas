@@ -133,6 +133,30 @@ pub struct AtlasApp {
     pub(crate) assumption_expanded: Option<AssumptionId>,
     pub(crate) sensitivity_pending: bool,
     pub(crate) sensitivity_expanded: Option<usize>,
+    /// Decisions / Purchase: the result's report tab, the expanded rows, the
+    /// combination view and selection, the chart state and the derived
+    /// pieces the result screen reads every frame.
+    pub(crate) decision_report_tab: usize,
+    pub(crate) decision_result_stale: bool,
+    pub(crate) decision_saved_scenario: Option<ScenarioId>,
+    pub(crate) decision_metric_expanded: Option<usize>,
+    pub(crate) decision_strategy_expanded: Option<usize>,
+    pub(crate) decision_show_basis: bool,
+    pub(crate) decision_show_all_assumptions: bool,
+    pub(crate) decision_combo_long: bool,
+    pub(crate) decision_combo_filter: bool,
+    pub(crate) decision_combo_selected: Option<usize>,
+    pub(crate) decision_path_state: Entity<crate::widgets::chart::PathState>,
+    pub(crate) decision_immediate: Option<crate::widgets::figure::ExplainedFigure>,
+    pub(crate) decision_values_rows: crate::widgets::grid::Rows,
+    /// Decisions / Scenarios: the inspected scenario, the comparison's tab,
+    /// case choice and chart state.
+    pub(crate) scenario_detail: Option<ScenarioId>,
+    pub(crate) comparison_tab: usize,
+    pub(crate) comparison_case_choice: crate::widgets::scope::Choice,
+    pub(crate) comparison_path_state: Entity<crate::widgets::chart::PathState>,
+    /// Decisions / Extraction timing: which step of the illustration.
+    pub(crate) extraction_step: usize,
     /// Earmarks: `Whose money` and the boundaries behind its rows; Active / Released.
     pub(crate) boundary_choice: crate::widgets::scope::Choice,
     pub(crate) boundaries: Vec<Boundary>,
@@ -221,6 +245,7 @@ pub struct Grids {
     pub timeline_occurrences: grid::Grid,
     pub timeline_actuals: grid::Grid,
     pub forecast_values: grid::Grid,
+    pub decision_values: grid::Grid,
     pub tax_events: grid::Grid,
     pub rule_fees: grid::Grid,
 }
@@ -231,6 +256,7 @@ impl Grids {
             timeline_occurrences: grid::new_selectable_grid(models::timeline::OCCURRENCE_COLUMNS.to_vec(), window, cx),
             timeline_actuals: grid::new_selectable_grid(models::timeline::ACTUAL_COLUMNS.to_vec(), window, cx),
             forecast_values: grid::new_selectable_grid(models::projections::PATH_COLUMNS.to_vec(), window, cx),
+            decision_values: grid::new_selectable_grid(models::decisions::PATH_COLUMNS.to_vec(), window, cx),
             tax_events: grid::new_grid(models::taxes::EVENT_COLUMNS.to_vec(), window, cx),
             rule_fees: grid::new_grid(models::rules::FEE_COLUMNS.to_vec(), window, cx),
         }
@@ -522,6 +548,24 @@ impl AtlasApp {
             assumption_expanded: None,
             sensitivity_pending: false,
             sensitivity_expanded: None,
+            decision_report_tab: 0,
+            decision_result_stale: false,
+            decision_saved_scenario: None,
+            decision_metric_expanded: None,
+            decision_strategy_expanded: None,
+            decision_show_basis: false,
+            decision_show_all_assumptions: false,
+            decision_combo_long: false,
+            decision_combo_filter: false,
+            decision_combo_selected: None,
+            decision_path_state: _cx.new(|_| crate::widgets::chart::PathState::default()),
+            decision_immediate: None,
+            decision_values_rows: std::sync::Arc::new(Vec::new()),
+            scenario_detail: None,
+            comparison_tab: 0,
+            comparison_case_choice: crate::controls::case_choice(Case::Expected, _window, _cx),
+            comparison_path_state: _cx.new(|_| crate::widgets::chart::PathState::default()),
+            extraction_step: 0,
             boundary_choice,
             boundaries,
             earmarks_released_tab: false,
@@ -619,6 +663,7 @@ impl AtlasApp {
         }
         self.forecast_case_choice = crate::controls::case_choice(self.projection_case, window, cx);
         self.assumption_controls = AssumptionControls::new(&self.household, self.viewer, self.derivation_series, self.sensitivity_boundary, window, cx);
+        self.comparison_case_choice = crate::controls::case_choice(self.scenario_case, window, cx);
         self.subscribe_controls(window, cx);
     }
 
@@ -1319,6 +1364,12 @@ impl AtlasApp {
         result
     }
 
+    /// Recomputes the scenario comparison and repaints.
+    pub(crate) fn invalidate_scenarios(&mut self, cx: &mut Context<Self>) {
+        self.scenarios.invalidate();
+        cx.notify();
+    }
+
     fn refresh_scenarios(&mut self) {
         self.scenarios.invalidate();
     }
@@ -1919,18 +1970,25 @@ impl AtlasApp {
                 Err(err) => self.render_engine_failure(self.route, "the assumptions", err, cx),
             },
             Route::Taxes | Route::TaxPacks | Route::Extraction => match self.taxes_result() {
-                Ok(model) => models::taxes::render(model, &self.tax_controls, &self.grids, &self.household, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Route::Taxes, "the tax assessment", err, cx),
+                Ok(model) => match self.route {
+                    Route::Extraction => crate::screens::extraction::render(self, model, cx),
+                    _ => models::taxes::render(model, &self.tax_controls, &self.grids, &self.household, cx).into_any_element(),
+                },
+                Err(err) => self.render_engine_failure(self.route, "the tax assessment", err, cx),
             },
             Route::Rules | Route::Rule(_) | Route::CreateRule | Route::RuleActivity => match self.rules_result() {
                 Ok(model) => models::rules::render(model, &self.grids, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Route::Rules, "the rules", err, cx),
             },
             Route::Scenarios | Route::ScenarioCompare => match self.scenarios_result() {
-                Ok(model) => models::scenarios::render(model, &self.household, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Route::Scenarios, "the scenarios", err, cx),
+                Ok(model) => match self.route {
+                    Route::ScenarioCompare => crate::screens::scenarios::render_comparison(self, model, &self.household, cx),
+                    _ => crate::screens::scenarios::render_list(self, model, &self.household, cx),
+                },
+                Err(err) => self.render_engine_failure(self.route, "the scenarios", err, cx),
             },
-            Route::Purchase | Route::PurchaseResult => models::decisions::render(self.decision_step, &self.decision_form, self.decision.as_ref(), &self.household, &self.viewer_name(), cx).into_any_element(),
+            Route::Purchase => crate::screens::decisions::render_purchase(self, &self.household, cx),
+            Route::PurchaseResult => crate::screens::decisions::render_result(self, &self.household, cx),
             Route::Policies | Route::Grants | Route::Audit => models::privacy::render(self.privacy(), &self.household, &self.viewer_name(), cx).into_any_element(),
         }
     }

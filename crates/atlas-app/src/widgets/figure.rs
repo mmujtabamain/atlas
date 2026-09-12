@@ -175,8 +175,8 @@ impl RenderOnce for Figure {
                     .justify_between()
                     .items_baseline()
                     .gap_2()
-                    .child(div().text_xs().text_color(theme.muted_foreground).child(self.label))
-                    .child(explain),
+                    .child(div().flex_1().min_w_0().text_xs().text_color(theme.muted_foreground).whitespace_normal().child(self.label))
+                    .child(div().flex_shrink_0().child(explain)),
             )
             .child(
                 div()

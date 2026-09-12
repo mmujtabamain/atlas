@@ -264,6 +264,24 @@ impl AtlasApp {
                 });
             }
         }));
+        subscriptions.push(cx.observe(&self.decision_path_state, |_, _, cx| cx.notify()));
+        subscriptions.push(cx.observe(&self.comparison_path_state, |_, _, cx| cx.notify()));
+        subscriptions.push(cx.subscribe_in(&self.comparison_case_choice, window, |this, state, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+            let SelectEvent::Confirm(_) = event;
+            let row = state.read(cx).selected_index(cx).map(|p| p.row).unwrap_or(1);
+            if let Some(case) = atlas_core::forecast::Case::ALL.get(row).copied() {
+                this.set_comparison_case(case, cx);
+            }
+        }));
+        subscriptions.push(cx.subscribe_in(&self.grids.decision_values, window, |this, _, event: &TableEvent, _, cx| {
+            if let TableEvent::SelectRow(row) = event {
+                let row = *row;
+                this.decision_path_state.update(cx, |s, cx| {
+                    s.selected = Some(row);
+                    cx.notify();
+                });
+            }
+        }));
         // Whose money on the earmarks screen.
         subscriptions.push(cx.subscribe_in(&self.boundary_choice, window, |this, state, event: &SelectEvent<Vec<SharedString>>, _, cx| {
             let SelectEvent::Confirm(_) = event;
