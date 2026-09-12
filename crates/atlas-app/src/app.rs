@@ -21,6 +21,7 @@ use gpui_kit::*;
 use crate::alerting::{self, Level};
 use crate::launch::{Launch, Start};
 use crate::perf;
+use crate::widgets::grid;
 use crate::screens::{
     self, Section,
     entities::EntityModels,
@@ -123,9 +124,29 @@ pub struct AtlasApp {
     pub(crate) owner: String,
     pub(crate) lifecycle_form: crate::lifecycle::LifecycleForm,
     pub(crate) entry_forms: crate::entry::EntryForms,
+    /// The virtualised tables (retained state; rows are synced from the models at render).
+    pub(crate) grids: Grids,
     /// Frame timing behind the status-bar FPS counter and the `perf:` log lines.
     pub(crate) perf: crate::perf::FrameMeter,
     pub(crate) _subscriptions: Vec<Subscription>,
+}
+
+/// The retained state of every virtualised table (`widgets::grid`). Created
+/// once with the window; their rows come from the screen models.
+pub struct Grids {
+    pub timeline_occurrences: grid::Grid,
+    pub tax_events: grid::Grid,
+    pub rule_fees: grid::Grid,
+}
+
+impl Grids {
+    fn new(window: &mut Window, cx: &mut App) -> Self {
+        Grids {
+            timeline_occurrences: grid::new_grid(screens::timeline::OCCURRENCE_COLUMNS.to_vec(), window, cx),
+            tax_events: grid::new_grid(screens::taxes::EVENT_COLUMNS.to_vec(), window, cx),
+            rule_fees: grid::new_grid(screens::rules::FEE_COLUMNS.to_vec(), window, cx),
+        }
+    }
 }
 
 /// Retained controls of the Taxes screen.
@@ -367,6 +388,7 @@ impl AtlasApp {
         let privacy_forms = PrivacyForms::new(&household, viewer.person, _window, _cx);
         let lifecycle_form = crate::lifecycle::LifecycleForm::new(_window, _cx);
         let entry_forms = crate::entry::EntryForms::new(&household, _window, _cx);
+        let grids = Grids::new(_window, _cx);
         let file = resolved.file;
         let mut subscriptions: Vec<Subscription> = timeline_controls
             .all()
@@ -439,6 +461,7 @@ impl AtlasApp {
             owner,
             lifecycle_form,
             entry_forms,
+            grids,
             perf: crate::perf::FrameMeter::new(),
             _subscriptions: subscriptions,
         }
@@ -1467,6 +1490,11 @@ impl AtlasApp {
         }
     }
 
+    /// The virtualised tables' retained state (tests read their rows).
+    pub fn grids(&self) -> &Grids {
+        &self.grids
+    }
+
     /// Whether the sidebar is collapsed to its icon column.
     pub fn sidebar_collapsed(&self) -> bool {
         self.sidebar_collapsed
@@ -1515,7 +1543,7 @@ impl AtlasApp {
                 Err(err) => self.render_engine_failure(Section::Liquidity, err, cx),
             },
             Section::Timeline => match &self.timeline {
-                Ok(model) => screens::timeline::render(model, &self.timeline_controls, &self.household, self.viewer, cx).into_any_element(),
+                Ok(model) => screens::timeline::render(model, &self.timeline_controls, &self.grids, &self.household, self.viewer, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Timeline, err, cx),
             },
             Section::Projections => match &self.projection {
@@ -1527,11 +1555,11 @@ impl AtlasApp {
                 Err(err) => self.render_engine_failure(Section::Assumptions, err, cx),
             },
             Section::Taxes => match &self.taxes {
-                Ok(model) => screens::taxes::render(model, &self.tax_controls, &self.household, cx).into_any_element(),
+                Ok(model) => screens::taxes::render(model, &self.tax_controls, &self.grids, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Taxes, err, cx),
             },
             Section::Rules => match &self.rules {
-                Ok(model) => screens::rules::render(model, &self.household, cx).into_any_element(),
+                Ok(model) => screens::rules::render(model, &self.grids, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Rules, err, cx),
             },
             Section::Scenarios => match &self.scenarios {
