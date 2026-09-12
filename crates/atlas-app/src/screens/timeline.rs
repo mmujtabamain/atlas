@@ -54,6 +54,46 @@ pub struct TimelineModel {
     /// Series the viewer may see, in fixture order.
     pub series: Vec<SeriesId>,
     pub hidden_series: usize,
+    /// The actual transactions the viewer may see, with what each is
+    /// reconciled to, as grid rows.
+    pub actual_rows: grid::Rows,
+}
+
+/// Columns of the actual-transactions grid, in display order.
+pub const ACTUAL_COLUMNS: [GridColumn; 5] = [
+    GridColumn::new("date", "Date", 104.),
+    GridColumn::new("account", "Account", 224.),
+    GridColumn::new("description", "Description", 360.),
+    GridColumn::new("amount", "Amount", 128.).right(),
+    GridColumn::new("reconciled", "Reconciled to", 400.),
+];
+
+fn actual_rows(household: &Household, viewer: Viewer) -> grid::Rows {
+    Arc::new(
+        household
+            .actuals
+            .iter()
+            .filter(|t| matches!(household.disclosure_for(viewer, ObjectRef::Account(t.account)), Disclosure::Full | Disclosure::SelectedFields))
+            .map(|t| {
+                let links: Vec<String> = household
+                    .links
+                    .iter()
+                    .filter(|l| l.transaction == t.id)
+                    .map(|l| {
+                        let name = household.series_by_id(l.series).map(|s| s.name.clone()).unwrap_or_else(|| l.series.to_string());
+                        format!("{} due {} — {}", name, l.original_due.format("%d %b %Y"), l.amount.format())
+                    })
+                    .collect();
+                Row::new(vec![
+                    Cell::text(t.date.format("%d %b %y").to_string()),
+                    Cell::muted(household.account(t.account).map(|a| a.name.clone()).unwrap_or_default()),
+                    Cell::text(t.description.clone()),
+                    Cell::money(t.amount),
+                    Cell::muted(if links.is_empty() { "unreconciled".to_string() } else { links.join(" · ") }),
+                ])
+            })
+            .collect(),
+    )
 }
 
 /// Columns of the occurrences grid, in display order.
@@ -151,12 +191,14 @@ impl TimelineModel {
         let total_in = Money::sum(currency, occurrences.iter().filter(|o| o.direction == Direction::Income && o.is_live()).map(|o| o.remaining_expected()))?;
         let total_out = Money::sum(currency, occurrences.iter().filter(|o| o.direction == Direction::Expense && o.is_live()).map(|o| o.remaining_expected()))?;
         let rows = Arc::new(occurrences.iter().map(|o| occurrence_row(o, household)).collect());
-        Ok(TimelineModel { filter, occurrences, rows, total_in, total_out, series, hidden_series })
+        let actual_rows = actual_rows(household, viewer);
+        Ok(TimelineModel { filter, occurrences, rows, total_in, total_out, series, hidden_series, actual_rows })
     }
 }
 
-pub fn render(model: &TimelineModel, controls: &TimelineControls, grids: &Grids, household: &Household, viewer: Viewer, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+pub fn render(model: &TimelineModel, controls: &TimelineControls, grids: &Grids, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     grid::sync(&grids.timeline_occurrences, &model.rows, cx);
+    grid::sync(&grids.timeline_actuals, &model.actual_rows, cx);
     let theme = cx.theme();
     let scenario_name = model.filter.scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone());
     let buy_car_on = model.filter.scenario.is_some();
@@ -235,7 +277,7 @@ pub fn render(model: &TimelineModel, controls: &TimelineControls, grids: &Grids,
             ),
         )
         .child(render_series(model, household, cx))
-        .child(render_actuals(household, viewer, cx))
+        .child(render_actuals(model, grids, cx))
 }
 
 fn labelled(label: &'static str, control: impl IntoElement, cx: &App) -> impl IntoElement {
@@ -325,52 +367,18 @@ fn render_series(model: &TimelineModel, household: &Household, cx: &mut Context<
     )
 }
 
-fn render_actuals(household: &Household, viewer: Viewer, cx: &App) -> impl IntoElement {
+fn render_actuals(model: &TimelineModel, grids: &Grids, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    let visible: Vec<_> = household
-        .actuals
-        .iter()
-        .filter(|t| matches!(household.disclosure_for(viewer, ObjectRef::Account(t.account)), Disclosure::Full | Disclosure::SelectedFields))
-        .collect();
     GroupBox::new().id("timeline-actuals").title("Actual transactions and reconciliation (§5.7, §16)").child(
         v_flex()
             .gap_3()
             .child(div().text_xs().text_color(theme.muted_foreground).child(
                 "Once an actual transaction is linked, the planned occurrence counts only its remainder — never twice (V012).",
             ))
-            .child(if visible.is_empty() {
+            .child(if model.actual_rows.is_empty() {
                 div().text_sm().text_color(theme.muted_foreground).child("No actual transactions visible to this viewer.").into_any_element()
             } else {
-                Table::new()
-                    .child(
-                        TableHeader::new().child(
-                            TableRow::new()
-                                .child(TableHead::new().w_24().flex_shrink_0().child("Date"))
-                                .child(TableHead::new().w_56().flex_shrink_0().child("Account"))
-                                .child(TableHead::new().min_w_0().child("Description"))
-                                .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Amount"))
-                                .child(TableHead::new().w_96().flex_shrink_0().child("Reconciled to")),
-                        ),
-                    )
-                    .child(TableBody::new().children(visible.iter().enumerate().map(|(index, t)| {
-                        let links: Vec<String> = household
-                            .links
-                            .iter()
-                            .filter(|l| l.transaction == t.id)
-                            .map(|l| {
-                                let name = household.series_by_id(l.series).map(|s| s.name.clone()).unwrap_or_else(|| l.series.to_string());
-                                format!("{} due {} — {}", name, l.original_due.format("%d %b %Y"), l.amount.format())
-                            })
-                            .collect();
-                        TableRow::new()
-                            .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                            .child(TableCell::new().w_24().flex_shrink_0().child(t.date.format("%d %b %y").to_string()))
-                            .child(muted_cell(household.account(t.account).map(|a| a.name.clone()).unwrap_or_default(), cx).w_56().flex_shrink_0())
-                            .child(TableCell::new().min_w_0().overflow_hidden().text_ellipsis().child(t.description.clone()))
-                            .child(money_cell(t.amount, cx).w_32().flex_shrink_0())
-                            .child(muted_cell(if links.is_empty() { "unreconciled".to_string() } else { links.join(" · ") }, cx).w_96().flex_shrink_0().overflow_hidden())
-                    })))
-                    .into_any_element()
+                grid::render("timeline-actuals-grid", &grids.timeline_actuals, cx).into_any_element()
             }),
     )
 }

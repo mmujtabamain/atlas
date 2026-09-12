@@ -142,6 +142,7 @@ pub struct AtlasApp {
 /// once with the window; their rows come from the screen models.
 pub struct Grids {
     pub timeline_occurrences: grid::Grid,
+    pub timeline_actuals: grid::Grid,
     pub tax_events: grid::Grid,
     pub rule_fees: grid::Grid,
 }
@@ -150,6 +151,7 @@ impl Grids {
     fn new(window: &mut Window, cx: &mut App) -> Self {
         Grids {
             timeline_occurrences: grid::new_grid(screens::timeline::OCCURRENCE_COLUMNS.to_vec(), window, cx),
+            timeline_actuals: grid::new_grid(screens::timeline::ACTUAL_COLUMNS.to_vec(), window, cx),
             tax_events: grid::new_grid(screens::taxes::EVENT_COLUMNS.to_vec(), window, cx),
             rule_fees: grid::new_grid(screens::rules::FEE_COLUMNS.to_vec(), window, cx),
         }
@@ -1572,7 +1574,7 @@ impl AtlasApp {
     fn render_section(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.section {
             Section::Household => match self.overview_result() {
-                Ok(overview) => screens::household::render(overview, &self.household, self.viewer, cx).into_any_element(),
+                Ok(overview) => screens::household::render(overview, &self.household, cx).into_any_element(),
                 Err(err) => v_flex()
                     .id("screen-household")
                     .test_support()
@@ -1603,7 +1605,7 @@ impl AtlasApp {
                 Err(err) => self.render_engine_failure(Section::Liquidity, err, cx),
             },
             Section::Timeline => match self.timeline_result() {
-                Ok(model) => screens::timeline::render(model, &self.timeline_controls, &self.grids, &self.household, self.viewer, cx).into_any_element(),
+                Ok(model) => screens::timeline::render(model, &self.timeline_controls, &self.grids, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Timeline, err, cx),
             },
             Section::Projections => match self.projection_result() {

@@ -145,6 +145,14 @@ fn person_b_gets_aggregates_not_person_a_details(cx: &mut TestAppContext) {
         // breakdown is suppressed rather than exposed as a difference; its balance never appears.
         assert!(text.contains("suppressed"), "{text}");
         assert!(!text.contains("1,500,000"), "{text}");
+        // The tables are rows the model resolved once (perf step 2): A's
+        // private account is not listed, and no row leaks its name.
+        assert!(overview.hidden_accounts >= 1, "{}", overview.hidden_accounts);
+        assert_eq!(overview.accounts.len() + overview.hidden_accounts, household.accounts.len());
+        assert!(overview.accounts.iter().all(|row| row.name.as_ref() != "Person A current account"));
+        assert!(overview.accounts.iter().any(|row| row.free.is_some()), "B's own accounts show derived figures");
+        assert_eq!(overview.people.len(), household.people.len());
+        assert_eq!(overview.companies.len(), household.companies.len());
         assert!(free.calc.node().verify_sums().is_empty());
         // The private Leave Job assumption stays with Person A (§18.5).
         assert!(overview.assumptions.iter().all(|a| a.private_to.is_none()));

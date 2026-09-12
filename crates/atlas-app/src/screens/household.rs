@@ -35,6 +35,126 @@ pub struct HouseholdOverview {
     pub unreserved: ExplainedFigure,
     pub assumptions: Vec<Assumption>,
     pub occurrence_count: usize,
+    /// The three tables at the bottom, as the viewer may see them — every
+    /// string, disclosure and per-account liquidity figure resolved here,
+    /// once, rather than by the render on every frame.
+    pub people: Vec<PersonRow>,
+    pub companies: Vec<CompanyRow>,
+    pub accounts: Vec<AccountRow>,
+    /// Accounts whose existence is not disclosed to the viewer (V062).
+    pub hidden_accounts: usize,
+}
+
+/// One row of the People table.
+#[derive(Clone, Debug)]
+pub struct PersonRow {
+    pub name: SharedString,
+    pub role: SharedString,
+    pub accounts: SharedString,
+    pub companies: SharedString,
+}
+
+/// One row of the Companies table; `cash` is `None` when not disclosed (§8.7).
+#[derive(Clone, Debug)]
+pub struct CompanyRow {
+    pub name: SharedString,
+    pub owners: SharedString,
+    pub employees: SharedString,
+    pub constraints: SharedString,
+    pub cash: Option<Money>,
+}
+
+/// One row of the Accounts table; the derived figures are `None` when the
+/// viewer only sees the balance.
+#[derive(Clone, Debug)]
+pub struct AccountRow {
+    pub name: SharedString,
+    pub institution: SharedString,
+    pub kind: SharedString,
+    pub holder: SharedString,
+    pub liquidity: SharedString,
+    pub settled: Money,
+    pub reserved: Option<Money>,
+    pub free: Option<Money>,
+    pub disclosure: Disclosure,
+    pub access: SharedString,
+}
+
+fn person_rows(household: &Household) -> Vec<PersonRow> {
+    household
+        .people
+        .iter()
+        .map(|person| {
+            let accounts: Vec<String> = household.accounts_of(person.id).map(|a| format!("{} ({}%)", a.name, a.holder.share_of(person.id) / 100)).collect();
+            let companies: Vec<String> = household
+                .companies_of(person.id)
+                .map(|c| {
+                    let share = c.owners.iter().filter(|o| o.person == person.id).map(|o| o.basis_points).sum::<u32>() / 100;
+                    format!("{} ({share}%)", c.name)
+                })
+                .collect();
+            PersonRow {
+                name: person.name.clone().into(),
+                role: person.role.label().into(),
+                accounts: if accounts.is_empty() { "—".into() } else { accounts.join(" · ").into() },
+                companies: if companies.is_empty() { "—".into() } else { companies.join(" · ").into() },
+            }
+        })
+        .collect()
+}
+
+fn company_rows(household: &Household, viewer: Viewer) -> Vec<CompanyRow> {
+    household
+        .companies
+        .iter()
+        .map(|company| {
+            let owners: Vec<String> = company
+                .owners
+                .iter()
+                .map(|o| format!("{} {}%", household.entity_name(atlas_core::ids::EntityRef::Person(o.person)), o.basis_points / 100))
+                .collect();
+            let cash = Money::sum(household.base_currency, household.company_accounts(company.id).map(|a| a.settled_balance)).unwrap_or(Money::zero(household.base_currency));
+            let disclosed = matches!(household.disclosure_for(viewer, ObjectRef::Company(company.id)), Disclosure::Full | Disclosure::SelectedFields | Disclosure::BalanceOnly);
+            CompanyRow {
+                name: company.name.clone().into(),
+                owners: owners.join(" · ").into(),
+                employees: company.employees.len().to_string().into(),
+                constraints: company.constraints.iter().map(|c| c.describe()).collect::<Vec<_>>().join(" · ").into(),
+                cash: disclosed.then_some(cash),
+            }
+        })
+        .collect()
+}
+
+fn account_rows(household: &Household, viewer: Viewer) -> (Vec<AccountRow>, usize) {
+    let mut hidden = 0;
+    let rows = household
+        .accounts
+        .iter()
+        .filter_map(|account| {
+            let disclosure = household.disclosure_for(viewer, ObjectRef::Account(account.id));
+            if matches!(disclosure, Disclosure::Hidden | Disclosure::Aggregate) {
+                hidden += 1;
+                return None;
+            }
+            let liquidity = account_liquidity(household, account.id).ok();
+            let derived_visible = matches!(disclosure, Disclosure::Full | Disclosure::SelectedFields);
+            let derived = liquidity.filter(|_| derived_visible);
+            Some(AccountRow {
+                name: account.name.clone().into(),
+                institution: account.institution.clone().into(),
+                kind: account.kind.label().into(),
+                holder: household.holder_description(account).into(),
+                liquidity: account.liquidity.describe().into(),
+                settled: account.settled_balance,
+                reserved: derived.as_ref().map(|l| l.reserved.money()),
+                free: derived.as_ref().map(|l| l.free.money()),
+                disclosure,
+                access: household.policy_for(ObjectRef::Account(account.id)).map(|p| p.calculation_access.label()).unwrap_or("no policy — excluded (F162)").into(),
+            })
+        })
+        .collect();
+    (rows, hidden)
 }
 
 impl HouseholdOverview {
@@ -70,7 +190,12 @@ impl HouseholdOverview {
             .filter(|a| a.private_to.is_none_or(|owner| owner == viewer.person))
             .cloned()
             .collect();
+        let (accounts, hidden_accounts) = account_rows(household, viewer);
         Ok(HouseholdOverview {
+            people: person_rows(household),
+            companies: company_rows(household, viewer),
+            accounts,
+            hidden_accounts,
             viewer_name,
             horizon,
             money: vec![
@@ -89,7 +214,7 @@ impl HouseholdOverview {
     }
 }
 
-pub fn render(overview: &HouseholdOverview, household: &Household, viewer: Viewer, cx: &App) -> impl IntoElement {
+pub fn render(overview: &HouseholdOverview, household: &Household, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let viewer_name = overview.viewer_name.as_str();
 
@@ -177,12 +302,12 @@ pub fn render(overview: &HouseholdOverview, household: &Household, viewer: Viewe
                         )
                 }))),
         )
-        .child(render_people(household, cx))
-        .child(render_companies(household, viewer, cx))
-        .child(render_accounts(household, viewer, cx))
+        .child(render_people(overview, cx))
+        .child(render_companies(overview, cx))
+        .child(render_accounts(overview, household, cx))
 }
 
-fn render_people(household: &Household, cx: &App) -> impl IntoElement {
+fn render_people(overview: &HouseholdOverview, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     GroupBox::new().id("people").title("People (§5.2)").child(
         Table::new()
@@ -195,29 +320,18 @@ fn render_people(household: &Household, cx: &App) -> impl IntoElement {
                         .child(TableHead::new().w_56().flex_shrink_0().child("Companies owned")),
                 ),
             )
-            .child(TableBody::new().children(household.people.iter().enumerate().map(|(index, person)| {
-                let accounts: Vec<String> = household
-                    .accounts_of(person.id)
-                    .map(|a| format!("{} ({}%)", a.name, a.holder.share_of(person.id) / 100))
-                    .collect();
-                let companies: Vec<String> = household
-                    .companies_of(person.id)
-                    .map(|c| {
-                        let share = c.owners.iter().filter(|o| o.person == person.id).map(|o| o.basis_points).sum::<u32>() / 100;
-                        format!("{} ({share}%)", c.name)
-                    })
-                    .collect();
+            .child(TableBody::new().children(overview.people.iter().enumerate().map(|(index, person)| {
                 TableRow::new()
                     .when(index % 2 == 1, |row| row.bg(theme.table_even))
                     .child(TableCell::new().w_48().flex_shrink_0().overflow_hidden().text_ellipsis().child(person.name.clone()))
-                    .child(TableCell::new().w_40().flex_shrink_0().overflow_hidden().text_ellipsis().child(Tag::secondary().xsmall().outline().child(person.role.label())))
-                    .child(muted_cell(if accounts.is_empty() { "—".to_string() } else { accounts.join(" · ") }, cx).min_w_0().overflow_hidden().text_ellipsis())
-                    .child(muted_cell(if companies.is_empty() { "—".to_string() } else { companies.join(" · ") }, cx).w_56().flex_shrink_0().overflow_hidden().text_ellipsis())
+                    .child(TableCell::new().w_40().flex_shrink_0().overflow_hidden().text_ellipsis().child(Tag::secondary().xsmall().outline().child(person.role.clone())))
+                    .child(muted_cell(person.accounts.clone(), cx).min_w_0().overflow_hidden().text_ellipsis())
+                    .child(muted_cell(person.companies.clone(), cx).w_56().flex_shrink_0().overflow_hidden().text_ellipsis())
             }))),
     )
 }
 
-fn render_companies(household: &Household, viewer: Viewer, cx: &App) -> impl IntoElement {
+fn render_companies(overview: &HouseholdOverview, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     GroupBox::new().id("companies").title("Companies (§5.3, §8)").child(
         v_flex()
@@ -237,49 +351,35 @@ fn render_companies(household: &Household, viewer: Viewer, cx: &App) -> impl Int
                                 .child(TableHead::new().w_40().flex_shrink_0().text_right().child("Business cash")),
                         ),
                     )
-                    .child(TableBody::new().children(household.companies.iter().enumerate().map(|(index, company)| {
-                        let owners: Vec<String> = company
-                            .owners
-                            .iter()
-                            .map(|o| format!("{} {}%", household.entity_name(atlas_core::ids::EntityRef::Person(o.person)), o.basis_points / 100))
-                            .collect();
-                        let cash = Money::sum(household.base_currency, household.company_accounts(company.id).map(|a| a.settled_balance))
-                            .unwrap_or(Money::zero(household.base_currency));
-                        let disclosure = household.disclosure_for(viewer, ObjectRef::Company(company.id));
-                        let cash_cell = match disclosure {
-                            Disclosure::Full | Disclosure::SelectedFields | Disclosure::BalanceOnly => {
-                                money_cell(cash, cx).w_40().flex_shrink_0().text_color(theme.muted_foreground)
-                            }
-                            _ => muted_cell("not disclosed (§8.7)", cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis().text_right(),
+                    .child(TableBody::new().children(overview.companies.iter().enumerate().map(|(index, company)| {
+                        let cash_cell = match company.cash {
+                            Some(cash) => money_cell(cash, cx).w_40().flex_shrink_0().text_color(theme.muted_foreground),
+                            None => muted_cell("not disclosed (§8.7)", cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis().text_right(),
                         };
                         TableRow::new()
                             .when(index % 2 == 1, |row| row.bg(theme.table_even))
                             .child(TableCell::new().w_48().flex_shrink_0().overflow_hidden().text_ellipsis().child(company.name.clone()))
-                            .child(muted_cell(owners.join(" · "), cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis())
-                            .child(TableCell::new().w_24().flex_shrink_0().overflow_hidden().text_ellipsis().text_right().child(company.employees.len().to_string()))
-                            .child(muted_cell(company.constraints.iter().map(|c| c.describe()).collect::<Vec<_>>().join(" · "), cx).min_w_0().overflow_hidden().text_ellipsis())
+                            .child(muted_cell(company.owners.clone(), cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(TableCell::new().w_24().flex_shrink_0().overflow_hidden().text_ellipsis().text_right().child(company.employees.clone()))
+                            .child(muted_cell(company.constraints.clone(), cx).min_w_0().overflow_hidden().text_ellipsis())
                             .child(cash_cell)
                     }))),
             ),
     )
 }
 
-fn render_accounts(household: &Household, viewer: Viewer, cx: &App) -> impl IntoElement {
+fn render_accounts(overview: &HouseholdOverview, household: &Household, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    let visible: Vec<_> = household
-        .accounts
-        .iter()
-        .filter(|a| !matches!(household.disclosure_for(viewer, ObjectRef::Account(a.id)), Disclosure::Hidden | Disclosure::Aggregate))
-        .collect();
-    let hidden_count = household.accounts.len() - visible.len();
+    let visible = overview.accounts.len();
+    let hidden_count = overview.hidden_accounts;
     GroupBox::new().id("accounts").title("Accounts (§7)").child(
         v_flex()
             .gap_3()
             .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
                 "{} of {} accounts are visible to {} under the current access policies; the others may still contribute to household figures as authorized aggregates (§7.2).",
-                visible.len(),
+                visible,
                 household.accounts.len(),
-                household.entity_name(atlas_core::ids::EntityRef::Person(viewer.person))
+                overview.viewer_name
             )))
             .child(
                 Table::new()
@@ -297,18 +397,10 @@ fn render_accounts(household: &Household, viewer: Viewer, cx: &App) -> impl Into
                                 .child(TableHead::new().min_w_0().child("Calculation access")),
                         ),
                     )
-                    .child(TableBody::new().children(visible.iter().enumerate().map(|(index, account)| {
-                        let disclosure = household.disclosure_for(viewer, ObjectRef::Account(account.id));
-                        let policy = household.policy_for(ObjectRef::Account(account.id));
-                        let liquidity = account_liquidity(household, account.id).ok();
-                        let derived_visible = matches!(disclosure, Disclosure::Full | Disclosure::SelectedFields);
-                        let reserved_cell = match (&liquidity, derived_visible) {
-                            (Some(l), true) => money_cell(l.reserved.money(), cx).w_32().flex_shrink_0(),
-                            _ => muted_cell("not disclosed", cx).w_32().flex_shrink_0().overflow_hidden().text_ellipsis().text_right(),
-                        };
-                        let free_cell = match (&liquidity, derived_visible) {
-                            (Some(l), true) => money_cell(l.free.money(), cx).w_32().flex_shrink_0(),
-                            _ => muted_cell("not disclosed", cx).w_32().flex_shrink_0().overflow_hidden().text_ellipsis().text_right(),
+                    .child(TableBody::new().children(overview.accounts.iter().enumerate().map(|(index, account)| {
+                        let derived = |money: Option<Money>| match money {
+                            Some(money) => money_cell(money, cx).w_32().flex_shrink_0(),
+                            None => muted_cell("not disclosed", cx).w_32().flex_shrink_0().overflow_hidden().text_ellipsis().text_right(),
                         };
                         TableRow::new()
                             .when(index % 2 == 1, |row| row.bg(theme.table_even))
@@ -319,14 +411,14 @@ fn render_accounts(household: &Household, viewer: Viewer, cx: &App) -> impl Into
                                         .child(div().text_xs().text_color(theme.muted_foreground).child(account.institution.clone())),
                                 ),
                             )
-                            .child(muted_cell(account.kind.label(), cx).w_32().flex_shrink_0().overflow_hidden().text_ellipsis())
-                            .child(muted_cell(household.holder_description(account), cx).w_48().flex_shrink_0().overflow_hidden().text_ellipsis())
-                            .child(muted_cell(account.liquidity.describe(), cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis())
-                            .child(money_cell(account.settled_balance, cx).w_32().flex_shrink_0())
-                            .child(reserved_cell)
-                            .child(free_cell)
-                            .child(TableCell::new().w_32().flex_shrink_0().overflow_hidden().text_ellipsis().child(labels::disclosure_tag(disclosure)))
-                            .child(muted_cell(policy.map(|p| p.calculation_access.label()).unwrap_or("no policy — excluded (F162)"), cx).min_w_0().overflow_hidden().text_ellipsis())
+                            .child(muted_cell(account.kind.clone(), cx).w_32().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(muted_cell(account.holder.clone(), cx).w_48().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(muted_cell(account.liquidity.clone(), cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis())
+                            .child(money_cell(account.settled, cx).w_32().flex_shrink_0())
+                            .child(derived(account.reserved))
+                            .child(derived(account.free))
+                            .child(TableCell::new().w_32().flex_shrink_0().overflow_hidden().text_ellipsis().child(labels::disclosure_tag(account.disclosure)))
+                            .child(muted_cell(account.access.clone(), cx).min_w_0().overflow_hidden().text_ellipsis())
                     }))),
             )
             .when(hidden_count > 0, |this| {
