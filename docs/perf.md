@@ -157,8 +157,10 @@ our meter's numbers stay in the log, where the phase split is the point.
 
 ## 5. How to measure
 
-- `logs.log`: per-frame `perf: frame …` lines (debug level, always in the
-  file) and the once-a-second `perf: summary …` with gpui's histograms.
+- `logs.log`: the once-a-second `perf: summary …` with gpui's histograms, a
+  `perf: slow frame …` line per frame over 50 ms (debug), and every frame's
+  line at trace — `ATLAS_LOG_FILE_FILTER=info,atlas_app=debug,atlas_app::perf=trace`
+  turns those on (the benchmark script sets it).
 - `scripts/perf-screens.sh <label>` on the box: every screen, scripted
   scrolling, one line per screen with the phase split, into
   `shots/perf-screens-<label>.txt`.

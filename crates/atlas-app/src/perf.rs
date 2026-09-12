@@ -451,6 +451,24 @@ impl FrameMeter {
         if cost >= HITCH {
             stats.hitches += 1;
         }
+        // One line per frame is trace: at 60 frames/s it is ~40 MB an hour in
+        // the file the person sends. Slow frames keep their own debug line
+        // (which frame, which section, which phase), a hitch a warn line at
+        // most once a second, and the summary has the rest.
+        let warn_hitch = cost >= HITCH && self.last_hitch_warned.is_none_or(|at| now - at >= Duration::from_secs(1));
+        if warn_hitch {
+            self.last_hitch_warned = Some(now);
+        }
+        let level = if warn_hitch {
+            log::Level::Warn
+        } else if cost >= SLOW_FRAME {
+            log::Level::Debug
+        } else {
+            log::Level::Trace
+        };
+        if !log::log_enabled!(level) {
+            return;
+        }
         let detail = format!(
             "frame #{} section={} build={} draw≈{} ({}) interval={} content({}) input(moves={} wheel={})",
             sample.number,
@@ -466,13 +484,12 @@ impl FrameMeter {
             sample.mouse_moves,
             sample.wheel_events,
         );
-        // A hitch is worth a line of its own, but never more than one a second.
-        let warn_hitch = cost >= HITCH && self.last_hitch_warned.is_none_or(|at| now - at >= Duration::from_secs(1));
         if warn_hitch {
-            self.last_hitch_warned = Some(now);
             log::warn!("perf: slow {detail}");
+        } else if cost >= SLOW_FRAME {
+            log::debug!("perf: slow {detail}");
         } else {
-            log::debug!("perf: {detail}");
+            log::trace!("perf: {detail}");
         }
     }
 

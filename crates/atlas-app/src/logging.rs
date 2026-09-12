@@ -34,7 +34,9 @@ pub const PREVIOUS_FILE: &str = "logs.prev.log";
 pub const DEFAULT_STDERR_FILTER: &str = "info";
 /// Default filter for the file when neither `RUST_LOG` nor
 /// `ATLAS_LOG_FILE_FILTER` is set: everything at info, plus the atlas crates'
-/// debug lines (per-frame perf detail).
+/// debug lines (slow frames with their phase split, grid syncs, sidebar
+/// re-renders). Every frame's line is trace — `atlas_app::perf=trace` in
+/// `ATLAS_LOG_FILE_FILTER` turns it on for a session that needs it.
 pub const DEFAULT_FILE_FILTER: &str = "info,atlas_app=debug,atlas_core=debug,atlas_store=debug";
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();

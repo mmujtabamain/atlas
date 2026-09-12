@@ -38,13 +38,18 @@ Options: `--theme light|dark`, `--size WxH`, `--screen <section>` (see `atlas --
 Every run logs to **stderr and `logs.log`** in the current directory (`cargo run` → the
 repository root; the previous run is kept as `logs.prev.log`). Send `logs.log` when the app
 feels slow: it starts with the build profile (debug/release, opt-level), OS, window size and
-scale factor, then every engine computation with its duration (`perf: compute … took 12.2ms`)
-and, per frame, what a frame cost:
+scale factor, then every engine computation with its duration (`perf: compute … took 12.2ms`),
+a summary line once a second while frames happen, and a line of its own for every slow frame
+(over 50 ms; a hitch over 250 ms is a warning):
 
 ```text
-perf: frame #12 section=timeline build=4.7ms draw≈95.3ms interval=101.0ms content(render=2.6ms) input(moves=3 wheel=0)
-perf: summary 1.0s: 9 frames (fps≈8.6) build avg=2.0ms max=9.4ms · draw≈ avg=64.7ms max=110.7ms · slow(>50ms)=5 … | gpui draw p50=71.4ms p90=113.1ms max=113.1ms n=9 · dirty→present p50=133.1ms …
+perf: slow frame #12 section=timeline build=0.1ms draw≈95.3ms (layout=… prepaint=… paint=…) interval=101.0ms content(render=2.6ms) input(moves=3 wheel=0)
+perf: summary 1.0s: 9 frames build avg=0.1ms max=0.4ms · draw≈ avg=64.7ms max=110.7ms · slow(>50ms)=5 … | gpui draw p50=71.4ms p90=113.1ms max=113.1ms n=9 · dirty→present p50=133.1ms …
 ```
+
+Every frame's line exists too, at trace level — `ATLAS_LOG_FILE_FILTER=info,atlas_app=debug,atlas_app::perf=trace`
+turns it on for a session that needs it (it is ~40 MB an hour while scrolling, which is why it
+is off by default).
 
 - `build` — time in the root view's render (title bar, status bar; small). `draw≈` — build +
   gpui layout + paint, measured to a probe painted last in the tree. The sidebar and the screen

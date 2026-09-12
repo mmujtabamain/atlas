@@ -17,7 +17,8 @@ STEPS="--step wait:600"; for i in $(seq 1 6); do STEPS="$STEPS --step wheel:900,
 for screen in household people companies accounts liquidity timeline projections assumptions taxes rules scenarios decisions privacy settings; do
   rm -f logs.log
   # The pointer lands on the "People" sidebar item for the final shot: the hover frame.
-  timeout 200 ../../gpui-lab/target/debug/gpui-shot --out perf-screen.png --size 1600x1000 --timeout 120 $STEPS --pointer 120,220 -- ../target/debug/atlas --theme light --size 1600x1000 --screen $screen >/dev/null 2>&1
+  # Every frame's line is trace by default; this run wants all of them.
+  timeout 200 ../../gpui-lab/target/debug/gpui-shot --out perf-screen.png --size 1600x1000 --timeout 120 --env ATLAS_LOG_FILE_FILTER=info,atlas_app=debug,atlas_app::perf=trace $STEPS --pointer 120,220 -- ../target/debug/atlas --theme light --size 1600x1000 --screen $screen >/dev/null 2>&1
   taffy=$(grep "atlas-probe taffy" logs.log | awk -F'measure_calls=' '{split($2,a," "); if (a[1]+0 > 100) print}' | tail -1 | sed -E 's/.*atlas-probe taffy: //; s/ measure_time.*total=/ taffy=/; s/ line_layout.*//')
   frame=$(grep "perf: frame #" logs.log | grep "content(render" | tail -1 | sed -E 's/.*build=([^ ]+) draw≈([^ ]+) \(layout=([^ ]+) taffy=[^ ]+ prepaint=([^ ]+) paint=([^ ]+)\).*/draw≈\2 layout=\3 prepaint=\4 paint=\5/')
   cached=$(grep "perf: frame #" logs.log | grep "content(cached)" | tail -1 | sed -E 's/.*draw≈([^ ]+) .*/cached≈\1/')
