@@ -1324,3 +1324,54 @@ fn shell_reuses_cached_views_between_frames(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn derived_models_are_computed_only_for_the_screen_in_use(cx: &mut TestAppContext) {
+    // Perf step 4: an edit drops every derived model; only the visible
+    // screen's is computed again (on its next frame), the others when their
+    // screen is opened. Before, every edit ran all eleven engine models.
+    let launch = Launch { section: Section::Rules, ..Launch::default() };
+    let (handle, app) = open_app(cx, launch);
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let app = app.read(cx);
+        assert!(app.is_model_computed(Section::Rules), "the screen on show has its model");
+        for section in [Section::Household, Section::Timeline, Section::Taxes, Section::Projections, Section::Scenarios, Section::Privacy] {
+            assert!(!app.is_model_computed(section), "{} is not computed until its screen is opened", section.slug());
+        }
+    })
+    .unwrap();
+
+    // An edit on the Rules screen: the rules model comes back on the next
+    // frame; the timeline stays uncomputed.
+    cx.update_window(window, |_, window, cx| {
+        window.click("rule-toggle-1", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        // (The harness draws a frame as soon as the edit's notify lands, so the
+        // rules model is already back by now — as it would be on screen.)
+        window.render_frame(cx);
+        let app = app.read(cx);
+        assert!(app.is_model_computed(Section::Rules), "the frame computed the rules model again");
+        assert!(!app.is_model_computed(Section::Timeline), "the timeline was not recomputed for a rules edit");
+        assert!(!app.is_model_computed(Section::Household));
+    })
+    .unwrap();
+
+    // Opening the Timeline computes it then; asking for a model directly
+    // (as forms and tests do) computes it too.
+    cx.update(|cx| app.update(cx, |app, cx| app.navigate(Section::Timeline, cx)));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(app.read(cx).is_model_computed(Section::Timeline));
+        assert!(!app.read(cx).is_model_computed(Section::Household));
+        assert!(app.read(cx).overview().is_some(), "an accessor computes on demand");
+        assert!(app.read(cx).is_model_computed(Section::Household));
+    })
+    .unwrap();
+}
+
