@@ -114,6 +114,8 @@ pub struct AtlasApp {
     pub(crate) selected_occurrence: Option<(SeriesId, NaiveDate)>,
     pub(crate) selected_actual: Option<atlas_core::ids::TransactionId>,
     pub(crate) selected_series: Option<SeriesId>,
+    /// Rules & taxes / Taxes: the entity display filter.
+    pub(crate) tax_entity_filter: Option<EntityRef>,
     /// Forecast / Path: the account whose path is expanded, and the report tab.
     pub(crate) forecast_selected_account: Option<AccountId>,
     pub(crate) forecast_report_tab: usize,
@@ -489,6 +491,7 @@ impl AtlasApp {
             selected_occurrence: None,
             selected_actual: None,
             selected_series: None,
+            tax_entity_filter: None,
             forecast_selected_account: None,
             forecast_report_tab: 0,
             boundary_choice,
@@ -1181,8 +1184,8 @@ impl AtlasApp {
         result
     }
 
-    fn compute_entities(household: &Household, viewer: Viewer) -> Result<EntityModels, EngineError> {
-        let result = perf::timed(&format!("compute entities (viewer={})", viewer.person), || EntityModels::compute(household, viewer));
+    fn compute_entities(household: &Household, viewer: Viewer, horizon: NaiveDate) -> Result<EntityModels, EngineError> {
+        let result = perf::timed(&format!("compute entities (viewer={})", viewer.person), || EntityModels::compute(household, viewer, horizon));
         if let Err(err) = &result {
             alerting::report(Level::Error, format!("entity models failed for {}: {err}", viewer.person));
         }
@@ -1751,7 +1754,7 @@ impl AtlasApp {
     }
 
     fn entities_result(&self) -> &Result<EntityModels, EngineError> {
-        self.entities.get(|| Self::compute_entities(&self.household, self.viewer))
+        self.entities.get(|| Self::compute_entities(&self.household, self.viewer, self.horizon))
     }
 
     /// The derived entity models, if the engine could compute them.
@@ -1835,8 +1838,10 @@ impl AtlasApp {
             },
             Route::People | Route::Person(_) | Route::Companies | Route::Company(_) | Route::Accounts | Route::Account(_) => match self.entities_result() {
                 Ok(models) => match self.route {
-                    Route::People | Route::Person(_) => models::people::render(models, &self.household, self.selected_person, cx).into_any_element(),
-                    Route::Companies | Route::Company(_) => models::companies::render(models, &self.household, self.selected_company, cx).into_any_element(),
+                    Route::People => crate::screens::people::render_list(self, models, &self.household, cx),
+                    Route::Person(id) => crate::screens::people::render_detail(self, id, models, &self.household, cx),
+                    Route::Companies => crate::screens::companies::render_list(self, models, &self.household, cx),
+                    Route::Company(id) => crate::screens::companies::render_detail(self, id, models, &self.household, cx),
                     Route::Account(id) => crate::screens::accounts::render_detail(self, id, models, &self.household, cx),
                     _ => crate::screens::accounts::render_list(self, models, &self.household, cx),
                 },

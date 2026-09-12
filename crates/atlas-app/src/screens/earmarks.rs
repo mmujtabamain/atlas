@@ -86,7 +86,7 @@ pub fn render(app: &AtlasApp, model: &LiquidityModel, household: &Household, cx:
                 false,
                 vec![
                     (LANES[0].1, record::text(r.name.clone())),
-                    (LANES[1].1, Button::new(SharedString::from(format!("earmark-account-{}", rid.raw()))).xsmall().ghost().compact().label(account_name).on_click(cx.listener(move |this, _, _, cx| this.navigate(Route::Account(account_id), cx))).into_any_element()),
+                    (LANES[1].1, record::link(format!("earmark-account-{}", rid.raw()), account_name, cx.listener(move |this, _, _, cx| this.navigate(Route::Account(account_id), cx)))),
                     (LANES[2].1, record::money(r.amount, cx)),
                     (LANES[3].1, record::muted(coverage, cx)),
                     (LANES[4].1, h_flex().child(labels::hardness_tag(r.hardness)).into_any_element()),

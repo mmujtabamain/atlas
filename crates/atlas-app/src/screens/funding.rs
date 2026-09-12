@@ -3,7 +3,7 @@
 
 use atlas_core::model::Household;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, button::{Button, ButtonVariants as _}, h_flex, tag::Tag, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, button::Button, h_flex, tag::Tag, v_flex};
 use gpui_kit::*;
 
 use super::common::workspace_header;
@@ -41,9 +41,9 @@ pub fn render(app: &AtlasApp, model: &RulesModel, household: &Household, cx: &mu
                 false,
                 vec![
                     (funding_lanes[0].1, record::muted(format!("{}.", index + 1), cx)),
-                    (funding_lanes[1].1, Button::new(SharedString::from(format!("funding-account-{index}"))).xsmall().ghost().compact().label(name(account)).on_click(cx.listener(move |this, _, _, cx| this.navigate(Route::Account(account), cx))).into_any_element()),
+                    (funding_lanes[1].1, record::link(format!("funding-account-{index}"), name(account), cx.listener(move |this, _, _, cx| this.navigate(Route::Account(account), cx)))),
                     (funding_lanes[2].1, h_flex().child(status).into_any_element()),
-                    (funding_lanes[3].1, h_flex().gap_2().items_center().child(record::muted(step.reason.clone(), cx)).child(Button::new(SharedString::from(format!("funding-rule-{index}"))).xsmall().ghost().compact().label("Rule").on_click(cx.listener(move |this, _, _, cx| this.navigate(Route::Rule(rule), cx)))).into_any_element()),
+                    (funding_lanes[3].1, h_flex().gap_2().items_center().child(record::muted(step.reason.clone(), cx)).child(record::link(format!("funding-rule-{index}"), "Rule", cx.listener(move |this, _, _, cx| this.navigate(Route::Rule(rule), cx)))).into_any_element()),
                 ],
                 |_, _, _| {},
             )
@@ -61,7 +61,7 @@ pub fn render(app: &AtlasApp, model: &RulesModel, household: &Household, cx: &mu
                 false,
                 vec![
                     (bank_lanes[0].1, record::text(format!("“{category}” expenses"))),
-                    (bank_lanes[1].1, Button::new(SharedString::from(format!("bank-account-{index}"))).xsmall().ghost().compact().label(name(account)).on_click(cx.listener(move |this, _, _, cx| this.navigate(Route::Account(account), cx))).into_any_element()),
+                    (bank_lanes[1].1, record::link(format!("bank-account-{index}"), name(account), cx.listener(move |this, _, _, cx| this.navigate(Route::Account(account), cx)))),
                     (bank_lanes[2].1, record::muted(why.clone(), cx)),
                 ],
                 |_, _, _| {},

@@ -528,7 +528,7 @@ pub fn render_series_detail(app: &AtlasApp, id: SeriesId, model: &TimelineModel,
                                 .items_center()
                                 .child(div().text_sm().child(a.text.clone()))
                                 .child(labels::certainty_tag(a.certainty))
-                                .child(Button::new(SharedString::from(format!("series-assumption-{}", a.id.raw()))).xsmall().ghost().compact().label("Open").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Assumptions, cx))))
+                                .child(record::link(format!("series-assumption-{}", a.id.raw()), "Open", cx.listener(|this, _, _, cx| this.navigate(Route::Assumptions, cx))))
                         }))
                         .into_any_element()
                 }),
@@ -623,7 +623,7 @@ fn render_actual_inspector(t: &atlas_core::model::ActualTransaction, household: 
                 .gap_2()
                 .items_center()
                 .child(div().text_sm().child(format!("{} matched to", l.amount.format())))
-                .child(Button::new(SharedString::from(format!("link-series-{i}"))).xsmall().ghost().compact().label(name).on_click(cx.listener(move |this, _, _, cx| this.navigate(Route::SeriesDetail(series), cx))))
+                .child(record::link(format!("link-series-{i}"), name, cx.listener(move |this, _, _, cx| this.navigate(Route::SeriesDetail(series), cx))))
                 .child(div().text_sm().child(format!("due {}{}", date(l.original_due), moved.map(|d| format!(" (now {})", date(d))).unwrap_or_default())))
                 .into_any_element()
         })

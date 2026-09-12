@@ -4,8 +4,10 @@
 pub mod accounts;
 pub mod activity;
 pub mod common;
+pub mod companies;
 pub mod earmarks;
 pub mod funding;
+pub mod people;
 pub mod settings;
 pub mod today;
 pub mod welcome;
