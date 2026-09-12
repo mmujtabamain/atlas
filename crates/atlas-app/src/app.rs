@@ -470,6 +470,12 @@ impl AtlasApp {
 
     /// Rebuilds every form whose option lists snapshot household data.
     pub fn rebuild_forms(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let started = std::time::Instant::now();
+        self.rebuild_forms_inner(window, cx);
+        log::info!("perf: rebuild_forms (every dialog's controls) took {:.1}ms", perf::ms(started.elapsed()));
+    }
+
+    fn rebuild_forms_inner(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.reservation_form = ReservationForm::new(&self.household, self.viewer, window, cx);
         self.timeline_controls = TimelineControls::new(&self.household, self.viewer, window, cx);
         self.tax_form = TaxRuleForm::new(&self.household, window, cx);

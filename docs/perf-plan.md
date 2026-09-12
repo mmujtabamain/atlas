@@ -1,6 +1,7 @@
 # UI responsiveness: what still makes the app slow, and the plan
 
-Status: 2026-09-12, audit after the layout rounds in `docs/perf.md`. Those rounds
+Status: 2026-09-12 — audit, plan, and (§5) what each step delivered. Written
+after the layout rounds in `docs/perf.md`. Those rounds
 fixed *how expensive one frame's flexbox solve is*. This document is about the
 other half of the problem: **how much work the app repeats on every frame and
 every edit that it could do once and keep**. The app has no caching layer of
@@ -79,3 +80,28 @@ and covered by tests in `crates/atlas-app/tests/ui.rs` (behaviour must not chang
 - The UI test suite stays green; new tests cover: cached shell re-render
   behaviour, lazy model invalidation, virtualised table row identity, and the
   background save round-trip.
+
+## 5. What was done, and what it measured
+
+Box = the Linux DevBench box, debug profile, CPU renderer; the Mac is ~2×
+faster per frame and the release profile another ~2×. Scroll frames from
+`scripts/perf-screens.sh` (single samples, ±5 ms noise); the rest from
+`logs.log`.
+
+| step | commit | what changed | measured |
+|---|---|---|---|
+| 1 | `850ecd5` | `Calc` shares its `ProvNode` through an `Arc`; figures prebuild their explain content; screen models passed by reference | scroll frames unchanged (the clones were in `build`); per-frame allocation no longer grows with the household |
+| 3 | `11e8c31` | `Shell` root view; sidebar and content are cached views (`Entity::cached`); sidebar re-renders only when its snapshot changes; status bar shows gpui's own counter | a frame that does not touch the screen (sidebar hover, typing in a dialog, toast): **5–11 ms** instead of the full 10–64 ms; Timeline hover 64 → 10.7 ms |
+| 5 | `350daf8` | `widgets::grid`: gpui-kit `DataTable` (virtualised) fed from rows the models format once; occurrences, tax events, fee postings, actuals | scroll frame: **Timeline 64 → 28 ms, Taxes 38 → 26 ms**; row count no longer matters |
+| 4 | `b1c1b21` | `derived::Lazy<M>`: models dropped on change, computed on first use | an edit runs one model (**0.3 ms** on Rules) instead of all eleven (**~26 ms**); start-up computes the launch screen's model only |
+| 6 | `6864b23` | per-frame log line → trace; slow frames keep their line; summary unchanged | measured first: the line cost < 0.1 ms; it was ~40 MB/h of log while scrolling |
+| 7 | `b77c6ce` | save / open in `cx.background_spawn`; `dirty` survives an edit that lands mid-save | the SQLite rewrite no longer freezes the window; `perf: save … took Nms off the UI thread` in the log |
+| 2 | `aa62af3` | Household people/companies/accounts rows and the actuals precomputed in the models | no screen runs engine code (`account_liquidity`, `disclosure_for`, `policy_for`) or household lookups while rendering |
+| 8 | — | not done, by measurement | `rebuild_forms` is 1–2 ms on the box; with lazy models an edit runs one expansion, and the biggest remaining model (assumptions, 13 ms) is intrinsic sensitivity work, not duplication |
+
+What is left is the cost of rendering a screen that *did* change (a scroll
+tick, a hover inside it): gpui's layout/prepaint/paint of the remaining
+nodes. The next levers there are the ones `docs/perf.md` §3b names — fewer and
+shallower nodes on the heavy screens (Household 665, Taxes' pack list, Rules'
+register), and the release profile for the customer's `cargo run` if the
+debug numbers still feel slow on the Mac.
