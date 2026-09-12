@@ -10,6 +10,7 @@
 //! |---|---|
 //! | [`shell`] | `Shell`, the window's root view: title bar, cached sidebar, cached content, status bar |
 //! | [`app`] | `AtlasApp`, the content view: household, derived models, the active screen |
+//! | [`derived`] | `Lazy`, a screen model dropped on change and computed on first use |
 //! | [`screens`] | one module per sidebar section |
 //! | [`widgets`] | shared pieces: figures with "Why?", vocabulary tags, the explain sheet |
 //! | [`lifecycle`] | new / open / save / sample, the lock, the who-is-looking picker (M12) |
@@ -26,6 +27,7 @@
 pub mod alerting;
 pub mod app;
 pub mod decision_entry;
+pub mod derived;
 pub mod entry;
 pub mod launch;
 pub mod lifecycle;

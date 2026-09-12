@@ -20,6 +20,7 @@ use gpui_kit::*;
 
 use crate::alerting::{self, Level};
 use crate::launch::{Launch, Start};
+use crate::derived::Lazy;
 use crate::perf;
 use crate::widgets::grid;
 use crate::screens::{
@@ -72,49 +73,50 @@ pub struct AtlasApp {
     pub(crate) section: Section,
     pub(crate) horizon: NaiveDate,
     pub(crate) sidebar_collapsed: bool,
-    /// Derived once per state change; screens only read it.
-    pub(crate) overview: Result<HouseholdOverview, EngineError>,
-    pub(crate) entities: Result<EntityModels, EngineError>,
-    pub(crate) liquidity: Result<LiquidityModel, EngineError>,
+    /// Derived models: dropped when their inputs change, computed on first
+    /// use (see `derived`). Screens only read them.
+    pub(crate) overview: Lazy<HouseholdOverview>,
+    pub(crate) entities: Lazy<EntityModels>,
+    pub(crate) liquidity: Lazy<LiquidityModel>,
     pub(crate) boundary: Boundary,
     pub(crate) selected_person: Option<PersonId>,
     pub(crate) selected_company: Option<CompanyId>,
     pub(crate) selected_account: Option<AccountId>,
     pub(crate) reservation_form: ReservationForm,
     pub(crate) timeline_filter: TimelineFilter,
-    pub(crate) timeline: Result<TimelineModel, EngineError>,
+    pub(crate) timeline: Lazy<TimelineModel>,
     pub(crate) timeline_controls: TimelineControls,
     pub(crate) series_form: SeriesForm,
     pub(crate) projection_boundary: Boundary,
     pub(crate) projection_case: Case,
     pub(crate) projection_scenario: bool,
-    pub(crate) projection: Result<ProjectionModel, EngineError>,
+    pub(crate) projection: Lazy<ProjectionModel>,
     pub(crate) derivation_series: Option<SeriesId>,
     pub(crate) derivation: Derivation,
     pub(crate) sensitivity_boundary: Boundary,
     pub(crate) sensitivity_scenario: bool,
-    pub(crate) assumptions: Result<AssumptionsModel, EngineError>,
+    pub(crate) assumptions: Lazy<AssumptionsModel>,
     pub(crate) tax_scenario: bool,
     e05_amount: Money,
     e05_split: bool,
     e05_schedule: E05Schedule,
-    pub(crate) taxes: Result<TaxModel, EngineError>,
+    pub(crate) taxes: Lazy<TaxModel>,
     pub(crate) tax_controls: TaxControls,
     pub(crate) tax_form: TaxRuleForm,
     pub(crate) tax_form_effective_from_override: Option<NaiveDate>,
     pub(crate) rules_scenario: bool,
     pub(crate) simulated_rule: Option<RuleId>,
-    pub(crate) rules: Result<RulesModel, EngineError>,
+    pub(crate) rules: Lazy<RulesModel>,
     pub(crate) rule_form: RuleForm,
     pub(crate) scenario_selection: Vec<ScenarioId>,
     pub(crate) scenario_case: Case,
-    pub(crate) scenarios: Result<ScenariosModel, EngineError>,
+    pub(crate) scenarios: Lazy<ScenariosModel>,
     pub(crate) scenario_forms: ScenarioForms,
     pub(crate) decision_step: usize,
     pub(crate) decision_plan: PurchasePlan,
     pub(crate) decision: Option<Result<Decision, EngineError>>,
     pub(crate) decision_form: DecisionForm,
-    pub(crate) privacy: PrivacyModel,
+    pub(crate) privacy: Lazy<PrivacyModel>,
     pub(crate) privacy_forms: PrivacyForms,
     /// Where the household is saved, once it has a file (M12).
     pub(crate) file: Option<atlas_store::HouseholdFile>,
@@ -362,29 +364,19 @@ impl AtlasApp {
                 window.push_notification(notice, cx);
             }
         });
-        let overview = Self::compute_overview(&household, viewer, horizon);
-        let entities = Self::compute_entities(&household, viewer);
         let boundary = Boundary::Household;
-        let liquidity = Self::compute_liquidity(&household, viewer, boundary, horizon);
         let reservation_form = ReservationForm::new(&household, viewer, _window, _cx);
         let timeline_filter = TimelineFilter { entity: None, account: None, certainty: None, status: None, scenario: None, through: horizon };
-        let timeline = Self::compute_timeline(&household, viewer, timeline_filter.clone());
         let timeline_controls = TimelineControls::new(&household, viewer, _window, _cx);
         let series_form = SeriesForm::new(_window, _cx);
-        let projection = Self::compute_projection(&household, viewer, Boundary::Household, Case::Expected, None, horizon);
-        let assumptions = Self::compute_assumptions(&household, viewer, None, Derivation::ALL[0], Boundary::Household, false, horizon);
         let e05_amount = Money::from_major(100_000, household.base_currency);
-        let taxes = Self::compute_taxes(&household, viewer, horizon, false, e05_amount, true, E05Schedule::PlanExample);
         let tax_controls = TaxControls { e05_amount: _cx.new(|cx| InputState::new(_window, cx).default_value("100,000")) };
         let tax_form = TaxRuleForm::new(&household, _window, _cx);
-        let rules = Self::compute_rules(&household, viewer, horizon, false, None);
         let rule_form = RuleForm::new(&household, _window, _cx);
         let scenario_selection: Vec<ScenarioId> = household.scenarios.first().map(|s| vec![s.id]).unwrap_or_default();
-        let scenarios = Self::compute_scenarios(&household, viewer, horizon, Case::Expected, &scenario_selection);
         let scenario_forms = ScenarioForms::new(&household, _window, _cx);
         let decision_plan = atlas_core::decision::default_plan_for(&household, household.as_of, viewer);
         let decision_form = DecisionForm::new(&household, &decision_plan, viewer, _window, _cx);
-        let privacy = PrivacyModel::compute(&household, viewer);
         let privacy_forms = PrivacyForms::new(&household, viewer.person, _window, _cx);
         let lifecycle_form = crate::lifecycle::LifecycleForm::new(_window, _cx);
         let entry_forms = crate::entry::EntryForms::new(&household, _window, _cx);
@@ -413,48 +405,48 @@ impl AtlasApp {
             section: launch.section,
             horizon,
             sidebar_collapsed: false,
-            overview,
-            entities,
-            liquidity,
+            overview: Lazy::stale(),
+            entities: Lazy::stale(),
+            liquidity: Lazy::stale(),
             boundary,
             selected_person: None,
             selected_company: None,
             selected_account: None,
             reservation_form,
             timeline_filter,
-            timeline,
+            timeline: Lazy::stale(),
             timeline_controls,
             series_form,
             projection_boundary: Boundary::Household,
             projection_case: Case::Expected,
             projection_scenario: false,
-            projection,
+            projection: Lazy::stale(),
             derivation_series: None,
             derivation: Derivation::ALL[0],
             sensitivity_boundary: Boundary::Household,
             sensitivity_scenario: false,
-            assumptions,
+            assumptions: Lazy::stale(),
             tax_scenario: false,
             e05_amount,
             e05_split: true,
             e05_schedule: E05Schedule::PlanExample,
-            taxes,
+            taxes: Lazy::stale(),
             tax_controls,
             tax_form,
             tax_form_effective_from_override: None,
             rules_scenario: false,
             simulated_rule: None,
-            rules,
+            rules: Lazy::stale(),
             rule_form,
             scenario_selection,
             scenario_case: Case::Expected,
-            scenarios,
+            scenarios: Lazy::stale(),
             scenario_forms,
             decision_step: 0,
             decision_plan,
             decision: None,
             decision_form,
-            privacy,
+            privacy: Lazy::stale(),
             privacy_forms,
             file,
             dirty: false,
@@ -506,12 +498,16 @@ impl AtlasApp {
     }
 
     fn refresh_taxes(&mut self) {
-        self.taxes = Self::compute_taxes(&self.household, self.viewer, self.horizon, self.tax_scenario, self.e05_amount, self.e05_split, self.e05_schedule);
+        self.taxes.invalidate();
+    }
+
+    fn taxes_result(&self) -> &Result<TaxModel, EngineError> {
+        self.taxes.get(|| Self::compute_taxes(&self.household, self.viewer, self.horizon, self.tax_scenario, self.e05_amount, self.e05_split, self.e05_schedule))
     }
 
     /// The derived tax model, if the engine could compute it.
     pub fn taxes(&self) -> Option<&TaxModel> {
-        self.taxes.as_ref().ok()
+        self.taxes_result().as_ref().ok()
     }
 
     pub fn set_tax_scenario(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -718,20 +714,26 @@ impl AtlasApp {
     }
 
     fn refresh_assumptions(&mut self) {
-        self.assumptions = Self::compute_assumptions(
-            &self.household,
-            self.viewer,
-            self.derivation_series,
-            self.derivation,
-            self.sensitivity_boundary,
-            self.sensitivity_scenario,
-            self.horizon,
-        );
+        self.assumptions.invalidate();
+    }
+
+    fn assumptions_result(&self) -> &Result<AssumptionsModel, EngineError> {
+        self.assumptions.get(|| {
+            Self::compute_assumptions(
+                &self.household,
+                self.viewer,
+                self.derivation_series,
+                self.derivation,
+                self.sensitivity_boundary,
+                self.sensitivity_scenario,
+                self.horizon,
+            )
+        })
     }
 
     /// The derived assumptions model, if the engine could compute it.
     pub fn assumptions(&self) -> Option<&AssumptionsModel> {
-        self.assumptions.as_ref().ok()
+        self.assumptions_result().as_ref().ok()
     }
 
     pub fn select_derivation_series(&mut self, series: SeriesId, cx: &mut Context<Self>) {
@@ -777,7 +779,7 @@ impl AtlasApp {
 
     /// §10.7 — applies the current derivation to an assumption; it then needs acceptance.
     pub fn apply_derivation(&mut self, assumption: AssumptionId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(series) = self.derivation_series.or_else(|| self.assumptions.as_ref().ok().map(|m| m.derivation_series)) else { return };
+        let Some(series) = self.derivation_series.or_else(|| self.assumptions().map(|m| m.derivation_series)) else { return };
         match derive(&self.household, series, self.derivation).and_then(|d| apply_derived(&mut self.household, &d, assumption).map(|_| d)) {
             Ok(derived) => {
                 log::info!("derivation applied to {assumption}: {}", derived.statement);
@@ -802,13 +804,19 @@ impl AtlasApp {
     }
 
     fn refresh_projection(&mut self) {
-        let scenario = if self.projection_scenario { Some(fixtures::ids::BUY_CAR) } else { None };
-        self.projection = Self::compute_projection(&self.household, self.viewer, self.projection_boundary, self.projection_case, scenario, self.horizon);
+        self.projection.invalidate();
+    }
+
+    fn projection_result(&self) -> &Result<ProjectionModel, EngineError> {
+        self.projection.get(|| {
+            let scenario = if self.projection_scenario { Some(fixtures::ids::BUY_CAR) } else { None };
+            Self::compute_projection(&self.household, self.viewer, self.projection_boundary, self.projection_case, scenario, self.horizon)
+        })
     }
 
     /// The derived projection, if the engine could compute it.
     pub fn projection(&self) -> Option<&ProjectionModel> {
-        self.projection.as_ref().ok()
+        self.projection_result().as_ref().ok()
     }
 
     pub fn select_projection_boundary(&mut self, boundary: Boundary, cx: &mut Context<Self>) {
@@ -838,9 +846,13 @@ impl AtlasApp {
         result
     }
 
+    fn timeline_result(&self) -> &Result<TimelineModel, EngineError> {
+        self.timeline.get(|| Self::compute_timeline(&self.household, self.viewer, self.timeline_filter.clone()))
+    }
+
     /// The derived timeline, if the engine could compute it.
     pub fn timeline(&self) -> Option<&TimelineModel> {
-        self.timeline.as_ref().ok()
+        self.timeline_result().as_ref().ok()
     }
 
     pub fn timeline_filter(&self) -> &TimelineFilter {
@@ -865,14 +877,14 @@ impl AtlasApp {
             None => self.horizon,
         };
         log::info!("timeline filters: {:?}", self.timeline_filter);
-        self.timeline = Self::compute_timeline(&self.household, self.viewer, self.timeline_filter.clone());
+        self.timeline.invalidate();
         cx.notify();
     }
 
     /// Toggles the “Buy car” scenario overlay on the timeline (§18).
     pub fn set_timeline_scenario(&mut self, on: bool, cx: &mut Context<Self>) {
         self.timeline_filter.scenario = if on { Some(fixtures::ids::BUY_CAR) } else { None };
-        self.timeline = Self::compute_timeline(&self.household, self.viewer, self.timeline_filter.clone());
+        self.timeline.invalidate();
         cx.notify();
     }
 
@@ -1018,32 +1030,53 @@ impl AtlasApp {
         result
     }
 
-    /// Recomputes every derived model after the household or viewer changed.
+    /// Drops every derived model after the household or viewer changed. Each
+    /// is computed again when a screen (or a test) next asks for it — the
+    /// visible screen's on the next frame, the others on navigation — so an
+    /// edit costs one engine run, not eleven.
     pub(crate) fn refresh_derived(&mut self) {
         let started = std::time::Instant::now();
-        self.refresh_derived_models();
-        log::info!("perf: refresh_derived (every screen model) took {:.1}ms", perf::ms(started.elapsed()));
-    }
-
-    fn refresh_derived_models(&mut self) {
-        self.overview = Self::compute_overview(&self.household, self.viewer, self.horizon);
-        self.entities = Self::compute_entities(&self.household, self.viewer);
-        self.liquidity = Self::compute_liquidity(&self.household, self.viewer, self.boundary, self.horizon);
-        self.timeline = Self::compute_timeline(&self.household, self.viewer, self.timeline_filter.clone());
+        self.overview.invalidate();
+        self.entities.invalidate();
+        self.liquidity.invalidate();
+        self.timeline.invalidate();
         self.refresh_projection();
         self.refresh_assumptions();
         self.refresh_taxes();
         self.refresh_rules();
         self.refresh_scenarios();
+        self.privacy.invalidate();
+        // The decision result is an explicit step of the builder, not a screen
+        // model: re-evaluate it right away when it is on show.
         if self.decision.is_some() {
             self.evaluate_decision();
         }
-        self.privacy = perf::timed(&format!("compute privacy (viewer={})", self.viewer.person), || PrivacyModel::compute(&self.household, self.viewer));
+        log::info!("perf: refresh_derived invalidated every screen model in {:.1}ms (section={}: its model is computed on the next frame)", perf::ms(started.elapsed()), self.section.slug());
+    }
+
+    /// Whether `section`'s derived model is currently computed (perf tests).
+    pub fn is_model_computed(&self, section: Section) -> bool {
+        match section {
+            Section::Household => self.overview.is_computed(),
+            Section::People | Section::Companies | Section::Accounts => self.entities.is_computed(),
+            Section::Liquidity => self.liquidity.is_computed(),
+            Section::Timeline => self.timeline.is_computed(),
+            Section::Projections => self.projection.is_computed(),
+            Section::Assumptions => self.assumptions.is_computed(),
+            Section::Taxes => self.taxes.is_computed(),
+            Section::Rules => self.rules.is_computed(),
+            Section::Scenarios => self.scenarios.is_computed(),
+            Section::Privacy => self.privacy.is_computed(),
+            Section::Decisions | Section::Settings => true,
+        }
     }
 
     /// The privacy model for the current viewer.
     pub fn privacy(&self) -> &PrivacyModel {
-        &self.privacy
+        match self.privacy.get(|| Ok(perf::timed(&format!("compute privacy (viewer={})", self.viewer.person), || PrivacyModel::compute(&self.household, self.viewer)))) {
+            Ok(model) => model,
+            Err(_) => unreachable!("the privacy model cannot fail"),
+        }
     }
 
     /// Frame timings (status-bar counter, perf log).
@@ -1075,12 +1108,16 @@ impl AtlasApp {
     }
 
     fn refresh_scenarios(&mut self) {
-        self.scenarios = Self::compute_scenarios(&self.household, self.viewer, self.horizon, self.scenario_case, &self.scenario_selection);
+        self.scenarios.invalidate();
+    }
+
+    fn scenarios_result(&self) -> &Result<ScenariosModel, EngineError> {
+        self.scenarios.get(|| Self::compute_scenarios(&self.household, self.viewer, self.horizon, self.scenario_case, &self.scenario_selection))
     }
 
     /// The derived scenarios model, if the engine could compute it.
     pub fn scenarios(&self) -> Option<&ScenariosModel> {
-        self.scenarios.as_ref().ok()
+        self.scenarios_result().as_ref().ok()
     }
 
     pub fn select_scenario(&mut self, id: ScenarioId, selected: bool, cx: &mut Context<Self>) {
@@ -1112,12 +1149,16 @@ impl AtlasApp {
     }
 
     fn refresh_rules(&mut self) {
-        self.rules = Self::compute_rules(&self.household, self.viewer, self.horizon, self.rules_scenario, self.simulated_rule);
+        self.rules.invalidate();
+    }
+
+    fn rules_result(&self) -> &Result<RulesModel, EngineError> {
+        self.rules.get(|| Self::compute_rules(&self.household, self.viewer, self.horizon, self.rules_scenario, self.simulated_rule))
     }
 
     /// The derived rules model, if the engine could compute it.
     pub fn rules(&self) -> Option<&RulesModel> {
-        self.rules.as_ref().ok()
+        self.rules_result().as_ref().ok()
     }
 
     pub fn set_rules_scenario(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -1197,15 +1238,19 @@ impl AtlasApp {
         cx.notify();
     }
 
+    fn liquidity_result(&self) -> &Result<LiquidityModel, EngineError> {
+        self.liquidity.get(|| Self::compute_liquidity(&self.household, self.viewer, self.boundary, self.horizon))
+    }
+
     /// The derived liquidity model, if the engine could compute it.
     pub fn liquidity(&self) -> Option<&LiquidityModel> {
-        self.liquidity.as_ref().ok()
+        self.liquidity_result().as_ref().ok()
     }
 
     pub fn select_boundary(&mut self, boundary: Boundary, cx: &mut Context<Self>) {
         log::info!("liquidity boundary: {boundary:?}");
         self.boundary = boundary;
-        self.liquidity = Self::compute_liquidity(&self.household, self.viewer, boundary, self.horizon);
+        self.liquidity.invalidate();
         cx.notify();
     }
 
@@ -1455,14 +1500,22 @@ impl AtlasApp {
         self.viewer
     }
 
+    fn overview_result(&self) -> &Result<HouseholdOverview, EngineError> {
+        self.overview.get(|| Self::compute_overview(&self.household, self.viewer, self.horizon))
+    }
+
     /// The derived overview, if the engine could compute it.
     pub fn overview(&self) -> Option<&HouseholdOverview> {
-        self.overview.as_ref().ok()
+        self.overview_result().as_ref().ok()
+    }
+
+    fn entities_result(&self) -> &Result<EntityModels, EngineError> {
+        self.entities.get(|| Self::compute_entities(&self.household, self.viewer))
     }
 
     /// The derived entity models, if the engine could compute them.
     pub fn entities(&self) -> Option<&EntityModels> {
-        self.entities.as_ref().ok()
+        self.entities_result().as_ref().ok()
     }
 
     /// Changes who is looking; every screen re-projects (M10 adds the UI).
@@ -1511,7 +1564,7 @@ impl AtlasApp {
 
     fn render_section(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.section {
-            Section::Household => match &self.overview {
+            Section::Household => match self.overview_result() {
                 Ok(overview) => screens::household::render(overview, &self.household, self.viewer, cx).into_any_element(),
                 Err(err) => v_flex()
                     .id("screen-household")
@@ -1528,7 +1581,7 @@ impl AtlasApp {
                     ))
                     .into_any_element(),
             },
-            Section::People | Section::Companies | Section::Accounts => match &self.entities {
+            Section::People | Section::Companies | Section::Accounts => match self.entities_result() {
                 Ok(models) => {
                     match self.section {
                         Section::People => screens::people::render(models, &self.household, self.selected_person, cx).into_any_element(),
@@ -1538,36 +1591,36 @@ impl AtlasApp {
                 }
                 Err(err) => self.render_engine_failure(self.section, err, cx),
             },
-            Section::Liquidity => match &self.liquidity {
+            Section::Liquidity => match self.liquidity_result() {
                 Ok(model) => screens::liquidity::render(model, &self.household, self.viewer, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Liquidity, err, cx),
             },
-            Section::Timeline => match &self.timeline {
+            Section::Timeline => match self.timeline_result() {
                 Ok(model) => screens::timeline::render(model, &self.timeline_controls, &self.grids, &self.household, self.viewer, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Timeline, err, cx),
             },
-            Section::Projections => match &self.projection {
+            Section::Projections => match self.projection_result() {
                 Ok(model) => screens::projections::render(model, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Projections, err, cx),
             },
-            Section::Assumptions => match &self.assumptions {
+            Section::Assumptions => match self.assumptions_result() {
                 Ok(model) => screens::assumptions::render(model, &self.household, self.viewer, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Assumptions, err, cx),
             },
-            Section::Taxes => match &self.taxes {
+            Section::Taxes => match self.taxes_result() {
                 Ok(model) => screens::taxes::render(model, &self.tax_controls, &self.grids, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Taxes, err, cx),
             },
-            Section::Rules => match &self.rules {
+            Section::Rules => match self.rules_result() {
                 Ok(model) => screens::rules::render(model, &self.grids, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Rules, err, cx),
             },
-            Section::Scenarios => match &self.scenarios {
+            Section::Scenarios => match self.scenarios_result() {
                 Ok(model) => screens::scenarios::render(model, &self.household, cx).into_any_element(),
                 Err(err) => self.render_engine_failure(Section::Scenarios, err, cx),
             },
             Section::Decisions => screens::decisions::render(self.decision_step, &self.decision_form, self.decision.as_ref(), &self.household, &self.viewer_name(), cx).into_any_element(),
-            Section::Privacy => screens::privacy::render(&self.privacy, &self.household, &self.viewer_name(), cx).into_any_element(),
+            Section::Privacy => screens::privacy::render(self.privacy(), &self.household, &self.viewer_name(), cx).into_any_element(),
             Section::Settings => screens::settings::render(&self.household, &self.viewer_name(), cx).into_any_element(),
         }
     }
