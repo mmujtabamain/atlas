@@ -105,25 +105,65 @@ impl RenderOnce for Figure {
         let explain_id = SharedString::from(format!("explain-{}", self.id));
         // The click handler shares the content with the figure (pointer copy).
         let content = self.content;
-        let terms = metadata_terms(&self.id, node);
         let compact = self.variant == Variant::Compact;
+        if compact {
+            // Inside a table cell: the value with its Explain icon, then the
+            // terms as one quiet line (the column header carries the label).
+            let mut terms: Vec<&'static str> = Vec::new();
+            if let Some(class) = node.money_class_label() {
+                terms.push(class.label());
+            }
+            if let Some(certainty) = node.certainty_label() {
+                terms.push(certainty.label());
+            }
+            terms.push(node.result_strength().label());
+            let first_term = node.money_class_label().map(Term::MoneyClass).unwrap_or(Term::Strength(node.result_strength()));
+            let caution = node.money_class_label().is_some_and(|c| !c.is_current()) || matches!(node.operation(), Operation::Aggregate { .. });
+            let terms_id = SharedString::from(format!("{}-terms", self.id));
+            return v_flex()
+                .min_w_0()
+                .items_end()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().id(value_id).test_support().font_family(theme.mono_font_family.clone()).text_sm().text_color(value_color).child(money.format()))
+                        .child(
+                            Button::new(explain_id)
+                                .xsmall()
+                                .ghost()
+                                .compact()
+                                .icon(IconName::ListTree)
+                                .tooltip("Show the calculation")
+                                .on_click(move |_, window, cx| explain::open_sheet(window, cx, content.clone())),
+                        ),
+                )
+                .child(
+                    Button::new(terms_id)
+                        .xsmall()
+                        .ghost()
+                        .compact()
+                        .label(terms.join(" · "))
+                        .when(caution, |b| b.warning().outline())
+                        .tooltip("What these labels mean")
+                        .on_click(move |_, window, cx| meanings::open_sheet(window, cx, Some(first_term))),
+                )
+                .into_any_element();
+        }
+        let terms = metadata_terms(&self.id, node);
 
         let explain = Button::new(explain_id)
             .xsmall()
             .ghost()
             .compact()
             .icon(IconName::ListTree)
-            .when(!compact, |b| b.label("Explain…"))
+            .label("Explain…")
             .tooltip("Show the calculation")
             .on_click(move |_, window, cx| explain::open_sheet(window, cx, content.clone()));
 
         // Definite width: an auto-width row of tags is re-measured by taffy at
         // every ancestor pass.
-        let metadata = if compact {
-            v_flex().w_full().items_start().children(terms).into_any_element()
-        } else {
-            h_flex().w_full().gap_1().flex_wrap().items_center().children(terms).into_any_element()
-        };
+        let metadata = h_flex().w_full().gap_1().flex_wrap().items_center().children(terms).into_any_element();
 
         v_flex()
             .w_full()
@@ -147,13 +187,13 @@ impl RenderOnce for Figure {
                     .text_color(value_color)
                     .map(|this| match self.variant {
                         Variant::Leading => this.text_2xl(),
-                        Variant::Standard => this.text_xl(),
-                        Variant::Compact => this.text_sm(),
+                        Variant::Standard | Variant::Compact => this.text_xl(),
                     })
                     .child(money.format()),
             )
             .child(metadata)
             .when_some(self.qualifier, |this, q| this.child(div().text_xs().text_color(theme.muted_foreground).child(q)))
+            .into_any_element()
     }
 }
 

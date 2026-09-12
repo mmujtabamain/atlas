@@ -52,6 +52,16 @@ pub fn disclosure_tag(disclosure: Disclosure) -> Tag {
     }
 }
 
+/// Assumption freshness at the reconciliation date.
+pub fn freshness_tag(freshness: atlas_core::model::Freshness) -> Tag {
+    use atlas_core::model::Freshness;
+    match freshness {
+        Freshness::Fresh => neutral(freshness.label()),
+        Freshness::NotAccepted | Freshness::Stale => caution(freshness.label()),
+        Freshness::Expired => Tag::danger().xsmall().outline().child(freshness.label()),
+    }
+}
+
 /// Hard constraint vs user-relaxable preference.
 pub fn hardness_tag(hardness: Hardness) -> Tag {
     match hardness {

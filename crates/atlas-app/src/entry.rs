@@ -122,7 +122,7 @@ pub struct EntryForms {
     series_ids: Vec<SeriesId>,
 }
 
-const ACCOUNT_KINDS: [AccountKind; 11] = [
+pub const ACCOUNT_KINDS: [AccountKind; 11] = [
     AccountKind::Checking,
     AccountKind::Savings,
     AccountKind::CashWallet,
@@ -142,6 +142,20 @@ const RECURRENCES: [&str; 6] = ["Monthly on a day", "One time", "Last day of eve
 const ROLES: [HouseholdRole; 5] = [HouseholdRole::Owner, HouseholdRole::Member, HouseholdRole::Dependent, HouseholdRole::Adviser, HouseholdRole::ReadOnly];
 
 impl EntryForms {
+    /// Select rows behind the option lists, for contextual preselection.
+    pub fn account_row(&self, account: AccountId) -> Option<usize> {
+        self.accounts.iter().position(|id| *id == account)
+    }
+    pub fn person_row(&self, person: PersonId) -> Option<usize> {
+        self.people.iter().position(|id| *id == person)
+    }
+    pub fn company_row(&self, company: CompanyId) -> Option<usize> {
+        self.companies.iter().position(|id| *id == company)
+    }
+    pub fn entity_row(&self, entity: EntityRef) -> Option<usize> {
+        self.entities.iter().position(|e| *e == entity)
+    }
+
     pub fn new(household: &Household, window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
         let people: Vec<PersonId> = household.people.iter().map(|p| p.id).collect();
         let people_names: Vec<SharedString> = household.people.iter().map(|p| SharedString::from(p.name.clone())).collect();

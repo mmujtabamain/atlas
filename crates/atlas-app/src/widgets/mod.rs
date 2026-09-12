@@ -13,6 +13,7 @@ pub mod grid;
 pub mod labels;
 pub mod master;
 pub mod meanings;
+pub mod record;
 pub mod scope;
 pub mod states;
 pub mod table;

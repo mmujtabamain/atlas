@@ -26,8 +26,10 @@
 //! | [`perf`] | frame meter (FPS counter, per-frame and summary perf log lines), engine timing |
 //! | [`launch`] | command-line options and theme selection |
 
+pub mod actions;
 pub mod alerting;
 pub mod app;
+pub mod controls;
 pub mod decision_entry;
 pub mod derived;
 pub mod entry;

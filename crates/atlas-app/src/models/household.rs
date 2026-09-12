@@ -43,6 +43,17 @@ pub struct HouseholdOverview {
     pub accounts: Vec<AccountRow>,
     /// Accounts whose existence is not disclosed to the viewer.
     pub hidden_accounts: usize,
+    /// Hard earmarks and bank minimums of the household today.
+    pub hard_floor: ExplainedFigure,
+    /// Liquid cash minus the floor, signed.
+    pub headroom: ExplainedFigure,
+    /// Headroom clamped at zero, and the deficit when it is negative.
+    pub spendable: Money,
+    pub deficit: Money,
+    /// The expected baseline path against the hard floor.
+    pub runway: atlas_core::breach::BreachReport,
+    /// The smallest addition at the start that keeps the path above the floor.
+    pub injection: ExplainedFigure,
 }
 
 /// One row of the People table.
@@ -191,7 +202,20 @@ impl HouseholdOverview {
             .cloned()
             .collect();
         let (accounts, hidden_accounts) = account_rows(household, viewer);
+        let boundary = atlas_core::liquidity::boundary_liquidity(household, Boundary::Household)?;
+        let hard_floor = ExplainedFigure::new("hard-floor", "Hard floor", &boundary.hard_floor, household, viewer);
+        let headroom = ExplainedFigure::new("headroom", "Headroom over the floor", &boundary.headroom, household, viewer);
+        let spendable = boundary.headroom.money().clamped_at_zero();
+        let deficit = boundary.headroom.money().negated().clamped_at_zero();
+        let runway = atlas_core::breach::analyse(&projection.path, boundary.hard_floor.money(), horizon)?;
+        let injection = ExplainedFigure::new("injection", "Extra cash needed at the start to never breach", &runway.minimum_injection, household, viewer);
         Ok(HouseholdOverview {
+            hard_floor,
+            headroom,
+            spendable,
+            deficit,
+            runway,
+            injection,
             people: person_rows(household),
             companies: company_rows(household, viewer),
             accounts,
@@ -307,7 +331,7 @@ pub fn render(overview: &HouseholdOverview, household: &Household, cx: &App) -> 
         .child(render_accounts(overview, household, cx))
 }
 
-fn render_people(overview: &HouseholdOverview, cx: &App) -> impl IntoElement {
+pub(crate) fn render_people(overview: &HouseholdOverview, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     GroupBox::new().id("people").title("People").child(
         Table::new()
@@ -331,7 +355,7 @@ fn render_people(overview: &HouseholdOverview, cx: &App) -> impl IntoElement {
     )
 }
 
-fn render_companies(overview: &HouseholdOverview, cx: &App) -> impl IntoElement {
+pub(crate) fn render_companies(overview: &HouseholdOverview, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     GroupBox::new().id("companies").title("Companies").child(
         v_flex()
@@ -368,7 +392,7 @@ fn render_companies(overview: &HouseholdOverview, cx: &App) -> impl IntoElement 
     )
 }
 
-fn render_accounts(overview: &HouseholdOverview, household: &Household, cx: &App) -> impl IntoElement {
+pub(crate) fn render_accounts(overview: &HouseholdOverview, household: &Household, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let visible = overview.accounts.len();
     let hidden_count = overview.hidden_accounts;
