@@ -24,6 +24,9 @@ use crate::derived::Lazy;
 use crate::perf;
 use crate::widgets::grid;
 use crate::nav::{Destination, Route};
+pub use crate::actions::with_app;
+use crate::actions::{AccountsControls, AppHandle};
+use crate::controls::PlanChoices;
 use crate::models::{
     self,
     entities::EntityModels,
@@ -46,13 +49,12 @@ use atlas_core::ids::RuleId;
 use atlas_core::rules::TieBreak;
 use crate::rules_entry::RuleForm;
 use atlas_core::model::{TaxKind, TaxRule, TaxTiming, ThresholdBasis};
-use gpui_kit::component::input::InputEvent;
 use atlas_core::assumptions::{Derivation, apply_derived, derive};
 use atlas_core::ids::AssumptionId;
 use atlas_core::forecast::Case;
 use atlas_core::timeline::{AmountSpec, Exception, ExceptionKind, OccurrenceStatus};
 use atlas_core::vocab::Certainty;
-use gpui_kit::component::{date_picker::{DatePicker, DatePickerState}, select::SelectEvent};
+use gpui_kit::component::date_picker::{DatePicker, DatePickerState};
 use chrono::Months;
 use atlas_core::ids::{AccountId, CompanyId, PersonId, ReservationId, SeriesId};
 use atlas_core::liquidity::Boundary;
@@ -94,6 +96,27 @@ pub struct AtlasApp {
     pub(crate) pending_after_save: Option<crate::lifecycle::Continuation>,
     /// gpui's frame-time overlay was requested at launch.
     pub(crate) perf_overlay: bool,
+    /// Today: the assumption list is fully expanded.
+    pub(crate) today_show_all_assumptions: bool,
+    /// Accounts register: search and display filters.
+    pub(crate) accounts_controls: AccountsControls,
+    /// Account detail: Overview / Earmarks / Planned movements / Properties.
+    pub(crate) account_tab: usize,
+    /// Sharing / Policies: the policy on show.
+    pub(crate) selected_policy: Option<ObjectRef>,
+    /// The object the policy editor opens on, when opened from its detail.
+    pub(crate) policy_target: Option<ObjectRef>,
+    /// Activity / Actuals: the account filter.
+    pub(crate) actuals_account_filter: Option<AccountId>,
+    /// Forecast / Path: the account whose path is expanded, and the report tab.
+    pub(crate) forecast_selected_account: Option<AccountId>,
+    pub(crate) forecast_report_tab: usize,
+    /// Earmarks: `Whose money` and the boundaries behind its rows; Active / Released.
+    pub(crate) boundary_choice: crate::widgets::scope::Choice,
+    pub(crate) boundaries: Vec<Boundary>,
+    pub(crate) earmarks_released_tab: bool,
+    /// The `Plan` selectors of every analysis that accepts the overlay.
+    pub(crate) plan_choices: PlanChoices,
     pub(crate) horizon: NaiveDate,
     pub(crate) sidebar_collapsed: bool,
     /// Derived models: dropped when their inputs change, computed on first
@@ -285,7 +308,7 @@ impl TimelineControls {
         }
     }
 
-    fn all(&self) -> [Entity<SelectState<Vec<SharedString>>>; 5] {
+    pub(crate) fn all(&self) -> [Entity<SelectState<Vec<SharedString>>>; 5] {
         [self.entity.clone(), self.account.clone(), self.certainty.clone(), self.status.clone(), self.horizon.clone()]
     }
 }
@@ -346,7 +369,7 @@ pub struct ReservationForm {
     name: Entity<InputState>,
     amount: Entity<InputState>,
     purpose: Entity<InputState>,
-    account: Entity<SelectState<Vec<SharedString>>>,
+    pub(crate) account: Entity<SelectState<Vec<SharedString>>>,
     nested_in: Entity<SelectState<Vec<SharedString>>>,
     draft: Entity<ReservationDraft>,
     account_ids: Vec<AccountId>,
@@ -354,6 +377,11 @@ pub struct ReservationForm {
 }
 
 impl ReservationForm {
+    /// The select row of `account`, when it is an eligible earmark account.
+    pub fn account_row(&self, account: AccountId) -> Option<usize> {
+        self.account_ids.iter().position(|id| *id == account)
+    }
+
     fn new(household: &Household, viewer: Viewer, window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
         let account_ids = models::liquidity::editable_accounts(household, viewer);
         let account_names: Vec<SharedString> = account_ids
@@ -425,25 +453,13 @@ impl AtlasApp {
         let lifecycle_form = crate::lifecycle::LifecycleForm::new(_window, _cx);
         let entry_forms = crate::entry::EntryForms::new(&household, _window, _cx);
         let grids = Grids::new(_window, _cx);
+        let household_for_controls = household.clone();
+        _cx.set_global(AppHandle(_cx.entity().downgrade()));
         let file = resolved.file;
-        let mut subscriptions: Vec<Subscription> = timeline_controls
-            .all()
-            .iter()
-            .map(|state| {
-                _cx.subscribe_in(state, _window, |this, _, event: &SelectEvent<Vec<SharedString>>, _, cx| {
-                    let SelectEvent::Confirm(_) = event;
-                    this.apply_timeline_filters(cx);
-                })
-            })
-            .collect();
-        subscriptions.push(_cx.subscribe_in(&tax_controls.e05_amount, _window, |this, state, event: &InputEvent, _, cx| {
-            if matches!(event, InputEvent::Change) {
-                let text = state.read(cx).value().to_string();
-                this.set_e05_amount_text(&text, cx);
-            }
-        }));
+        let (boundary_choice, boundaries) = crate::controls::boundary_choice(&household, viewer, boundary, _window, _cx);
+        let plan_choices = PlanChoices::new(&household, viewer, false, false, false, false, false, _window, _cx);
         log::info!("Atlas Financer window: route={} viewer={} opened={opened} viewer_pending={viewer_pending}", route.slug(), viewer.person);
-        AtlasApp {
+        let mut app = AtlasApp {
             household,
             viewer,
             route,
@@ -457,6 +473,18 @@ impl AtlasApp {
             edited_while_saving: false,
             pending_after_save: None,
             perf_overlay: launch.perf_overlay,
+            today_show_all_assumptions: false,
+            accounts_controls: AccountsControls::new(&household_for_controls, _window, _cx),
+            account_tab: 0,
+            selected_policy: None,
+            policy_target: None,
+            actuals_account_filter: None,
+            forecast_selected_account: None,
+            forecast_report_tab: 0,
+            boundary_choice,
+            boundaries,
+            earmarks_released_tab: false,
+            plan_choices,
             horizon,
             sidebar_collapsed: false,
             overview: Lazy::stale(),
@@ -511,8 +539,10 @@ impl AtlasApp {
             entry_forms,
             grids,
             perf: crate::perf::FrameMeter::new(),
-            _subscriptions: subscriptions,
-        }
+            _subscriptions: Vec::new(),
+        };
+        app.subscribe_controls(_window, _cx);
+        app
     }
 
     /// Rebuilds every form whose option lists snapshot household data.
@@ -531,24 +561,15 @@ impl AtlasApp {
         self.decision_form = DecisionForm::new(&self.household, &self.decision_plan, self.viewer, window, cx);
         self.privacy_forms = PrivacyForms::new(&self.household, self.viewer.person, window, cx);
         self.entry_forms = crate::entry::EntryForms::new(&self.household, window, cx);
-        let mut subscriptions: Vec<Subscription> = self
-            .timeline_controls
-            .all()
-            .iter()
-            .map(|state| {
-                cx.subscribe_in(state, window, |this, _, event: &SelectEvent<Vec<SharedString>>, _, cx| {
-                    let SelectEvent::Confirm(_) = event;
-                    this.apply_timeline_filters(cx);
-                })
-            })
-            .collect();
-        subscriptions.push(cx.subscribe_in(&self.tax_controls.e05_amount, window, |this, state, event: &InputEvent, _, cx| {
-            if matches!(event, InputEvent::Change) {
-                let text = state.read(cx).value().to_string();
-                this.set_e05_amount_text(&text, cx);
-            }
-        }));
-        self._subscriptions = subscriptions;
+        self.accounts_controls = AccountsControls::new(&self.household, window, cx);
+        let (boundary_choice, boundaries) = crate::controls::boundary_choice(&self.household, self.viewer, self.boundary, window, cx);
+        self.boundary_choice = boundary_choice;
+        self.boundaries = boundaries;
+        if !self.boundaries.contains(&self.boundary) {
+            self.boundary = Boundary::Household;
+        }
+        self.plan_choices = PlanChoices::new(&self.household, self.viewer, self.projection_scenario, self.timeline_filter.scenario.is_some(), self.sensitivity_scenario, self.tax_scenario, self.rules_scenario, window, cx);
+        self.subscribe_controls(window, cx);
     }
 
     fn compute_taxes(household: &Household, viewer: Viewer, through: NaiveDate, scenario: bool, e05_amount: Money, e05_split: bool, e05_schedule: E05Schedule) -> Result<TaxModel, EngineError> {
@@ -1730,20 +1751,25 @@ impl AtlasApp {
             // Bridge: every route not rebuilt yet renders through the previous
             // screen for its data, so the application stays complete.
             Route::Today => match self.overview_result() {
-                Ok(overview) => models::household::render(overview, &self.household, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Route::Today, "the household overview", err, cx),
+                Ok(overview) => crate::screens::today::render(self, overview, &self.household, cx),
+                Err(err) => self.render_engine_failure(Route::Today, "today's figures", err, cx),
             },
             Route::People | Route::Person(_) | Route::Companies | Route::Company(_) | Route::Accounts | Route::Account(_) => match self.entities_result() {
                 Ok(models) => match self.route {
                     Route::People | Route::Person(_) => models::people::render(models, &self.household, self.selected_person, cx).into_any_element(),
                     Route::Companies | Route::Company(_) => models::companies::render(models, &self.household, self.selected_company, cx).into_any_element(),
-                    _ => models::accounts::render(models, &self.household, self.viewer, self.selected_account, cx).into_any_element(),
+                    Route::Account(id) => crate::screens::accounts::render_detail(self, id, models, &self.household, cx),
+                    _ => crate::screens::accounts::render_list(self, models, &self.household, cx),
                 },
                 Err(err) => self.render_engine_failure(self.route, "this screen", err, cx),
             },
-            Route::Earmarks | Route::Funding => match self.liquidity_result() {
-                Ok(model) => models::liquidity::render(model, &self.household, self.viewer, cx).into_any_element(),
+            Route::Earmarks => match self.liquidity_result() {
+                Ok(model) => crate::screens::earmarks::render(self, model, &self.household, cx),
                 Err(err) => self.render_engine_failure(Route::Earmarks, "liquidity", err, cx),
+            },
+            Route::Funding => match self.rules_result() {
+                Ok(model) => crate::screens::funding::render(self, model, &self.household, cx),
+                Err(err) => self.render_engine_failure(Route::Funding, "the funding order", err, cx),
             },
             Route::Upcoming | Route::Series | Route::SeriesDetail(_) | Route::Actuals => match self.timeline_result() {
                 Ok(model) => models::timeline::render(model, &self.timeline_controls, &self.grids, &self.household, cx).into_any_element(),
