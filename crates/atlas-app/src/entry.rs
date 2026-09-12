@@ -31,6 +31,10 @@ use crate::app::AtlasApp;
 
 type Choice = Entity<SelectState<Vec<SharedString>>>;
 
+fn choice_at(items: Vec<SharedString>, selected: usize, window: &mut Window, cx: &mut Context<AtlasApp>) -> Choice {
+    cx.new(|cx| SelectState::new(items, Some(IndexPath::new(selected)), window, cx))
+}
+
 fn choice(items: Vec<SharedString>, window: &mut Window, cx: &mut Context<AtlasApp>) -> Choice {
     cx.new(|cx| SelectState::new(items, Some(IndexPath::default()), window, cx))
 }
@@ -214,7 +218,7 @@ impl EntryForms {
             series_account: choice(account_names.clone(), window, cx),
             series_transfer_to: choice(account_names.clone(), window, cx),
             series_entity: choice(entity_names, window, cx),
-            series_certainty: choice(certainties.clone(), window, cx),
+            series_certainty: choice_at(certainties.clone(), Certainty::ALL.iter().position(|c| *c == Certainty::Expected).unwrap_or(0), window, cx),
             series_category: text("category, e.g. Salary, Housing, Living", window, cx),
             assumption_text: text("what must hold for the forecast", window, cx),
             assumption_certainty: choice(certainties, window, cx),
@@ -803,6 +807,7 @@ impl AtlasApp {
         match result {
             Ok(()) => {
                 log::info!("deleted {object}");
+                self.note_result(format!("Deleted {object}."));
                 self.mark_dirty();
                 self.rebuild_forms(window, cx);
                 self.refresh_derived();

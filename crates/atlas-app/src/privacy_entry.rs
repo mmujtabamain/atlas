@@ -417,6 +417,7 @@ impl AtlasApp {
         let at = chrono::Local::now().naive_local();
         match self.household.revoke_grant(id, self.viewer.person, self.household.as_of, at) {
             Ok(()) => {
+                self.note_result(format!("Grant {id} revoked from {}; its history is kept.", self.household.as_of.format("%d %b %Y")));
                 self.mark_dirty();
                 self.refresh_derived();
                 window.push_notification(format!("Grant {id} revoked from {}.", self.household.as_of.format("%d %b %Y")), cx);

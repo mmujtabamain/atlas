@@ -433,6 +433,11 @@ pub fn render_sensitivity(app: &AtlasApp, model: &AssumptionsModel, household: &
 }
 
 impl AtlasApp {
+    /// Whether the sensitivity result on show is behind its chosen scope.
+    pub fn sensitivity_pending(&self) -> bool {
+        self.sensitivity_pending
+    }
+
     pub fn toggle_assumption(&mut self, id: AssumptionId, cx: &mut Context<Self>) {
         self.assumption_expanded = if self.assumption_expanded == Some(id) { None } else { Some(id) };
         cx.notify();

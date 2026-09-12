@@ -16,6 +16,7 @@ use gpui_kit::component::{
     scroll::ScrollableElement as _,
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::alerting::{self, Level};
@@ -519,7 +520,10 @@ impl AtlasApp {
         let rule_form = RuleForm::new(&household, _window, _cx);
         let scenario_selection: Vec<ScenarioId> = household.scenarios.first().map(|s| vec![s.id]).unwrap_or_default();
         let scenario_forms = ScenarioForms::new(&household, _window, _cx);
-        let decision_plan = atlas_core::decision::default_plan_for(&household, household.as_of, viewer);
+        let decision_plan = {
+            let plan = atlas_core::decision::default_plan_for(&household, household.as_of, viewer);
+            if is_sample { plan } else { crate::decision_entry::blank_plan(plan, household.base_currency) }
+        };
         let decision_form = DecisionForm::new(&household, &decision_plan, viewer, _window, _cx);
         let privacy_forms = PrivacyForms::new(&household, viewer.person, _window, _cx);
         let lifecycle_form = crate::lifecycle::LifecycleForm::new(_window, _cx);
@@ -999,6 +1003,7 @@ impl AtlasApp {
         match self.household.accept_assumption(id, self.household.as_of) {
             Ok(()) => {
                 log::info!("assumption {id} accepted on {}", self.household.as_of);
+                self.note_result(format!("Assumption #{} accepted on {}.", id.raw(), self.household.as_of.format("%d %b %Y")));
                 self.mark_dirty();
         self.refresh_derived();
                 window.push_notification(format!("Assumption #{} accepted on {}", id.raw(), self.household.as_of.format("%d %b %Y")), cx);
@@ -1017,6 +1022,7 @@ impl AtlasApp {
         match derive(&self.household, series, self.derivation).and_then(|d| apply_derived(&mut self.household, &d, assumption).map(|_| d)) {
             Ok(derived) => {
                 log::info!("derivation applied to {assumption}: {}", derived.statement);
+                self.note_result(format!("Assumption #{} now reads {}; accept it to use it.", assumption.raw(), derived.amount.describe()));
                 self.mark_dirty();
         self.refresh_derived();
                 window.push_notification(format!("Assumption #{} now reads: {} — accept it to use it.", assumption.raw(), derived.amount.describe()), cx);
@@ -1503,6 +1509,7 @@ impl AtlasApp {
         match self.household.set_rule_enabled(id, !enabled) {
             Ok(()) => {
                 log::info!("rule {id} {}", if enabled { "disabled" } else { "enabled" });
+                self.note_result(format!("Rule {id} {} as a new version; forecasts recomputed.", if enabled { "disabled" } else { "enabled" }));
                 self.mark_dirty();
                 self.refresh_derived();
                 window.push_notification(format!("Rule {id} {} (new version recorded); forecasts recomputed.", if enabled { "disabled" } else { "enabled" }), cx);
@@ -1520,6 +1527,7 @@ impl AtlasApp {
         match self.household.set_rule_priority(id, priority + delta) {
             Ok(()) => {
                 log::info!("rule {id} priority {priority} → {}", priority + delta);
+                self.note_result(format!("Rule {id} priority {priority} → {} as a new version.", priority + delta));
                 self.mark_dirty();
                 self.refresh_derived();
                 window.push_notification(format!("Rule {id} priority {priority} → {} (new version recorded).", priority + delta), cx);
@@ -1536,6 +1544,7 @@ impl AtlasApp {
         match self.household.remove_rule(id) {
             Ok(()) => {
                 log::info!("rule {id} deleted");
+                self.note_result(format!("Rule {id} deleted; forecasts recomputed."));
                 if self.simulated_rule == Some(id) {
                     self.simulated_rule = None;
                 }
@@ -1719,17 +1728,35 @@ impl AtlasApp {
         let account_name = self.household.account(reservation.account).map(|a| a.name.clone()).unwrap_or_default();
         let this = cx.entity().downgrade();
         let title = format!("Pay and release “{}”?", reservation.name);
-        let body = format!(
-            "Records the {} payment from {} and releases the earmark. The bank balance falls by that amount; free cash stays where it is, because the money was already set aside.",
-            reservation.amount.format(),
-            account_name
-        );
-        window.open_dialog(cx, move |dialog, _, _| {
+        // The effect on free cash is computed, not asserted: a nested earmark
+        // or one that covers the bank minimum does not cancel out exactly.
+        let before = atlas_core::liquidity::account_liquidity(&self.household, reservation.account).ok();
+        let after = {
+            let mut copy = self.household.clone();
+            copy.pay_and_release(id, copy.as_of).ok().and_then(|_| atlas_core::liquidity::account_liquidity(&copy, reservation.account).ok())
+        };
+        let overlapping = !matches!(reservation.coverage, atlas_core::model::Coverage::Disjoint);
+        let lines: Vec<String> = match (&before, &after) {
+            (Some(b), Some(a)) => vec![
+                format!("Records the {} payment from {} on {} and releases the earmark.", reservation.amount.format(), account_name, self.household.as_of.format("%d %b %Y")),
+                format!("Settled: {} → {}", b.ledger_cash.money().format(), a.ledger_cash.money().format()),
+                format!("Reserved: {} → {}", b.reserved.money().format(), a.reserved.money().format()),
+                format!("Free: {} → {}", b.free.money().format(), a.free.money().format()),
+                if overlapping {
+                    "This earmark overlaps another constraint, so free cash does not move by the full amount.".to_string()
+                } else {
+                    "Free cash does not change: the money was already set aside.".to_string()
+                },
+            ],
+            _ => vec![format!("Records the {} payment from {} and releases the earmark.", reservation.amount.format(), account_name)],
+        };
+        window.open_dialog(cx, move |dialog, _, cx| {
             let this = this.clone();
+            let muted = cx.theme().muted_foreground;
             dialog
                 .title(title.clone())
                 .w_96()
-                .child(div().text_sm().child(body.clone()))
+                .child(v_flex().gap_1().text_sm().children(lines.iter().enumerate().map(|(i, l)| div().when(i > 0, |d| d.text_xs().text_color(muted)).child(l.clone()))))
                 .footer(
                     DialogFooter::new()
                         .child(Button::new("cancel-release").outline().label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
@@ -1760,6 +1787,7 @@ impl AtlasApp {
         match self.household.pay_and_release(id, self.household.as_of) {
             Ok(balance) => {
                 log::info!("reservation {id} paid and released; new settled balance {}", balance.format());
+                self.note_result(format!("Paid and released “{name}”; the account's settled balance is now {}.", balance.format()));
                 self.mark_dirty();
         self.refresh_derived();
                 cx.notify();
@@ -1929,10 +1957,12 @@ impl AtlasApp {
         cx.notify();
     }
 
-    /// Drops the purchase draft and its result: the default plan for the
+    /// Drops the purchase draft and its result: the starting plan for the
     /// viewer, step 1, no result. The form entities follow on `rebuild_forms`.
     pub(crate) fn reset_decision_state(&mut self) {
-        self.decision_plan = atlas_core::decision::default_plan_for(&self.household, self.household.as_of, self.viewer);
+        self.decision_plan = self.starting_plan();
+        self.decision_result_stale = false;
+        self.decision_saved_scenario = None;
         self.decision = None;
         self.decision_step = 0;
     }

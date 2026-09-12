@@ -79,8 +79,11 @@ impl Figure {
 /// The metadata terms of a node, as buttons that open Figure meanings.
 pub fn metadata_terms(id: &str, node: &ProvNode) -> Vec<AnyElement> {
     let mut terms: Vec<AnyElement> = Vec::new();
-    if let Some(class) = node.money_class_label() {
-        terms.push(meanings::term_button(SharedString::from(format!("{id}-class")), class.label(), !class.is_current(), Term::MoneyClass(class)).into_any_element());
+    match node.money_class_label() {
+        Some(class) => terms.push(meanings::term_button(SharedString::from(format!("{id}-class")), class.label(), !class.is_current(), Term::MoneyClass(class)).into_any_element()),
+        // The source gives no class for this figure; say so rather than
+        // leaving the line short or inventing one.
+        None => terms.push(meanings::term_button(SharedString::from(format!("{id}-class")), "Kind not assigned", true, Term::MoneyClass(atlas_core::vocab::MoneyClass::ConditionalFuture)).into_any_element()),
     }
     if let Some(certainty) = node.certainty_label() {
         let caution = matches!(certainty, atlas_core::vocab::Certainty::ScenarioOnly | atlas_core::vocab::Certainty::Tentative);

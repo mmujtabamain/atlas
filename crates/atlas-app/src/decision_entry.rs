@@ -177,7 +177,31 @@ impl DecisionForm {
     }
 }
 
+/// The starting plan for a real household: the engine's defaults minus the
+/// sample's Car figures, so nothing large is prefilled in the wrong currency.
+pub fn blank_plan(mut plan: PurchasePlan, currency: atlas_core::Currency) -> PurchasePlan {
+    plan.name.clear();
+    plan.price = Money::zero(currency);
+    plan.down_payment = Money::zero(currency);
+    plan.down_payment_low = Money::zero(currency);
+    plan.down_payment_high = Money::zero(currency);
+    plan.down_payment_step = Money::zero(currency);
+    plan.reserve = Money::zero(currency);
+    plan.window_to = plan.window_from;
+    plan.financing = None;
+    plan.other_costs.clear();
+    plan.running_cost = None;
+    plan
+}
+
 impl AtlasApp {
+    /// The starting plan for this household: the sample keeps its supplied
+    /// example, a real household starts empty.
+    pub(crate) fn starting_plan(&self) -> PurchasePlan {
+        let plan = atlas_core::decision::default_plan_for(&self.household, self.household.as_of, self.viewer);
+        if self.is_sample() { plan } else { blank_plan(plan, self.household.base_currency) }
+    }
+
     /// Reads step `step` of the form into the plan, validating it.
     pub fn apply_decision_step(&mut self, step: usize, cx: &mut Context<Self>) -> Result<(), String> {
         let currency = self.household.base_currency;
@@ -332,9 +356,9 @@ impl AtlasApp {
         self.decision = Some(result);
     }
 
-    /// Resets the builder to the default plan.
+    /// Resets the builder to the starting plan.
     pub fn reset_decision(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.decision_plan = atlas_core::decision::default_plan_for(&self.household, self.household.as_of, self.viewer);
+        self.decision_plan = self.starting_plan();
         self.decision_form = DecisionForm::new(&self.household, &self.decision_plan, self.viewer, window, cx);
         self.decision_step = 0;
         self.decision = None;
