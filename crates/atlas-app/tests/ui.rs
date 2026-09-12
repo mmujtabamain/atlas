@@ -5,13 +5,13 @@
 //! `main-sidebar` scope: People is `0-0-1`, Settings is `4-0-1`.
 
 use atlas_app::screens::Section;
-use atlas_app::{AtlasApp, Launch};
+use atlas_app::{AtlasApp, Launch, Shell};
 use atlas_core::fixtures;
 use atlas_core::ids::ObjectRef;
 use atlas_core::Disclosure;
 use gpui_kit::component::{Root, WindowExt as _};
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext as _, Entity, ScrollDelta, TestAppContext, point, px, size};
+use gpui_kit::{AppContext as _, Entity, Modifiers, MouseMoveEvent, PlatformInput, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px, size};
 
 /// gpui-kit dialogs fade in over 250 ms of wall-clock time (not test time) and
 /// do not take pointer input until the animation has finished, so a test must
@@ -48,14 +48,21 @@ fn scroll_by(window: &mut gpui_kit::Window, anchor: &'static str, pixels: f32, c
 }
 
 fn open_app(cx: &mut TestAppContext, launch: Launch) -> (gpui_kit::WindowHandle<Root>, Entity<AtlasApp>) {
+    let (handle, shell) = open_shell(cx, launch);
+    let app = cx.update(|cx| shell.read(cx).app().clone());
+    (handle, app)
+}
+
+/// Opens the window and returns the root view (the shell around the content).
+fn open_shell(cx: &mut TestAppContext, launch: Launch) -> (gpui_kit::WindowHandle<Root>, Entity<Shell>) {
     cx.update(gpui_kit::init);
-    let mut app_view = None;
+    let mut shell_view = None;
     let handle = cx.open_window(size(px(1600.), px(1000.)), |window, cx| {
-        let view = cx.new(|cx| AtlasApp::new(&launch, window, cx));
-        app_view = Some(view.clone());
-        Root::new(view, window, cx)
+        let shell = cx.new(|cx| Shell::new(&launch, window, cx));
+        shell_view = Some(shell.clone());
+        Root::new(shell, window, cx)
     });
-    (handle, app_view.expect("view created"))
+    (handle, shell_view.expect("view created"))
 }
 
 #[gpui_kit::test]
@@ -1175,7 +1182,123 @@ fn status_bar_shows_the_frame_meter(cx: &mut TestAppContext) {
         assert!(last.build > std::time::Duration::ZERO, "{last:?}");
         assert!(last.draw.is_some(), "the paint probe painted: {last:?}");
         assert!(last.draw.unwrap() >= last.build, "draw covers the build: {last:?}");
+        // The counter is gpui's own reading (draw p50 / fps from its
+        // profiler histograms), refreshed by the once-a-second summary.
         let status = meter.status_text();
-        assert!(status.contains("ms/frame = ") && status.contains("fps possible"), "{status}");
+        assert!(status.starts_with("gpui: "), "{status}");
     });
+}
+
+/// Moves the pointer to the centre of an element without rendering a frame
+/// first (unlike `hover`, which refreshes the window and so bypasses every
+/// view cache). The harness draws the frame the move causes before returning.
+fn move_pointer_to(window: &mut gpui_kit::Window, scope: Option<&'static str>, id: &'static str, cx: &mut gpui_kit::App) {
+    let position = match scope {
+        Some(scope) => window.within(scope).find(id).bounds().center(),
+        None => window.find(id).bounds().center(),
+    };
+    window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }), cx);
+}
+
+#[gpui_kit::test]
+fn shell_reuses_cached_views_between_frames(cx: &mut TestAppContext) {
+    // Perf step 3: the sidebar and the content are separate cached views. A
+    // frame re-renders only the views that were notified; the rest reuse their
+    // previous layout and paint. `render_frame` refreshes the window (which
+    // bypasses every cache), so the frames under test are drawn directly, and
+    // a frame's figures are read once the next frame has closed it.
+    let (handle, shell) = open_shell(cx, Launch::default());
+    let (app, sidebar) = cx.update(|cx| {
+        let shell = shell.read(cx);
+        (shell.app().clone(), shell.sidebar().clone())
+    });
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+
+    // Nothing changed between two frames: both cached views are reused.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let renders = sidebar.read(cx).renders();
+        assert!(renders >= 1, "the first frame rendered the sidebar");
+        window.draw(cx).clear(cx);
+        assert_eq!(sidebar.read(cx).renders(), renders, "an unchanged frame reuses the sidebar");
+        window.draw(cx).clear(cx);
+        let last = app.read(cx).perf().last().expect("the previous frame is closed");
+        assert_eq!(last.content_render, None, "an unchanged frame reuses the content: {last:?}");
+        // The first pointer event switches gpui's input modality, which
+        // refreshes the window once; park the pointer on the status bar so
+        // that is out of the way.
+        move_pointer_to(window, None, "perf-counter", cx);
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+
+    // Hovering a sidebar item re-renders the sidebar, not the screen.
+    cx.update_window(window, |_, window, cx| {
+        let renders = sidebar.read(cx).renders();
+        move_pointer_to(window, Some("main-sidebar"), "0-0-1", cx);
+        window.draw(cx).clear(cx);
+        assert_eq!(sidebar.read(cx).renders(), renders + 1, "the hover re-renders the sidebar");
+        window.draw(cx).clear(cx);
+        let last = app.read(cx).perf().last().unwrap();
+        assert_eq!(last.content_render, None, "a sidebar hover does not rebuild the screen: {last:?}");
+    })
+    .unwrap();
+
+    // Hovering a button on the screen re-renders the content, not the sidebar
+    // (the pointer leaves the sidebar first, which un-hovers its item).
+    cx.update_window(window, |_, window, cx| {
+        move_pointer_to(window, None, "perf-counter", cx);
+        window.draw(cx).clear(cx);
+        let renders = sidebar.read(cx).renders();
+        move_pointer_to(window, None, "why-free-cash", cx);
+        window.draw(cx).clear(cx);
+        assert_eq!(sidebar.read(cx).renders(), renders, "a content hover leaves the sidebar cached");
+        window.draw(cx).clear(cx);
+        let last = app.read(cx).perf().last().unwrap();
+        assert!(last.content_render.is_some(), "the hover re-rendered the content: {last:?}");
+    })
+    .unwrap();
+
+    // Scrolling the screen re-renders the content, not the sidebar.
+    cx.update_window(window, |_, window, cx| {
+        move_pointer_to(window, None, "perf-counter", cx);
+        window.draw(cx).clear(cx);
+        let renders = sidebar.read(cx).renders();
+        let position = window.find("figure-free-cash").bounds().center();
+        window.dispatch_event(
+            PlatformInput::ScrollWheel(ScrollWheelEvent { position, delta: ScrollDelta::Pixels(point(px(0.), px(-300.))), modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved }),
+            cx,
+        );
+        window.draw(cx).clear(cx);
+        assert_eq!(sidebar.read(cx).renders(), renders, "a scroll tick leaves the sidebar cached");
+        window.draw(cx).clear(cx);
+        let last = app.read(cx).perf().last().unwrap();
+        assert!(last.content_render.is_some(), "the scroll re-rendered the content: {last:?}");
+        assert_eq!(last.wheel_events, 1, "{last:?}");
+    })
+    .unwrap();
+
+    // A state change the sidebar does not show (the liquidity boundary) leaves
+    // it cached; one it does show (the section) re-renders it. The sidebar
+    // learns of the change through an observer, which runs when the update
+    // that notified the app has flushed — hence one `update` per change.
+    let renders = cx.update(|cx| {
+        let renders = sidebar.read(cx).renders();
+        app.update(cx, |app, cx| app.select_boundary(atlas_core::liquidity::Boundary::Person(fixtures::ids::PERSON_A), cx));
+        renders
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear(cx);
+        assert_eq!(sidebar.read(cx).renders(), renders, "a boundary change does not touch the sidebar");
+        assert_eq!(sidebar.read(cx).snapshot().section, Section::Household);
+    })
+    .unwrap();
+    cx.update(|cx| app.update(cx, |app, cx| app.navigate(Section::People, cx)));
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear(cx);
+        assert_eq!(sidebar.read(cx).renders(), renders + 1, "navigation re-renders the sidebar");
+        assert_eq!(sidebar.read(cx).snapshot().section, Section::People);
+        assert!(window.try_find("screen-people").is_some(), "and the content shows the new section");
+    })
+    .unwrap();
 }
