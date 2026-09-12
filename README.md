@@ -49,11 +49,16 @@ perf: summary 1.0s: 9 frames (fps≈8.6) build avg=2.0ms max=9.4ms · draw≈ av
 - `build` — time in `AtlasApp::render` (our element tree). `draw≈` — build + gpui layout + paint,
   measured to a probe painted last in the tree. `gpui draw` — gpui's own `Window::draw` histogram
   (the `profiler` feature), summarised once a second while frames happen.
-- The **status bar** shows the previous frame: `11 fps · build 1 ms · draw 49 ms · frame #50`.
-  gpui only draws when something changed, so "fps" is the rate *while frames are happening*;
-  an idle window at 0 is healthy. The green **overlay** in the top-right corner is gpui's own
+- The **status bar** shows the previous frame: `15 ms/frame = 65 fps possible · 58 frames/s
+  drawn · #50`. The first number is the cost and the frame rate it allows; the second is how
+  many frames gpui actually drew in the last second, which depends on the input — gpui only
+  draws when something changed, so a mouse crossing five buttons draws five frames, and an
+  idle window draws none. The green **overlay** in the top-right corner is gpui's own
   frame-time readout (current, 1 %/10 % worst, max, frame count); `--no-perf-overlay` or
   `ATLAS_PERF_OVERLAY=0` hides it.
+- `cargo run` compiles every dependency at opt-level 2 and `atlas-app` at 1 (see the profile
+  notes in `Cargo.toml`); the engine crates stay unoptimised for debugging. The first build
+  after pulling this is a full rebuild of the dependencies.
 - Filters: `RUST_LOG=<filter>` (both sinks; the file keeps `atlas_*=debug` on top of it),
   `ATLAS_LOG_FILE_FILTER=<filter>` (file only), `ATLAS_LOG_FILE=<path>|off`.
 - Module docs: `crates/atlas-app/src/perf.rs` and `logging.rs`. The investigation, the

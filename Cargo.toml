@@ -40,6 +40,20 @@ ureq = { version = "3", default-features = false, features = ["rustls", "json"] 
 # the 2 GiB build box.
 debug = "line-tables-only"
 
+# Measured on the Linux box, Household screen, per frame (docs/perf.md §3c):
+#   dev profile as shipped by gpui-kit's guide  43 ms
+#   + every dependency at opt-level 2           32 ms
+#   + atlas-app at opt-level 1                  26 ms   (release: 22 ms)
+# Either change alone does little: gpui's generic builder code (Styled,
+# IntoElement, element wrappers) is monomorphised half in our crate and half
+# in gpui-base/gpui-component, so both sides have to be optimised. atlas-core
+# and atlas-store stay at opt-level 0 — the engine is what gets debugged.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.atlas-app]
+opt-level = 1
+
 [profile.dev.package]
 gpui-pre = { opt-level = 3 }
 gpui-component = { opt-level = 3 }
@@ -51,3 +65,4 @@ rustybuzz = { opt-level = 3 }
 taffy = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
 resvg = { opt-level = 3 }
+

@@ -1,6 +1,6 @@
 # Frame performance: what was measured, what was changed, the rules that follow
 
-Status: 2026-09-12, after two rounds. Numbers are per frame while scrolling the
+Status: 2026-09-12, after three rounds. Numbers are per frame while scrolling the
 screen, `cargo run` (debug profile), from `logs.log` — see README "Logs and the
 frame meter". "Box" is the Linux DevBench box (CPU rendering, slow); the
 customer's Mac is roughly 2× faster per frame.
@@ -104,17 +104,47 @@ lever for the flexbox solve is fewer and shallower nodes (block `div`s
 instead of flex containers for single-child wrappers, no wrapper per table
 cell, definite heights where known), not more width fixes.
 
+## 3c. The customer's Mac after round 2, and the dev profile
+
+Mac (M-series, 2× scale), Household, wheel-scrolling, per frame:
+
+| | before | debug after round 2 | release |
+|---|---|---|---|
+| draw | 35 ms | 15.3 ms | 6.3 ms |
+| layout / taffy / prepaint / paint | — | 3.9 / 3.4 / 5.2 / 2.3 | 1.1 / 2.7 / 1.2 / 1.2 |
+| frames per second while scrolling | 27 | 55–59 | 60 (display cap) |
+
+Debug was at the 16.6 ms budget, so heavier screens fell to 30 fps through
+vsync quantisation. The split showed where: layout and prepaint were 3.5–4×
+their release cost while taffy was nearly equal — i.e. component code, not
+the flexbox solve. On the box (Household / Timeline draw, ms):
+
+| dev profile | Household | Timeline |
+|---|---|---|
+| as shipped by gpui-kit's guide (gpui crates at 3, rest at 0) | 43 | 96 |
+| every dependency at opt-level 2 | 32 | 69 |
+| `atlas-app` at opt-level 1, dependencies as shipped | 40 | 94 |
+| **both** (now in `Cargo.toml`) | **26** | **50** |
+| release | 22 | 40 |
+
+Either change alone does little because gpui's generic builder code
+(`Styled`, `IntoElement`, element wrappers) is monomorphised half in our crate
+and half in `gpui-base`/`gpui-component`; both sides must be optimised.
+`atlas-core` and `atlas-store` stay at opt-level 0.
+
+About the status-bar counter: it used to lead with "N fps", the number of
+frames drawn in the last second. In gpui that is a property of the *input* —
+a mouse crossing five buttons draws five frames, so "5 fps" appeared while
+each frame cost 6 ms. It now leads with the cost and the rate it allows
+(`15 ms/frame = 65 fps possible`) and shows the drawn rate second.
+
 ## 4. What remains, in order of expected gain
 
 - **Node count** (Timeline: 1,800 nodes, ~25 per occurrence row; layout 22 +
   prepaint 29 + paint 11 ms on the box). Options: page the occurrence table
   (25 rows + "show all"), or a virtualised list (`uniform_list` / DataTable,
   which brings its own scroll region). Product decision.
-- **Per-node cost of the debug profile.** `[profile.dev.package]` optimises
-  gpui itself but not `gpui-base` (the component implementations, 53k lines)
-  nor the crates gpui leans on per element; all dependencies at `opt-level =
-  2` cut a frame by ~20 % on the box. A release build is the ceiling — ask for
-  `cargo run --release` numbers before deciding.
+- ~~Per-node cost of the debug profile~~ — done, see §3c.
 - **Residual re-measurement** on Scenarios (10 callbacks/node: the chart and
   comparison table), Taxes and Rules (5/node) — same bisection as above.
 - **View caching for hover/typing frames**: gpui reuses a `.cached()` view's
