@@ -21,6 +21,7 @@ use crate::money::Money;
 use crate::vocab::{Certainty, MoneyClass, ResultStrength};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// M55 — `D_i(v, c)`: how much of one object a viewer may see in a context.
 /// Ordered from most to least restrictive.
@@ -581,15 +582,21 @@ fn merge_restricted(nodes: &[ProvNode], level: Disclosure) -> ProvNode {
 }
 
 /// A derived value together with its complete calculation graph.
+///
+/// The graph is behind an [`Arc`]: a `Calc` is cloned wherever a figure is
+/// shown (screen models, the "Why?" sheet, the click handler that opens it),
+/// and a chain of a few hundred nodes copied on every frame was a measurable
+/// share of the frame budget. Cloning a `Calc` now copies a pointer; the tree
+/// itself is immutable once built.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Calc<T> {
     value: T,
-    node: ProvNode,
+    node: Arc<ProvNode>,
 }
 
 impl<T> Calc<T> {
     pub fn new(value: T, node: ProvNode) -> Self {
-        Calc { value, node }
+        Calc { value, node: Arc::new(node) }
     }
 
     pub fn value(&self) -> &T {
@@ -600,8 +607,16 @@ impl<T> Calc<T> {
         &self.node
     }
 
+    /// The graph as a shared handle — the cheap way to keep a chain around
+    /// (an explain sheet, a closure) without copying it.
+    pub fn shared_node(&self) -> Arc<ProvNode> {
+        Arc::clone(&self.node)
+    }
+
+    /// Takes the value and the graph apart; copies the graph only when it is
+    /// still shared with someone else.
     pub fn into_parts(self) -> (T, ProvNode) {
-        (self.value, self.node)
+        (self.value, Arc::try_unwrap(self.node).unwrap_or_else(|shared| (*shared).clone()))
     }
 }
 
