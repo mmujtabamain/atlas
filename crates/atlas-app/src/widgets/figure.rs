@@ -1,9 +1,10 @@
 //! A figure that can always explain itself.
 //!
 //! Every derived money value on a screen is rendered through [`Figure`]: the
-//! label, the value in the monospace face, the vocabulary tags of its
-//! provenance node and a "Why?" button that opens the explain sheet. There is
-//! deliberately no way to render a bare derived number.
+//! label, the exact value in the monospace face, a quiet metadata line with
+//! the three vocabulary terms (each opens Figure meanings) and an `Explain…`
+//! button that opens the calculation sheet. There is deliberately no way to
+//! render a bare derived number.
 
 use std::sync::Arc;
 
@@ -17,18 +18,27 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::explain::{self, ExplainContent};
-use super::labels;
+use super::meanings::{self, Term};
 
 /// One card in a row of figures (`h_flex().flex_wrap().gap_8()`).
 ///
 /// Cards have a fixed width on purpose. With auto-width cards taffy has to
 /// measure every card's whole content — label, value, tags — again for each
 /// candidate wrap line, and that measurement repeats at every ancestor's
-/// sizing pass: the Household money row alone cost 5,200 measure callbacks
-/// per frame; fixed at 16 rem it costs 460 (see perf.rs / logs.log
-/// `taffy` figures). Long labels wrap inside the card.
+/// sizing pass. Long labels wrap inside the card.
 pub fn card(content: impl IntoElement) -> Div {
     div().w_64().flex_shrink_0().child(content)
+}
+
+/// How much room the figure takes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Variant {
+    /// The one number a screen is about: large value, metadata on its own rows.
+    Leading,
+    /// A supporting figure: value with the metadata line below.
+    Standard,
+    /// Inside a table cell: small value, metadata stacked, icon-only Explain.
+    Compact,
 }
 
 /// A labelled, explainable money figure.
@@ -39,20 +49,50 @@ pub struct Figure {
     money: Money,
     node: Arc<ProvNode>,
     content: Arc<ExplainContent>,
-    emphasis: bool,
+    variant: Variant,
+    /// A qualifier or date shown after the metadata, when needed.
+    qualifier: Option<SharedString>,
 }
 
 impl Figure {
     /// `id` must be stable and unique on the screen (`free-cash`, …).
     pub fn new(id: impl Into<SharedString>, label: impl Into<SharedString>, calc: &Calc<Money>, content: Arc<ExplainContent>) -> Self {
-        Figure { id: id.into(), label: label.into(), money: calc.money(), node: calc.shared_node(), content, emphasis: false }
+        Figure { id: id.into(), label: label.into(), money: calc.money(), node: calc.shared_node(), content, variant: Variant::Standard, qualifier: None }
+    }
+
+    pub fn variant(mut self, variant: Variant) -> Self {
+        self.variant = variant;
+        self
     }
 
     /// Larger value text for the one figure a screen is about.
-    pub fn emphasis(mut self, emphasis: bool) -> Self {
-        self.emphasis = emphasis;
+    pub fn emphasis(self, emphasis: bool) -> Self {
+        self.variant(if emphasis { Variant::Leading } else { Variant::Standard })
+    }
+
+    pub fn qualifier(mut self, qualifier: impl Into<SharedString>) -> Self {
+        self.qualifier = Some(qualifier.into());
         self
     }
+}
+
+/// The metadata terms of a node, as buttons that open Figure meanings.
+pub fn metadata_terms(id: &str, node: &ProvNode) -> Vec<AnyElement> {
+    let mut terms: Vec<AnyElement> = Vec::new();
+    if let Some(class) = node.money_class_label() {
+        terms.push(meanings::term_button(SharedString::from(format!("{id}-class")), class.label(), !class.is_current(), Term::MoneyClass(class)).into_any_element());
+    }
+    if let Some(certainty) = node.certainty_label() {
+        let caution = matches!(certainty, atlas_core::vocab::Certainty::ScenarioOnly | atlas_core::vocab::Certainty::Tentative);
+        terms.push(meanings::term_button(SharedString::from(format!("{id}-certainty")), certainty.label(), caution, Term::Certainty(certainty)).into_any_element());
+    }
+    let strength = node.result_strength();
+    let caution = !matches!(strength, atlas_core::vocab::ResultStrength::ExactAccounting | atlas_core::vocab::ResultStrength::SolverCertified);
+    terms.push(meanings::term_button(SharedString::from(format!("{id}-strength")), strength.label(), caution, Term::Strength(strength)).into_any_element());
+    if matches!(node.operation(), Operation::Aggregate { .. }) {
+        terms.push(meanings::term_button(SharedString::from(format!("{id}-aggregate")), "Authorized total", true, Term::Disclosure(Disclosure::Aggregate)).into_any_element());
+    }
+    terms
 }
 
 impl RenderOnce for Figure {
@@ -62,35 +102,42 @@ impl RenderOnce for Figure {
         let node: &ProvNode = &self.node;
         let value_color = if money.is_negative() { theme.danger } else { theme.foreground };
         let value_id = SharedString::from(format!("figure-{}", self.id));
-        let why_id = SharedString::from(format!("why-{}", self.id));
+        let explain_id = SharedString::from(format!("explain-{}", self.id));
         // The click handler shares the content with the figure (pointer copy).
         let content = self.content;
+        let terms = metadata_terms(&self.id, node);
+        let compact = self.variant == Variant::Compact;
+
+        let explain = Button::new(explain_id)
+            .xsmall()
+            .ghost()
+            .compact()
+            .icon(IconName::ListTree)
+            .when(!compact, |b| b.label("Explain…"))
+            .tooltip("Show the calculation")
+            .on_click(move |_, window, cx| explain::open_sheet(window, cx, content.clone()));
 
         // Definite width: an auto-width row of tags is re-measured by taffy at
-        // every ancestor pass (see perf.rs).
-        let mut tags = h_flex().w_full().gap_1().flex_wrap().items_center();
-        if let Some(class) = node.money_class_label() {
-            tags = tags.child(labels::money_class_tag(class));
-        }
-        if let Some(certainty) = node.certainty_label() {
-            tags = tags.child(labels::certainty_tag(certainty));
-        }
-        tags = tags.child(labels::strength_tag(node.result_strength())).child(
-            Button::new(why_id)
-                .xsmall()
-                .ghost()
-                .compact()
-                .icon(IconName::CircleQuestionMark)
-                .label("Why?")
-                .tooltip("Show the calculation chain")
-                .on_click(move |_, window, cx| explain::open_sheet(window, cx, content.clone())),
-        );
+        // every ancestor pass.
+        let metadata = if compact {
+            v_flex().w_full().items_start().children(terms).into_any_element()
+        } else {
+            h_flex().w_full().gap_1().flex_wrap().items_center().children(terms).into_any_element()
+        };
 
         v_flex()
             .w_full()
             .gap_1()
             .min_w_0()
-            .child(div().text_xs().text_color(theme.muted_foreground).child(self.label))
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .items_baseline()
+                    .gap_2()
+                    .child(div().text_xs().text_color(theme.muted_foreground).child(self.label))
+                    .child(explain),
+            )
             .child(
                 div()
                     .id(value_id)
@@ -98,11 +145,15 @@ impl RenderOnce for Figure {
                     .font_family(theme.mono_font_family.clone())
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(value_color)
-                    .when(self.emphasis, |this| this.text_2xl())
-                    .when(!self.emphasis, |this| this.text_xl())
+                    .map(|this| match self.variant {
+                        Variant::Leading => this.text_2xl(),
+                        Variant::Standard => this.text_xl(),
+                        Variant::Compact => this.text_sm(),
+                    })
                     .child(money.format()),
             )
-            .child(tags)
+            .child(metadata)
+            .when_some(self.qualifier, |this, q| this.child(div().text_xs().text_color(theme.muted_foreground).child(q)))
     }
 }
 
@@ -110,9 +161,9 @@ impl RenderOnce for Figure {
 /// once per state change and rendered by any screen.
 ///
 /// Everything a frame needs is prepared here, once: the projected chain, its
-/// weakest disclosure level and the explain-sheet content. Rendering it (see
-/// [`ExplainedFigure::figure`]) copies two `Arc` pointers, so a screen with
-/// twenty figures costs the same per frame as one with none.
+/// weakest disclosure level and the calculation-sheet content. Rendering it
+/// (see [`ExplainedFigure::figure`]) copies two `Arc` pointers, so a screen
+/// with twenty figures costs the same per frame as one with none.
 #[derive(Clone, Debug)]
 pub struct ExplainedFigure {
     pub id: SharedString,
@@ -140,13 +191,34 @@ impl ExplainedFigure {
         self.disclosure
     }
 
-    /// The explain-sheet content, shared (the chain is not copied).
+    /// The calculation-sheet content, shared (the chain is not copied).
     pub fn content(&self) -> Arc<ExplainContent> {
         Arc::clone(&self.content)
     }
 
     pub fn figure(&self, emphasis: bool) -> Figure {
         Figure::new(self.id.clone(), self.label.clone(), &self.calc, self.content()).emphasis(emphasis)
+    }
+
+    pub fn leading(&self) -> Figure {
+        self.figure(true)
+    }
+
+    pub fn standard(&self) -> Figure {
+        self.figure(false)
+    }
+
+    pub fn compact(&self) -> Figure {
+        Figure::new(self.id.clone(), self.label.clone(), &self.calc, self.content()).variant(Variant::Compact)
+    }
+
+    /// The same figure under another label (a table column already names it).
+    pub fn compact_labelled(&self, label: impl Into<SharedString>) -> Figure {
+        Figure::new(self.id.clone(), label, &self.calc, self.content()).variant(Variant::Compact)
+    }
+
+    pub fn money(&self) -> Money {
+        self.calc.money()
     }
 }
 

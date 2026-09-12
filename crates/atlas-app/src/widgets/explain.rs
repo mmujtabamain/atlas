@@ -1,9 +1,10 @@
-//! The "Why is this number this number?" sheet.
+//! The calculation sheet: "Why is this number this number?"
 //!
-//! It renders a projected [`ProvNode`] as a calculation chain: one row per term
-//! with its sign, a rule, the result, then the nested chains of any term that
-//! is itself derived. The viewer and their disclosure level are stated at the
-//! top so nobody mistakes an aggregate for a source figure.
+//! It renders a projected [`ProvNode`] as a calculation chain: one row per
+//! term with its sign, the result, then the nested chains of any term that is
+//! itself derived. The header states the viewer, the currency and the weakest
+//! disclosure level so nobody mistakes an authorized total for a source
+//! figure; the footer carries the permitted claim and a copy command.
 
 use std::sync::Arc;
 
@@ -11,18 +12,22 @@ use atlas_core::provenance::{Operation, ProvNode, Sign};
 use atlas_core::{Disclosure, Money};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _, WindowExt as _, clipboard::Clipboard, h_flex, separator::Separator, v_flex,
+    ActiveTheme as _, Icon, Sizable as _, WindowExt as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    separator::Separator,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::labels;
+use super::figure::metadata_terms;
 
 /// Everything the sheet needs; shared by the figure that opens it.
 ///
 /// Built once per screen model (not per frame) and handed around as an
-/// `Arc`: the figure, its "Why?" click handler and the open sheet all point
-/// at the same content, and the chain inside is the engine's own graph
+/// `Arc`: the figure, its `Explain…` handler and the open sheet all point at
+/// the same content, and the chain inside is the engine's own graph
 /// (`Calc::shared_node`), never a copy.
 #[derive(Clone, Debug)]
 pub struct ExplainContent {
@@ -32,19 +37,42 @@ pub struct ExplainContent {
     pub node: Arc<ProvNode>,
     pub viewer_name: String,
     pub disclosure: Disclosure,
+    /// Scope stated in the header (boundary, case, plan, dates), when known.
+    pub context: Option<String>,
 }
 
 impl ExplainContent {
     pub fn new(title: impl Into<String>, value: Money, node: Arc<ProvNode>, viewer_name: impl Into<String>, disclosure: Disclosure) -> Self {
-        ExplainContent { title: title.into(), value, node, viewer_name: viewer_name.into(), disclosure }
+        ExplainContent { title: title.into(), value, node, viewer_name: viewer_name.into(), disclosure, context: None }
+    }
+
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.context = Some(context.into());
+        self
+    }
+
+    /// The text `Copy explanation` puts on the clipboard: identity, context,
+    /// the projected chain and the claim footer.
+    pub fn as_text(&self) -> String {
+        let strength = self.node.result_strength();
+        let mut text = format!("{} = {}\nLooking: {} · Currency: {} · Disclosure: {}\n", self.title, self.value.format(), self.viewer_name, self.value.currency(), self.disclosure.label());
+        if let Some(context) = &self.context {
+            text.push_str(context);
+            text.push('\n');
+        }
+        text.push('\n');
+        text.push_str(&self.node.render_chain());
+        text.push_str(&format!("\n{}\nWhat this establishes: {}\nDoes not establish: {}\n", strength.label(), strength.permitted_claim(), strength.does_not_establish()));
+        text
     }
 }
 
-/// Opens the explain sheet on the right (WindowExt owns the overlay layer).
+/// Opens the calculation sheet on the right (WindowExt owns the overlay layer).
 pub fn open_sheet(window: &mut Window, cx: &mut App, content: Arc<ExplainContent>) {
-    log::info!("explain sheet opened: {} = {} for {}", content.title, content.value.format(), content.viewer_name);
+    log::info!("calculation sheet opened: {} = {} for {}", content.title, content.value.format(), content.viewer_name);
     window.open_sheet(cx, move |sheet, _window, cx| {
         let content = content.clone();
+        let text = content.as_text();
         sheet
             .title(
                 h_flex()
@@ -55,6 +83,14 @@ pub fn open_sheet(window: &mut Window, cx: &mut App, content: Arc<ExplainContent
             )
             .size(relative(0.5))
             .child(render_explanation(&content, cx))
+            .footer(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .child(super::copy::copy_button("copy-chain", "Copy explanation", text))
+                    .child(Button::new("close-explanation").outline().small().label("Close").on_click(|_, window, cx| window.close_sheet(cx))),
+            )
     });
 }
 
@@ -63,14 +99,8 @@ pub fn render_explanation(content: &ExplainContent, cx: &App) -> impl IntoElemen
     let theme = cx.theme();
     let node: &ProvNode = &content.node;
     let strength = node.result_strength();
-    let mut header_tags = h_flex().gap_1().flex_wrap();
-    if let Some(class) = node.money_class_label() {
-        header_tags = header_tags.child(labels::money_class_tag(class));
-    }
-    if let Some(certainty) = node.certainty_label() {
-        header_tags = header_tags.child(labels::certainty_tag(certainty));
-    }
-    header_tags = header_tags.child(labels::strength_tag(strength)).child(labels::disclosure_tag(content.disclosure));
+    let mut header_tags = h_flex().gap_1().flex_wrap().items_center().children(metadata_terms("sheet", node));
+    header_tags = header_tags.child(super::meanings::term_button("sheet-disclosure", content.disclosure.label(), matches!(content.disclosure, Disclosure::Aggregate | Disclosure::Hidden), super::meanings::Term::Disclosure(content.disclosure)));
 
     v_flex()
         .id("explain-chain")
@@ -96,32 +126,25 @@ pub fn render_explanation(content: &ExplainContent, cx: &App) -> impl IntoElemen
                         ),
                 )
                 .child(header_tags)
-                .child(
-                    div().text_xs().text_color(theme.muted_foreground).child(format!(
-                        "Viewer: {} · disclosure: {} · every value below is in {}",
-                        content.viewer_name,
-                        content.disclosure.label(),
-                        content.value.currency()
-                    )),
-                ),
+                .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
+                    "Looking: {} · Currency: {} · Disclosure: {}",
+                    content.viewer_name,
+                    content.value.currency(),
+                    content.disclosure.label()
+                )))
+                .when_some(content.context.clone(), |this, context| this.child(div().text_xs().text_color(theme.muted_foreground).child(context))),
         )
         .child(render_chain(node, 0, cx))
         .child(
             v_flex()
                 .gap_1()
+                .pt_2()
+                .border_t_1()
+                .border_color(theme.border)
                 .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(format!("{}: {}", strength.label(), strength.permitted_claim()))
-                .child(format!("Does not establish: {}", strength.does_not_establish())),
-        )
-        .child(
-            h_flex()
-                .gap_2()
-                .items_center()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child("Copy this calculation as text")
-                .child(Clipboard::new("copy-chain").value(node.render_chain()).tooltip("Copy the chain as text")),
+                .child(div().font_weight(FontWeight::MEDIUM).child(strength.label()))
+                .child(div().text_color(theme.muted_foreground).child(format!("What this establishes: {}", strength.permitted_claim())))
+                .child(div().text_color(theme.muted_foreground).child(format!("Does not establish: {}", strength.does_not_establish()))),
         )
 }
 
@@ -138,10 +161,30 @@ fn sign_glyph(node: &ProvNode, first: bool) -> &'static str {
     }
 }
 
-/// Only the top block of a chain — for inline use where the nested blocks
-/// would repeat what the explain sheet shows.
+/// Only the top block of a chain — for inline previews where the nested
+/// blocks would repeat what the calculation sheet shows.
 pub fn render_top_block(node: &ProvNode, cx: &App) -> AnyElement {
     render_chain(node, MAX_NESTING, cx)
+}
+
+/// An inline preview with its `Full calculation…` command.
+pub fn render_preview(node: &ProvNode, content: Arc<ExplainContent>, cx: &App) -> AnyElement {
+    v_flex()
+        .w_full()
+        .gap_2()
+        .child(render_top_block(node, cx))
+        .child(
+            h_flex().w_full().justify_end().child(
+                Button::new("full-calculation")
+                    .xsmall()
+                    .ghost()
+                    .compact()
+                    .icon(IconName::ListTree)
+                    .label("Full calculation…")
+                    .on_click(move |_, window, cx| open_sheet(window, cx, content.clone())),
+            ),
+        )
+        .into_any_element()
 }
 
 /// Nested blocks deeper than this are left to the sheet's own scrolling.
@@ -170,10 +213,10 @@ pub fn render_chain(node: &ProvNode, depth: usize, cx: &App) -> AnyElement {
         }
         block = block.child(term_row(glyph, child.label(), child.value().render(), child.is_excluded(), &mono, cx));
         if let Operation::Excluded { reason } = child.operation() {
-            block = block.child(note_row(&format!("excluded: {reason}"), cx));
+            block = block.child(note_row(&format!("Excluded: {reason}"), cx));
         }
         if let Operation::Aggregate { .. } = child.operation() {
-            block = block.child(note_row("restricted contribution — shown only as an authorized total", cx));
+            block = block.child(note_row("Authorized total — shown only as a combined contribution", cx));
         }
         for note in child.notes() {
             block = block.child(note_row(note, cx));
@@ -190,7 +233,7 @@ pub fn render_chain(node: &ProvNode, depth: usize, cx: &App) -> AnyElement {
             .child(div().w_32().flex_shrink_0().text_right().font_family(mono.clone()).child(node.value().render())),
     );
     if let Operation::Formula { text } = node.operation() {
-        block = block.child(note_row(&format!("formula: {text}"), cx));
+        block = block.child(note_row(&format!("Formula: {text}"), cx));
     }
     for note in node.notes() {
         block = block.child(note_row(note, cx));
