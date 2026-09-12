@@ -9,10 +9,13 @@
 //!
 //! 1. **build** — time inside `AtlasApp::render`, i.e. building the element
 //!    tree (model clones, screen functions, formatting). Our code only.
-//! 2. **draw≈** — from the start of `render` until the [paint probe] painted:
-//!    build + gpui layout (taffy) + prepaint + paint of everything before the
-//!    probe. Overlays drawn through `defer_draw` (tooltips, popovers) come
-//!    after the probe, so this is a floor, not the whole frame.
+//! 2. **draw≈** — from the start of `render` until our tree finished
+//!    painting, split by the [phase probe] that wraps the root element into
+//!    gpui's phases: `layout` (request_layout — this is where `RenderOnce`
+//!    components such as Button, Table, Tag build their own element trees),
+//!    `taffy` (the flexbox solve), `prepaint` (hitboxes, element state) and
+//!    `paint` (quads, glyphs). Overlays drawn through `defer_draw` (tooltips,
+//!    popovers) come after our tree, so this is a floor, not the whole frame.
 //! 3. **gpui** — gpui's own profiler histograms (`profiler` feature):
 //!    `Window::draw` duration, first-invalidation-to-present, and the interval
 //!    between presented frames while animating. Ground truth, summarised once
@@ -27,7 +30,7 @@
 //! `AtlasApp` logs how long the calculation took, so a slow *state change* and
 //! a slow *frame* can be told apart in the log.
 //!
-//! [paint probe]: FrameMeter::paint_probe
+//! [phase probe]: FrameMeter::phase_probe
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -36,7 +39,9 @@ use std::time::{Duration, Instant};
 
 // Named imports on purpose: `gpui_kit::*` would also bring in gpui's `test`
 // attribute macro, which shadows `#[test]` in the unit tests below.
-use gpui_kit::{IntoElement, Window, canvas, profiler};
+use gpui_kit::{
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, Window, profiler,
+};
 
 use crate::logging;
 
@@ -84,9 +89,11 @@ pub struct FrameSample {
     pub number: u64,
     /// Time inside `AtlasApp::render`.
     pub build: Duration,
-    /// Render start → paint probe painted (build + layout + paint), when the
-    /// probe painted in that frame.
+    /// Render start → our tree finished painting (build + the phases below),
+    /// when the probe ran in that frame.
     pub draw: Option<Duration>,
+    /// gpui phases of our tree, from the phase probe (zero when it did not run).
+    pub phases: Phases,
     /// Render start → next render start.
     pub interval: Option<Duration>,
     /// Time spent cloning the screen model inside `render_content`.
@@ -101,6 +108,66 @@ pub struct FrameSample {
     pub wheel_events: u32,
 }
 
+/// How long each gpui phase spent on our element tree in one frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Phases {
+    /// `request_layout` of the whole tree: components render here.
+    pub layout: Duration,
+    /// Between the end of request_layout and the start of prepaint: taffy.
+    pub taffy: Duration,
+    pub prepaint: Duration,
+    pub paint: Duration,
+}
+
+impl Phases {
+    fn add(&mut self, other: Phases) {
+        self.layout += other.layout;
+        self.taffy += other.taffy;
+        self.prepaint += other.prepaint;
+        self.paint += other.paint;
+    }
+
+    fn div(self, n: u32) -> Phases {
+        Phases { layout: self.layout / n, taffy: self.taffy / n, prepaint: self.prepaint / n, paint: self.paint / n }
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "layout={} taffy={} prepaint={} paint={}",
+            fmt_ms(Some(self.layout)),
+            fmt_ms(Some(self.taffy)),
+            fmt_ms(Some(self.prepaint)),
+            fmt_ms(Some(self.paint))
+        )
+    }
+}
+
+/// What the phase probe records while gpui draws our tree.
+#[derive(Clone, Copy, Debug, Default)]
+struct ProbeState {
+    layout_started: Option<Instant>,
+    layout_ended: Option<Instant>,
+    prepaint_started: Option<Instant>,
+    prepaint_ended: Option<Instant>,
+    paint_started: Option<Instant>,
+    paint_ended: Option<Instant>,
+}
+
+impl ProbeState {
+    fn phases(&self) -> Phases {
+        let span = |a: Option<Instant>, b: Option<Instant>| match (a, b) {
+            (Some(a), Some(b)) if b >= a => b - a,
+            _ => Duration::ZERO,
+        };
+        Phases {
+            layout: span(self.layout_started, self.layout_ended),
+            taffy: span(self.layout_ended, self.prepaint_started),
+            prepaint: span(self.prepaint_started, self.prepaint_ended),
+            paint: span(self.paint_started, self.paint_ended),
+        }
+    }
+}
+
 /// Accumulators for one summary window.
 #[derive(Debug, Default)]
 struct WindowStats {
@@ -110,6 +177,7 @@ struct WindowStats {
     draw_sum: Duration,
     draw_max: Duration,
     draw_samples: u32,
+    phases_sum: Phases,
     slow: u32,
     hitches: u32,
     mouse_moves: u32,
@@ -121,8 +189,8 @@ pub struct FrameMeter {
     frames: u64,
     /// Start of the frame currently being built.
     started: Option<Instant>,
-    /// Shared with the paint-probe element: when the probe painted.
-    probe: Rc<Cell<Option<Instant>>>,
+    /// Shared with the phase-probe element wrapping the tree.
+    probe: Rc<Cell<ProbeState>>,
     /// The frame being built (finished by the next `begin_frame`).
     pending: FrameSample,
     /// The last completed frame — what the status bar shows.
@@ -153,7 +221,7 @@ impl FrameMeter {
         FrameMeter {
             frames: 0,
             started: None,
-            probe: Rc::new(Cell::new(None)),
+            probe: Rc::new(Cell::new(ProbeState::default())),
             pending: FrameSample::default(),
             last: None,
             recent: VecDeque::new(),
@@ -177,9 +245,11 @@ impl FrameMeter {
     pub fn begin_frame(&mut self, section: &'static str) -> Option<FrameSample> {
         let now = Instant::now();
         let finished = self.started.take().map(|previous_start| {
-            let probe = self.probe.get().filter(|painted| *painted >= previous_start);
+            let probe = self.probe.get();
+            let painted = probe.paint_ended.filter(|painted| *painted >= previous_start);
             let mut sample = self.pending;
-            sample.draw = probe.map(|painted| painted - previous_start);
+            sample.draw = painted.map(|painted| painted - previous_start);
+            sample.phases = if painted.is_some() { probe.phases() } else { Phases::default() };
             sample.interval = Some(now - previous_start);
             sample
         });
@@ -189,7 +259,7 @@ impl FrameMeter {
 
         self.frames += 1;
         self.started = Some(now);
-        self.probe.set(None);
+        self.probe.set(ProbeState::default());
         self.content_clone.set(Duration::ZERO);
         self.content_render.set(Duration::ZERO);
         self.pending = FrameSample {
@@ -207,6 +277,14 @@ impl FrameMeter {
             log::info!("perf: first frame started {:.0}ms after process start", ms(logging::process_start().elapsed()));
         }
         finished
+    }
+
+    /// Restarts this frame's build clock — call right after any perf work
+    /// done inside `render` (the summary line) so it is not booked as build time.
+    pub fn restart_build_clock(&mut self) {
+        if self.started.is_some() {
+            self.started = Some(Instant::now());
+        }
     }
 
     /// Once per window: what we are rendering into.
@@ -256,11 +334,11 @@ impl FrameMeter {
         self.pending.content_render = self.content_render.get();
     }
 
-    /// A zero-size element to place *last* in the tree: its paint records
-    /// when gpui got that far, which closes the `draw≈` measurement.
-    pub fn paint_probe(&self) -> impl IntoElement {
-        let probe = self.probe.clone();
-        canvas(|_, _, _| {}, move |_, _, _, _| probe.set(Some(Instant::now())))
+    /// Wraps the finished tree so gpui's phases on it are timed; the end of
+    /// its paint closes the `draw≈` measurement. Transparent for layout: it
+    /// hands the inner element's layout id straight up.
+    pub fn phase_probe(&self, tree: AnyElement) -> PhaseProbe {
+        PhaseProbe { inner: tree, state: self.probe.clone() }
     }
 
     /// Writes the once-a-second summary, with gpui's own histograms, when a
@@ -276,8 +354,9 @@ impl FrameMeter {
         self.last_summary = Some(now);
         let avg = |sum: Duration, n: u32| if n == 0 { None } else { Some(sum / n) };
         let fps = self.fps().map(|fps| format!("{fps:.1}")).unwrap_or_else(|| "n/a".into());
+        let phases = if stats.draw_samples == 0 { Phases::default() } else { stats.phases_sum.div(stats.draw_samples) };
         let mut line = format!(
-            "perf: summary {:.1}s: {} frames (fps≈{}) build avg={} max={} · draw≈ avg={} max={} · slow(>{}ms)={} hitches(>{}ms)={} · input moves={} wheel={} · section={}",
+            "perf: summary {:.1}s: {} frames (fps≈{}) build avg={} max={} · draw≈ avg={} max={} (avg {}) · slow(>{}ms)={} hitches(>{}ms)={} · input moves={} wheel={} · section={}",
             since.as_secs_f64(),
             stats.frames,
             fps,
@@ -285,6 +364,7 @@ impl FrameMeter {
             fmt_ms(Some(stats.build_max)),
             fmt_ms(avg(stats.draw_sum, stats.draw_samples)),
             fmt_ms(Some(stats.draw_max)),
+            phases.describe(),
             SLOW_FRAME.as_millis(),
             stats.slow,
             HITCH.as_millis(),
@@ -359,6 +439,7 @@ impl FrameMeter {
             stats.draw_sum += draw;
             stats.draw_max = stats.draw_max.max(draw);
             stats.draw_samples += 1;
+            stats.phases_sum.add(sample.phases);
         }
         stats.mouse_moves += sample.mouse_moves;
         stats.wheel_events += sample.wheel_events;
@@ -370,11 +451,12 @@ impl FrameMeter {
             stats.hitches += 1;
         }
         let detail = format!(
-            "frame #{} section={} build={} draw≈{} interval={} content(clone={} render={}) input(moves={} wheel={})",
+            "frame #{} section={} build={} draw≈{} ({}) interval={} content(clone={} render={}) input(moves={} wheel={})",
             sample.number,
             sample.section,
             fmt_ms(Some(sample.build)),
             fmt_ms(sample.draw),
+            sample.phases.describe(),
             fmt_ms(sample.interval),
             fmt_ms(Some(sample.content_clone)),
             fmt_ms(Some(sample.content_render)),
@@ -444,6 +526,60 @@ impl FrameMeter {
     }
 }
 
+/// The element that wraps our tree; see [`FrameMeter::phase_probe`].
+pub struct PhaseProbe {
+    inner: AnyElement,
+    state: Rc<Cell<ProbeState>>,
+}
+
+impl PhaseProbe {
+    fn update(&self, f: impl FnOnce(&mut ProbeState)) {
+        let mut state = self.state.get();
+        f(&mut state);
+        self.state.set(state);
+    }
+}
+
+impl IntoElement for PhaseProbe {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for PhaseProbe {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
+        self.update(|s| s.layout_started = Some(Instant::now()));
+        let id = self.inner.request_layout(window, cx);
+        self.update(|s| s.layout_ended = Some(Instant::now()));
+        (id, ())
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) {
+        self.update(|s| s.prepaint_started = Some(Instant::now()));
+        self.inner.prepaint(window, cx);
+        self.update(|s| s.prepaint_ended = Some(Instant::now()));
+    }
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App) {
+        self.update(|s| s.paint_started = Some(Instant::now()));
+        self.inner.paint(window, cx);
+        self.update(|s| s.paint_ended = Some(Instant::now()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,7 +595,15 @@ mod tests {
         meter.end_build();
         // The probe "paints" a little later, as gpui's layout and paint would.
         std::thread::sleep(Duration::from_millis(5));
-        meter.probe.set(Some(Instant::now()));
+        let t = Instant::now();
+        meter.probe.set(ProbeState {
+            layout_started: Some(t - Duration::from_millis(4)),
+            layout_ended: Some(t - Duration::from_millis(3)),
+            prepaint_started: Some(t - Duration::from_millis(2)),
+            prepaint_ended: Some(t - Duration::from_millis(1)),
+            paint_started: Some(t - Duration::from_millis(1)),
+            paint_ended: Some(t),
+        });
         std::thread::sleep(Duration::from_millis(5));
 
         let finished = meter.begin_frame("timeline").expect("first frame finished");
@@ -469,6 +613,7 @@ mod tests {
         let draw = finished.draw.expect("probe painted");
         assert!(draw >= finished.build, "draw includes the build: {finished:?}");
         assert!(finished.interval.unwrap() >= draw, "interval spans the whole frame: {finished:?}");
+        assert_eq!(finished.phases, Phases { layout: Duration::from_millis(1), taffy: Duration::from_millis(1), prepaint: Duration::from_millis(1), paint: Duration::from_millis(1) });
         assert_eq!(finished.content_clone, Duration::from_millis(2));
         assert_eq!(finished.content_render, Duration::from_millis(5));
         assert_eq!(finished.mouse_moves, 0, "the move was counted after frame 1 began, so it belongs to frame 2");
@@ -500,7 +645,8 @@ mod tests {
         meter.begin_frame("projections");
         meter.end_build();
         // Pretend the probe painted 300 ms after the frame began.
-        meter.probe.set(Some(meter.started.unwrap() + Duration::from_millis(300)));
+        let started = meter.started.unwrap();
+        meter.probe.set(ProbeState { paint_ended: Some(started + Duration::from_millis(300)), ..ProbeState::default() });
         // begin_frame() takes `now` after that instant only if we wait; use a
         // probe in the past instead: the frame is finished at the next begin.
         std::thread::sleep(Duration::from_millis(1));

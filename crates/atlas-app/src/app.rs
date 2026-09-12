@@ -1741,6 +1741,9 @@ impl Render for AtlasApp {
         self.perf.begin_frame(self.section.slug());
         self.perf.log_window_info(window, cx.theme().is_dark());
         self.perf.log_summary_if_due(window);
+        // The summary (histogram snapshot + file write) costs a few ms in a
+        // debug build; keep it out of this frame's `build` figure.
+        self.perf.restart_build_clock();
         let tree = v_flex()
             .size_full()
             .bg(cx.theme().background)
@@ -1772,10 +1775,11 @@ impl Render for AtlasApp {
             .child(self.render_status_bar(cx))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
-            .children(Root::render_notification_layer(window, cx))
-            // Last in the tree: its paint closes the `draw≈` measurement.
-            .child(self.perf.paint_probe());
+            .children(Root::render_notification_layer(window, cx));
+        // The probe times gpui's layout/prepaint/paint of the whole tree and
+        // closes the `draw≈` measurement when its paint ends.
+        let probed = self.perf.phase_probe(tree.into_any_element());
         self.perf.end_build();
-        tree
+        probed
     }
 }

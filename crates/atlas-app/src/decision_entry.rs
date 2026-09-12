@@ -309,7 +309,9 @@ impl AtlasApp {
     /// Runs the engine on the current plan.
     pub fn evaluate_decision(&mut self) {
         log::info!("evaluating decision “{}”: price {} on {}, down payment {}", self.decision_plan.name, self.decision_plan.price.format(), self.decision_plan.purchase_on, self.decision_plan.down_payment.format());
-        let result = atlas_core::decision::evaluate(&self.household, &self.decision_plan, self.horizon);
+        let result = crate::perf::timed(&format!("evaluate decision “{}” (§19.2 grid)", self.decision_plan.name), || {
+            atlas_core::decision::evaluate(&self.household, &self.decision_plan, self.horizon)
+        });
         if let Err(err) = &result {
             crate::alerting::report(crate::alerting::Level::Error, format!("decision evaluation failed for “{}”: {err}", self.decision_plan.name));
         }
