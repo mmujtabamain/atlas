@@ -31,7 +31,7 @@ cargo test                      # engine unit tests, E01–E08 examples, store, 
 
 Options: `--theme light|dark`, `--size WxH`, `--screen <section>` (see `atlas --help`),
 `--viewer a|b` (which fixture person is looking — private objects project to aggregates),
-`--no-perf-overlay` (hide gpui's frame-time readout, see below).
+`--perf-overlay` (show gpui's frame-time overlay, see below).
 
 ### Logs and the frame meter (performance work)
 
@@ -64,8 +64,8 @@ is off by default).
   gpui presented no consecutive frames: it only draws when something changed, so a mouse
   crossing five buttons draws five frames and an idle window draws none. The green **overlay**
   in the top-right corner is gpui's other readout (current draw, 1 %/10 % worst, max, frame
-  count), painted straight into the scene; `--no-perf-overlay` or `ATLAS_PERF_OVERLAY=0`
-  hides it.
+  count), painted straight into the scene; it is off by default and `--perf-overlay` or
+  `ATLAS_PERF_OVERLAY=1` shows it.
 - `cargo run` compiles every dependency at opt-level 2 and `atlas-app` at 1 (see the profile
   notes in `Cargo.toml`); the engine crates stay unoptimised for debugging. The first build
   after pulling this is a full rebuild of the dependencies.

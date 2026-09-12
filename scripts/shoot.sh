@@ -12,7 +12,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAB="${GPUI_LAB:-$REPO/../gpui-lab}"
 SHOT="$LAB/target/debug/gpui-shot"
-APP="$REPO/target/debug/atlas"
+APP="${CARGO_TARGET_DIR:-$REPO/target}/debug/atlas"
 ONLY="${1:-}"
 WIDTH=1600
 
@@ -44,11 +44,11 @@ for theme in light dark; do
   done
 done
 # The explain sheet, opened by clicking "Why?" next to Free current cash.
-scenario explain-free-cash-light 1000 --step click:1400,283 --step wait:600 -- "$APP" --theme light --size ${WIDTH}x1000
-scenario explain-free-cash-dark  1000 --step click:1400,283 --step wait:600 -- "$APP" --theme dark  --size ${WIDTH}x1000
-# Person B: private objects appear only as authorized aggregates (§7.5) — or are suppressed (§7.6).
+scenario explain-free-cash-light 1000 --step click:1078,306 --step wait:600 -- "$APP" --theme light --size ${WIDTH}x1000
+scenario explain-free-cash-dark  1000 --step click:1078,306 --step wait:600 -- "$APP" --theme dark  --size ${WIDTH}x1000
+# Person B: private objects appear only as authorized aggregates — or are suppressed.
 scenario household-person-b-light 1800 -- "$APP" --theme light --size ${WIDTH}x1800 --viewer b
-scenario explain-free-cash-person-b 1000 --step click:1400,283 --step wait:600 -- "$APP" --theme light --size ${WIDTH}x1000 --viewer b
+scenario explain-free-cash-person-b 1000 --step click:1078,306 --step wait:600 -- "$APP" --theme light --size ${WIDTH}x1000 --viewer b
 scenario scenarios-person-b-light 2400 -- "$APP" --theme light --size ${WIDTH}x2400 --viewer b --screen scenarios
 scenario privacy-person-b-dark 1800 -- "$APP" --theme dark --size ${WIDTH}x1800 --viewer b --screen privacy
 # Dialogs and the decision result.
@@ -57,7 +57,7 @@ scenario scenario-change-dialog-light 1000 --step click:1400,322 --step wait:700
 scenario policy-editor-light 1000 --step click:1235,293 --step wait:700 -- "$APP" --theme light --size ${WIDTH}x1000 --screen privacy
 scenario decisions-result-light 3400 --step click:1542,202 --step wait:2500 -- "$APP" --theme light --size ${WIDTH}x3400 --screen decisions
 scenario decisions-result-dark 3400 --step click:1542,202 --step wait:2500 -- "$APP" --theme dark --size ${WIDTH}x3400 --screen decisions
-# An empty household (M12) and its first dialog.
+# An empty household and its first dialog.
 scenario empty-household-light 1000 -- "$APP" --theme light --size ${WIDTH}x1000 --new
 scenario new-account-dialog-light 1100 --step click:1504,69 --step wait:700 -- "$APP" --theme light --size ${WIDTH}x1100 --new --screen accounts
 ls -la "$REPO"/shots/*.png | wc -l
