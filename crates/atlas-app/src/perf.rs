@@ -411,19 +411,28 @@ impl FrameMeter {
     }
 
     /// The status-bar text: previous frame's numbers.
+    ///
+    /// Leads with the frame *cost* and the rate it allows, because the rate of
+    /// frames actually drawn is a property of the input in gpui: a mouse
+    /// crossing five buttons in a second draws five frames, and "5 frames/s"
+    /// read as "5 fps" looks like a performance problem when each of those
+    /// frames took 6 ms.
     pub fn status_text(&self) -> String {
-        let fps = match self.fps() {
-            Some(fps) => format!("{fps:.0} fps"),
-            None => "— fps".to_string(),
+        let drawn = match self.fps() {
+            Some(fps) => format!("{fps:.0} frames/s drawn"),
+            None => "idle".to_string(),
         };
         match self.last {
-            Some(last) => format!(
-                "{fps} · build {:.0} ms · draw {} · frame #{}",
-                ms(last.build),
-                last.draw.map(|d| format!("{:.0} ms", ms(d))).unwrap_or_else(|| "n/a".into()),
-                last.number
-            ),
-            None => format!("{fps} · first frame"),
+            Some(last) => match last.draw {
+                Some(draw) if !draw.is_zero() => format!(
+                    "{:.0} ms/frame = {:.0} fps possible · {drawn} · #{}",
+                    ms(draw),
+                    1000.0 / ms(draw),
+                    last.number
+                ),
+                _ => format!("build {:.0} ms/frame · {drawn} · #{}", ms(last.build), last.number),
+            },
+            None => "first frame".to_string(),
         }
     }
 
@@ -588,7 +597,7 @@ mod tests {
     fn measures_build_draw_interval_and_fps() {
         let mut meter = FrameMeter::new();
         assert_eq!(meter.begin_frame("household"), None, "nothing to finish before the first frame");
-        assert!(meter.status_text().starts_with("— fps · first frame"), "{}", meter.status_text());
+        assert_eq!(meter.status_text(), "first frame");
         meter.count_mouse_move();
         meter.record_content(Duration::from_millis(2), Duration::from_millis(5));
         std::thread::sleep(Duration::from_millis(5));
@@ -619,13 +628,13 @@ mod tests {
         assert_eq!(finished.mouse_moves, 0, "the move was counted after frame 1 began, so it belongs to frame 2");
         assert_eq!(meter.last(), Some(finished));
         assert_eq!(meter.pending.mouse_moves, 1);
-        assert!(meter.status_text().contains("build "), "{}", meter.status_text());
-        assert!(meter.status_text().contains("frame #1"), "{}", meter.status_text());
+        assert!(meter.status_text().contains("ms/frame = "), "{}", meter.status_text());
+        assert!(meter.status_text().ends_with("· #1"), "{}", meter.status_text());
 
         // Two frames inside the window give a rate; ~15 ms apart → tens of fps.
         let fps = meter.fps().expect("two frames in the window");
         assert!(fps > 10.0 && fps < 200.0, "{fps}");
-        assert!(meter.status_text().contains(" fps · build "), "{}", meter.status_text());
+        assert!(meter.status_text().contains("fps possible · ") && meter.status_text().contains(" frames/s drawn"), "{}", meter.status_text());
     }
 
     #[test]
@@ -635,7 +644,7 @@ mod tests {
         meter.end_build();
         let finished = meter.begin_frame("rules").unwrap();
         assert_eq!(finished.draw, None);
-        assert!(meter.status_text().contains("draw n/a"), "{}", meter.status_text());
+        assert!(meter.status_text().starts_with("build "), "{}", meter.status_text());
         assert_eq!(meter.window.frames, 1);
     }
 
