@@ -13,6 +13,8 @@ FRAMES="$REPO/shots/walkthrough"
 FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 SIZE=1600x1000
 SECONDS_PER_FRAME="${SECONDS_PER_FRAME:-4}"
+# Frames with a text caret never "settle"; 40 s is enough for every scene to be drawn.
+SHOT_TIMEOUT="${SHOT_TIMEOUT:-40}"
 
 [ -x "$SHOT" ] || { echo "gpui-shot not built: (cd $LAB && cargo build -p gpui-shot)"; exit 1; }
 (cd "$REPO" && source ~/.cargo/env 2>/dev/null; cargo build -p atlas-app)
@@ -26,7 +28,11 @@ frame() { # frame "<caption>" [gpui-shot args...] -- [atlas args...]
   local raw="$FRAMES/raw-$(printf %02d $n).png"
   local out="$FRAMES/frame-$(printf %02d $n).png"
   echo "== frame $n: $caption"
-  "$SHOT" --out "$raw" --size "$SIZE" --timeout 180 "$@" > "$FRAMES/frame-$n.log" 2>&1
+  # Exit 3 = the frame was written but never settled (a dialog's blinking caret keeps
+  # it changing); the capture is still fine for a video, so only a real error stops.
+  local rc=0
+  "$SHOT" --out "$raw" --size "$SIZE" --timeout "$SHOT_TIMEOUT" "$@" > "$FRAMES/frame-$n.log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then echo "gpui-shot failed on frame $n (exit $rc): see $FRAMES/frame-$n.log"; exit "$rc"; fi
   # The caption goes through a text file: no filter-graph escaping of commas, colons or quotes.
   printf '%s' "$caption" > "$FRAMES/caption-$n.txt"
   ffmpeg -hide_banner -loglevel error -y -i "$raw" -vf "drawbox=y=ih-72:h=72:color=black@0.72:t=fill,drawtext=fontfile=$FONT:textfile=$FRAMES/caption-$n.txt:fontcolor=white:fontsize=22:x=32:y=h-48" "$out"

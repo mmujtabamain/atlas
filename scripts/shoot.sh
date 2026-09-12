@@ -24,7 +24,8 @@ scenario() { # scenario <name> <height> [gpui-shot args...] -- [atlas args...]
   local name="$1"; local height="$2"; shift 2
   if [ -n "$ONLY" ] && [ "$ONLY" != "$name" ]; then return; fi
   echo "== $name"
-  "$SHOT" --out "$REPO/shots/$name.png" --size "${WIDTH}x${height}" --timeout 180 "$@"
+  # Exit 3 (frame written but never settled — a dialog's blinking caret) is fine for a still.
+  "$SHOT" --out "$REPO/shots/$name.png" --size "${WIDTH}x${height}" --timeout 60 "$@" || [ $? -eq 3 ]
 }
 
 # Page heights: enough for the whole screen without scrolling.
