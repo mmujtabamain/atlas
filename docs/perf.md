@@ -87,6 +87,23 @@ Projections 20,234 → 1,611 · Taxes 15,441 → 4,606 · Assumptions 12,462 →
 1,742 · Accounts 6,071 → 1,679 · People 3,892 → 664 · Timeline 7,489 → 6,478.
 Draw time on the box: Household 75 → 42 ms, Privacy 167 → 22 ms.
 
+## 3b. Release build on the box (new layout, `cargo build --release`)
+
+| screen | draw≈ | layout | taffy | prepaint | paint |
+|---|---|---|---|---|---|
+| Settings | 7 ms | 0.9 | 2.3 | 2.2 | 1.3 |
+| Privacy | 13 ms | 1.5 | 6.5 | 2.1 | 2.4 |
+| Household | 22 ms | 3.3 | 12.5 | 3.2 | 2.7 |
+| Timeline | 40 ms | 7.3 | 21 | 6.3 | 4.9 |
+
+Two things follow. Release is ~3× faster than the debug profile per frame
+(Household 42 → 22 ms), so the dev profile is a real factor for the customer's
+`cargo run`. And taffy still costs a near-constant 12–19 µs **per node** in
+release, whatever the screen — with the re-measurement gone, the remaining
+lever for the flexbox solve is fewer and shallower nodes (block `div`s
+instead of flex containers for single-child wrappers, no wrapper per table
+cell, definite heights where known), not more width fixes.
+
 ## 4. What remains, in order of expected gain
 
 - **Node count** (Timeline: 1,800 nodes, ~25 per occurrence row; layout 22 +
