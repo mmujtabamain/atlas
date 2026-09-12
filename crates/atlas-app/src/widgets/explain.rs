@@ -1,6 +1,6 @@
-//! The "Why is this number this number?" sheet (§2.1, §2.6).
+//! The "Why is this number this number?" sheet.
 //!
-//! It renders a projected [`ProvNode`] as the plan's chain: one row per term
+//! It renders a projected [`ProvNode`] as a calculation chain: one row per term
 //! with its sign, a rule, the result, then the nested chains of any term that
 //! is itself derived. The viewer and their disclosure level are stated at the
 //! top so nobody mistakes an aggregate for a source figure.
@@ -28,7 +28,7 @@ use super::labels;
 pub struct ExplainContent {
     pub title: String,
     pub value: Money,
-    /// Already projected for the viewer (M55).
+    /// Already projected for the viewer.
     pub node: Arc<ProvNode>,
     pub viewer_name: String,
     pub disclosure: Disclosure,
@@ -120,7 +120,7 @@ pub fn render_explanation(content: &ExplainContent, cx: &App) -> impl IntoElemen
                 .items_center()
                 .text_xs()
                 .text_color(theme.muted_foreground)
-                .child("Chain as text (§2.1 layout)")
+                .child("Copy this calculation as text")
                 .child(Clipboard::new("copy-chain").value(node.render_chain()).tooltip("Copy the chain as text")),
         )
 }
@@ -173,7 +173,7 @@ pub fn render_chain(node: &ProvNode, depth: usize, cx: &App) -> AnyElement {
             block = block.child(note_row(&format!("excluded: {reason}"), cx));
         }
         if let Operation::Aggregate { .. } = child.operation() {
-            block = block.child(note_row("restricted contribution (M55 projection)", cx));
+            block = block.child(note_row("restricted contribution — shown only as an authorized total", cx));
         }
         for note in child.notes() {
             block = block.child(note_row(note, cx));

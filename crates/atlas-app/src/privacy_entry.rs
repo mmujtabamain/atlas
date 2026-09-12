@@ -123,7 +123,7 @@ impl AtlasApp {
             let PrivacyDraft { preset, access, restricted, share_balance_with_person, scope_to_scenario, .. } = draft.read(cx).clone();
             let (d1, d2, d3, d4, d5) = (draft.clone(), draft.clone(), draft.clone(), draft.clone(), draft.clone());
             dialog
-                .title("Access policy (§7.2–§7.5) — a new, effective-dated version")
+                .title("Access policy — a new, effective-dated version")
                 .w(wide_width)
                 .max_h(relative(0.9))
                 .child(
@@ -133,7 +133,7 @@ impl AtlasApp {
                             .child(Field::new().label("Object (only ones you own)").child(if no_objects { div().text_sm().child("You own no policed object.").into_any_element() } else { Select::new(&object).into_any_element() }))
                             .child(Field::new().label("Effective from").required(true).child(DatePicker::new(&effective_from)))
                             .child(
-                                Field::new().label("Visibility preset (§7.2)").child(
+                                Field::new().label("Visibility").child(
                                     RadioGroup::vertical("policy-preset")
                                         .children(PRESETS.iter().map(|p| p.label()))
                                         .selected_index(Some(preset))
@@ -141,7 +141,7 @@ impl AtlasApp {
                                 ),
                             )
                             .child(
-                                Field::new().label("Use in calculations (§7.3)").child(
+                                Field::new().label("Use in calculations").child(
                                     RadioGroup::vertical("policy-access")
                                         .children(ACCESS.iter().map(|a| a.label()))
                                         .selected_index(Some(access))
@@ -149,7 +149,7 @@ impl AtlasApp {
                                 ),
                             )
                             .child(
-                                Field::new().label("Disclosure of a restricted contribution (§7.5)").child(
+                                Field::new().label("How a restricted contribution is shown").child(
                                     RadioGroup::horizontal("policy-restricted")
                                         .children(RESTRICTED.iter().map(|d| d.label()))
                                         .selected_index(Some(restricted))
@@ -160,9 +160,9 @@ impl AtlasApp {
                                 Field::new().label_indent(false).child(
                                     v_flex()
                                         .gap_2()
-                                        .child(Checkbox::new("policy-share-balance").label("Also share the balance with one person (selected viewers, §7.2)").checked(share_balance_with_person).on_change(move |v, _, cx| d4.update(cx, |d, cx| { d.share_balance_with_person = *v; cx.notify(); })))
+                                        .child(Checkbox::new("policy-share-balance").label("Also share the balance with one person").checked(share_balance_with_person).on_change(move |v, _, cx| d4.update(cx, |d, cx| { d.share_balance_with_person = *v; cx.notify(); })))
                                         .when(share_balance_with_person && !no_people, |this| this.child(Select::new(&person)))
-                                        .child(Checkbox::new("policy-scope-scenario").label("Usable only inside one scenario (§7.4 purpose scope)").checked(scope_to_scenario).on_change(move |v, _, cx| d5.update(cx, |d, cx| { d.scope_to_scenario = *v; cx.notify(); })))
+                                        .child(Checkbox::new("policy-scope-scenario").label("Usable only inside one scenario").checked(scope_to_scenario).on_change(move |v, _, cx| d5.update(cx, |d, cx| { d.scope_to_scenario = *v; cx.notify(); })))
                                         .when(scope_to_scenario && !no_scenarios, |this| this.child(Select::new(&scenario))),
                                 ),
                             )
@@ -260,7 +260,7 @@ impl AtlasApp {
             let PrivacyDraft { grant_purpose, grant_disclosure, grant_access, .. } = draft.read(cx).clone();
             let (d1, d2, d3) = (draft.clone(), draft.clone(), draft.clone());
             dialog
-                .title("Purpose-specific grant (§7.4) — without sharing the object globally")
+                .title("Grant access for one purpose — without sharing the object with everyone")
                 .w(wide_width)
                 .max_h(relative(0.9))
                 .child(

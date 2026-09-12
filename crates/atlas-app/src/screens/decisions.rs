@@ -1,9 +1,9 @@
-//! Decisions (§13, §19, §20, §26; M9): a step-by-step decision builder — the
-//! purchase, the down payment and its funding, the recurring payment, other
-//! costs — and then the result: the graph, the §19.1 affordability metrics,
-//! the funding strategies in the §13.5 format, the §19.2 grid, goal
-//! trade-offs (§20), the conditional statement (§19.3) and the §26
-//! recommendation contract. Deterministic search, not advice.
+//! Decisions: a step-by-step decision builder — the purchase, the down
+//! payment and its funding, the recurring payment, other costs — and then the
+//! result: the graph, the affordability metrics, the funding strategies, the
+//! purchase-month × down-payment grid, goal trade-offs, the conditional
+//! statement and the recommendation contract. Deterministic search, not
+//! advice.
 
 use atlas_core::decision::Decision;
 use atlas_core::decision::Objective;
@@ -53,7 +53,7 @@ pub fn render(step: usize, form: &DecisionForm, decision: Option<&Result<Decisio
         .gap_6()
         .child(page_header(
             "Decisions",
-            "Build a concrete decision step by step: what you buy, how the down payment is funded, what you pay every month, what else it costs — then the graph, the affordability metrics and the funding strategies (§19, §13). Deterministic search under your inputs, never advice (§26).",
+            "Build a concrete decision step by step: what you buy, how the down payment is funded, what you pay every month, what else it costs — then the graph, the affordability metrics and the funding strategies. A deterministic search over your own inputs, never advice.",
             cx,
         ))
         .child(
@@ -100,7 +100,7 @@ fn render_step_purchase(form: &DecisionForm, cx: &mut Context<AtlasApp>) -> impl
     GroupBox::new().id("decision-step-purchase").title("Step 1 — What are you buying?").child(
         v_flex()
             .gap_4()
-            .child(div().text_xs().text_color(theme.muted_foreground).child("The price, when, and the reserve the household must keep throughout (§19). The purchase window is the range of months the grid evaluates (§19.2)."))
+            .child(div().text_xs().text_color(theme.muted_foreground).child("The price, when, and the reserve the household must keep throughout. The result also compares every month between the earliest and latest purchase month."))
             .child(
                 Form::vertical()
                     .columns(2)
@@ -108,10 +108,10 @@ fn render_step_purchase(form: &DecisionForm, cx: &mut Context<AtlasApp>) -> impl
                     .child(Field::new().label("Total price").required(true).child(Input::new(&form.price).id("decision-price")))
                     .child(Field::new().label("Purchase date").required(true).child(DatePicker::new(&form.purchase_on)))
                     .child(Field::new().label("Household reserve to keep").child(Input::new(&form.reserve).id("decision-reserve")))
-                    .child(Field::new().label("Purchase window from (grid)").child(DatePicker::new(&form.window_from)))
-                    .child(Field::new().label("Purchase window to (grid)").child(DatePicker::new(&form.window_to)))
+                    .child(Field::new().label("Earliest purchase month to compare").child(DatePicker::new(&form.window_from)))
+                    .child(Field::new().label("Latest purchase month to compare").child(DatePicker::new(&form.window_to)))
                     .child(
-                        Field::new().label("Objective (§13.2 — never assumed)").child(
+                        Field::new().label("What matters most").child(
                             RadioGroup::vertical("decision-objective")
                                 .children(Objective::ALL.iter().map(|o| o.label()))
                                 .selected_index(Some(objective))
@@ -140,7 +140,7 @@ fn render_step_down_payment(form: &DecisionForm, household: &Household, cx: &mut
                 .items_center()
                 .child(div().w_80().flex_shrink_0().child(Checkbox::new(ElementId::Name(format!("decision-source-{}", account.raw()).into())).label(format!("{name} ({balance} today)")).checked(allowed).on_change(move |v, _, cx| d.update(cx, |d, cx| { if let Some(slot) = d.source_allowed.get_mut(index) { *slot = *v; } cx.notify(); }))))
                 .child(div().w_64().flex_shrink_0().child(Input::new(floor).small().id(ElementId::Name(format!("decision-floor-{}", account.raw()).into()))))
-                .child(div().text_xs().text_color(theme.muted_foreground).child("never below (optional; the account's hard earmarks always apply)"))
+                .child(div().text_xs().text_color(theme.muted_foreground).child("keep at least this much (optional; the account's hard earmarks always apply)"))
                 .into_any_element()
         })
         .collect();
@@ -157,26 +157,26 @@ fn render_step_down_payment(form: &DecisionForm, household: &Household, cx: &mut
                 .items_center()
                 .child(div().w_80().flex_shrink_0().child(Checkbox::new(ElementId::Name(format!("decision-route-{}", company.raw()).into())).label(format!("{name} → owner salary")).checked(allowed).on_change(move |v, _, cx| d.update(cx, |d, cx| { if let Some(slot) = d.route_allowed.get_mut(index) { *slot = *v; } cx.notify(); }))))
                 .child(div().w_64().flex_shrink_0().child(Select::new(to).small()))
-                .child(div().text_xs().text_color(theme.muted_foreground).child("received on this account; withholding and the E07 ceiling apply, legal capacity is never assumed (M27)"))
+                .child(div().text_xs().text_color(theme.muted_foreground).child("paid into this account; withholding and the company's cash ceiling apply, and legal capacity is never assumed"))
                 .into_any_element()
         })
         .collect();
     GroupBox::new().id("decision-step-down-payment").title("Step 2 — The down payment and where it comes from").child(
         v_flex()
             .gap_4()
-            .child(div().text_xs().text_color(theme.muted_foreground).child("The amount paid on the purchase date, funded from the allowed sources in this order (§13.4). Fees and withholding are recomputed on the gross amounts (M25). The grid range evaluates alternatives (§19.2)."))
+            .child(div().text_xs().text_color(theme.muted_foreground).child("The amount paid on the purchase date, funded from the allowed sources in this order. Fees and withholding are worked out on the gross amounts. The result also compares the alternative down payments in the range below."))
             .child(
                 Form::vertical()
                     .columns(2)
                     .child(Field::new().label("Down payment").required(true).child(Input::new(&form.down_payment).id("decision-down-payment")))
-                    .child(Field::new().label("Maximum tax + fees (optional, §13.3)").child(Input::new(&form.max_tax).id("decision-max-tax")))
-                    .child(Field::new().label("Grid: lowest down payment").child(Input::new(&form.down_low).id("decision-down-low")))
-                    .child(Field::new().label("Grid: highest down payment").child(Input::new(&form.down_high).id("decision-down-high")))
-                    .child(Field::new().label("Grid: step").child(Input::new(&form.down_step).id("decision-down-step"))),
+                    .child(Field::new().label("Maximum tax + fees (optional)").child(Input::new(&form.max_tax).id("decision-max-tax")))
+                    .child(Field::new().label("Compare down payments from").child(Input::new(&form.down_low).id("decision-down-low")))
+                    .child(Field::new().label("… up to").child(Input::new(&form.down_high).id("decision-down-high")))
+                    .child(Field::new().label("… in steps of").child(Input::new(&form.down_step).id("decision-down-step"))),
             )
             .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Personal accounts, in funding order"))
             .children(sources)
-            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Company routes (E07, M27)"))
+            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Money from a company"))
             .child(if routes.is_empty() { div().text_xs().text_color(theme.muted_foreground).child("No company in the household.").into_any_element() } else { v_flex().gap_2().children(routes).into_any_element() }),
     )
 }
@@ -315,7 +315,7 @@ fn render_result(decision: &Decision, household: &Household, viewer_name: &str, 
             ),
         )
         .child(
-            GroupBox::new().id("decision-metrics").title("Affordability metrics (§19.1)").child(
+            GroupBox::new().id("decision-metrics").title("Affordability").child(
                 v_flex()
                     .gap_3()
                     .child(
@@ -339,7 +339,7 @@ fn render_result(decision: &Decision, household: &Household, viewer_name: &str, 
         .child(strategies)
         .child(grid)
         .child(
-            GroupBox::new().id("decision-goals").title("Goals and trade-offs (§20)").child(if decision.goals.is_empty() {
+            GroupBox::new().id("decision-goals").title("Effect on goals").child(if decision.goals.is_empty() {
                 div().text_sm().text_color(theme.muted_foreground).child("No goals defined for this household.").into_any_element()
             } else {
                 Table::new()
@@ -369,7 +369,7 @@ fn render_result(decision: &Decision, household: &Household, viewer_name: &str, 
             }),
         )
         .child(
-            GroupBox::new().id("decision-statement").title("Conditional result (§19.3) — what this depends on").child(
+            GroupBox::new().id("decision-statement").title("The result and what it depends on").child(
                 v_flex()
                     .gap_2()
                     .child(div().text_sm().child(decision.statement.claim.clone()))
@@ -379,7 +379,7 @@ fn render_result(decision: &Decision, household: &Household, viewer_name: &str, 
             ),
         )
         .child(
-            GroupBox::new().id("decision-contract").title("Recommendation contract (§26)").child(
+            GroupBox::new().id("decision-contract").title("How this result was reached").child(
                 v_flex()
                     .gap_2()
                     .child(div().text_sm().child(decision.recommendation.action.clone()))
@@ -402,7 +402,7 @@ fn render_result(decision: &Decision, household: &Household, viewer_name: &str, 
 fn render_strategies(decision: &Decision, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
     let report = &decision.strategies;
-    GroupBox::new().id("decision-strategies").title("Funding strategies for the down payment (§13.5)").child(
+    GroupBox::new().id("decision-strategies").title("Ways to fund the down payment").child(
         v_flex()
             .gap_4()
             .child(div().id("decision-strategy-status").test_support().text_sm().child(report.status.clone()))
@@ -461,7 +461,7 @@ fn render_grid(decision: &Decision, cx: &mut Context<AtlasApp>) -> impl IntoElem
     let mut amounts: Vec<atlas_core::Money> = decision.grid.iter().map(|c| c.down_payment).collect();
     amounts.sort_by_key(|m| m.minor());
     amounts.dedup();
-    GroupBox::new().id("decision-grid").title("Purchase month × down payment (§19.2, E03) — lowest household cash after purchase, conservative case").child(
+    GroupBox::new().id("decision-grid").title("Purchase month × down payment — lowest household cash afterwards, conservative case").child(
         v_flex()
             .gap_3()
             .child(div().id("decision-grid-status").test_support().text_sm().child(decision.grid_status.clone()))

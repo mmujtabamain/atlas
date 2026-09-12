@@ -1,9 +1,9 @@
-//! Tags for the plan's vocabularies (§2.4, §10.3, §32.2, M55).
+//! Tags for the three vocabularies every figure carries: money class,
+//! certainty and result strength, plus the viewer's disclosure level.
 //!
 //! Emphasis is a budget (design guide): current money and exact accounting are
-//! neutral; only the *future* and *conditional* labels — the distinction the
-//! plan cares most about — use the warning variant, and only `Unresolved` is
-//! danger.
+//! neutral; only the *future* and *conditional* labels — the distinction that
+//! matters most — use the warning variant, and only `Unresolved` is danger.
 
 use atlas_core::model::Hardness;
 use atlas_core::vocab::{Certainty, MoneyClass, ResultStrength};
@@ -19,12 +19,12 @@ fn caution(text: &'static str) -> Tag {
     Tag::warning().xsmall().outline().child(text)
 }
 
-/// §2.4 money class.
+/// Money class.
 pub fn money_class_tag(class: MoneyClass) -> Tag {
     if class.is_current() { neutral(class.label()) } else { caution(class.label()) }
 }
 
-/// §10.3 certainty.
+/// Certainty.
 pub fn certainty_tag(certainty: Certainty) -> Tag {
     match certainty {
         Certainty::ScenarioOnly | Certainty::Tentative => caution(certainty.label()),
@@ -32,7 +32,7 @@ pub fn certainty_tag(certainty: Certainty) -> Tag {
     }
 }
 
-/// §32.2 result strength.
+/// Result strength.
 pub fn strength_tag(strength: ResultStrength) -> Tag {
     match strength {
         ResultStrength::ExactAccounting | ResultStrength::SolverCertified => neutral(strength.label()),
@@ -41,7 +41,7 @@ pub fn strength_tag(strength: ResultStrength) -> Tag {
     }
 }
 
-/// M55 disclosure level of the current viewer.
+/// Disclosure level of the current viewer.
 pub fn disclosure_tag(disclosure: Disclosure) -> Tag {
     match disclosure {
         Disclosure::Full => neutral("full details"),
@@ -52,7 +52,7 @@ pub fn disclosure_tag(disclosure: Disclosure) -> Tag {
     }
 }
 
-/// §17 hard constraint vs user-relaxable preference.
+/// Hard constraint vs user-relaxable preference.
 pub fn hardness_tag(hardness: Hardness) -> Tag {
     match hardness {
         Hardness::Hard => neutral("Hard constraint"),

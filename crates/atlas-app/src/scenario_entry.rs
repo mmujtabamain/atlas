@@ -122,7 +122,7 @@ impl AtlasApp {
                 ],
             };
             dialog
-                .title("Add a change to a scenario (§18.2)")
+                .title("Add a change to a scenario")
                 .w(wide_width)
                 .max_h(relative(0.9))
                 .child(
@@ -238,7 +238,7 @@ impl AtlasApp {
         window.open_dialog(cx, move |dialog, _, _| {
             let this = this.clone();
             dialog
-                .title("Compose the selected scenarios (§18.3)")
+                .title("Combine the selected scenarios")
                 .child(
                     v_flex()
                         .gap_3()

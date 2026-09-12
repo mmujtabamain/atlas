@@ -1,7 +1,7 @@
-//! Liquidity & reservations (§6, §17, M02, M13, E01, E08): the money
-//! definitions of a chosen boundary, its hard floors and headroom, the runway
-//! of the household path against those floors, and the earmarks themselves —
-//! with a reservation editor and the E01 pay-and-release action.
+//! Liquidity & reservations: the money definitions of a chosen boundary, its
+//! hard floors and headroom, the runway of the household path against those
+//! floors, and the earmarks themselves — with a reservation editor and the
+//! pay-and-release action.
 
 use atlas_core::authz::Viewer;
 use atlas_core::breach::{self, BreachReport};
@@ -39,7 +39,7 @@ pub struct LiquidityModel {
     pub headroom: ExplainedFigure,
     pub spendable_display: Money,
     pub deficit: Money,
-    /// Household only: the liquid-cash path against the hard floors (M13).
+    /// Household only: the liquid-cash path against the hard floors.
     pub runway: Option<BreachReport>,
     pub minimum_injection: Option<ExplainedFigure>,
     pub horizon: NaiveDate,
@@ -70,13 +70,13 @@ impl LiquidityModel {
             .map(|(index, (label, calc))| ExplainedFigure::new(format!("{slug}-figure-{index}"), label.clone(), calc, household, viewer))
             .collect();
         let hard_floor = ExplainedFigure::new(format!("{slug}-hard-floor"), "Hard floors", &report.hard_floor, household, viewer);
-        let headroom = ExplainedFigure::new(format!("{slug}-headroom"), "Headroom over hard floors (signed)", &report.headroom, household, viewer);
+        let headroom = ExplainedFigure::new(format!("{slug}-headroom"), "Headroom over hard floors", &report.headroom, household, viewer);
         let deficit = report.headroom.money().negated().clamped_at_zero();
 
         let (runway, minimum_injection) = if boundary == Boundary::Household {
             let projection = forecast(household, Boundary::Household, ForecastOptions { through: horizon, scenario: None, case: Case::Expected })?;
             let breach = breach::analyse(&projection.path, report.hard_floor.money(), horizon)?;
-            let injection = ExplainedFigure::new(format!("{slug}-injection"), "Minimum immediate injection K*", &breach.minimum_injection, household, viewer);
+            let injection = ExplainedFigure::new(format!("{slug}-injection"), "Cash needed today to never breach", &breach.minimum_injection, household, viewer);
             (Some(breach), Some(injection))
         } else {
             (None, None)
@@ -118,7 +118,7 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
         .gap_6()
         .child(page_header(
             "Liquidity & reservations",
-            "A bank balance is not available money (§17). Pick a boundary; every figure carries its chain, earmarks are separate objects, and headroom keeps its sign (§6.6).",
+            "A bank balance is not the same as available money. Pick whose money to look at; every figure shows its calculation, earmarks are tracked on their own, and headroom is shown negative when floors are breached.",
             cx,
         ))
         .child(
@@ -132,14 +132,14 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
                 .children(model.boundaries.iter().map(|b| Tab::new().label(b.label(household)))),
         )
         .child(
-            GroupBox::new().id("boundary-figures").title(format!("{} — money definitions (§6)", model.boundary.label(household))).child(
+            GroupBox::new().id("boundary-figures").title(format!("{} — money today", model.boundary.label(household))).child(
                 h_flex().flex_wrap().gap_8().children(model.figures.iter().enumerate().map(|(index, f)| {
                     card(f.figure(index == 2))
                 })),
             ),
         )
         .child(
-            GroupBox::new().id("headroom").title("Hard floors and headroom (§6.6, §17)").child(
+            GroupBox::new().id("headroom").title("Hard floors and headroom").child(
                 v_flex()
                     .gap_4()
                     .child(
@@ -152,7 +152,7 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
                                 card(
                                     v_flex()
                                         .gap_1()
-                                        .child(div().text_xs().text_color(theme.muted_foreground).child("Displayed spendable (floored at zero)"))
+                                        .child(div().text_xs().text_color(theme.muted_foreground).child("Spendable now"))
                                         .child(
                                             div()
                                                 .id(SharedString::from(format!("{}-spendable", model.boundary.slug())))
@@ -164,7 +164,7 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
                                         )
                                         .child(div().text_xs().text_color(if model.deficit.is_positive() { theme.danger } else { theme.muted_foreground }).child(
                                             if model.deficit.is_positive() {
-                                                format!("Deficit {} reported separately — never hidden by the zero floor (§6.6)", model.deficit.format())
+                                                format!("Shown as zero, but the floors are breached by {}", model.deficit.format())
                                             } else {
                                                 "No deficit against the hard floors".to_string()
                                             },
@@ -173,7 +173,7 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
                             ),
                     )
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
-                        "Nested minimums are constraints, not additive deductions: a bank minimum inside an earmark is counted once (§17, M02).",
+                        "A bank minimum that sits inside an earmark is counted once, not deducted twice.",
                     )),
             ),
         )
@@ -181,7 +181,7 @@ pub fn render(model: &LiquidityModel, household: &Household, viewer: Viewer, cx:
             (Some(runway), Some(injection)) => render_runway(runway, injection, model, cx).into_any_element(),
             _ => GroupBox::new()
                 .id("runway")
-                .title("Runway against hard floors (M13)")
+                .title("Runway against hard floors")
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
                     "No dated path could be analysed for this boundary; the Projections screen shows every boundary's path.",
                 ))
@@ -202,7 +202,7 @@ fn render_runway(runway: &BreachReport, injection: &ExplainedFigure, model: &Liq
     };
     GroupBox::new()
         .id("runway")
-        .title(format!("Runway of the household liquid-cash path against hard floors through {} (M13, E08)", model.horizon.format("%d %b %Y")))
+        .title(format!("Runway against hard floors through {}", model.horizon.format("%d %b %Y")))
         .child(
             v_flex()
                 .gap_4()
@@ -215,11 +215,11 @@ fn render_runway(runway: &BreachReport, injection: &ExplainedFigure, model: &Liq
                         .child(fact("Worst deficit", format!("{}{}", runway.worst_deficit.format(), runway.worst_date.map(|d| format!(" on {}", d.format("%d %b %Y"))).unwrap_or_default())))
                         .child(fact("Lowest path balance", format!("{}{}", runway.lowest.format(), runway.lowest_date.map(|d| format!(" on {}", d.format("%d %b %Y"))).unwrap_or_default())))
                         .child(fact("Days below the floor", runway.days_below.to_string()))
-                        .child(fact("Integrated shortfall", format!("{} currency-days", runway.integrated_shortfall_currency_days)))
+                        .child(fact("Shortfall over time", format!("{} currency-days", runway.integrated_shortfall_currency_days)))
                         .child(card(injection.figure(false))),
                 )
                 .child(div().text_xs().text_color(theme.muted_foreground).child(
-                    "The path uses expected values of every planned occurrence in the baseline (§2.4: conditional, not available money). Maximum deficit is currency; integrated shortfall is currency-days and is not a capital requirement (E08). No breach is reported as “no breach through the horizon”, never as infinite runway (V044).",
+                    "The path uses the expected value of every planned occurrence in the baseline, so it is conditional, not money in hand. The worst deficit is an amount; shortfall over time (currency-days) measures how long and how deep, not how much capital is needed.",
                 )),
         )
 }
@@ -230,7 +230,7 @@ fn render_reservations(model: &LiquidityModel, household: &Household, _viewer: V
     let rows: Vec<_> = model.reservations.iter().filter_map(|id| household.reservation(*id)).collect();
     GroupBox::new()
         .id("reservations")
-        .title("Reservations (§5.8, §17)")
+        .title("Reservations")
         .child(
             v_flex()
                 .gap_3()
@@ -240,7 +240,7 @@ fn render_reservations(model: &LiquidityModel, household: &Household, _viewer: V
                         .items_start()
                         .gap_4()
                         .child(div().flex_1().min_w_0().text_xs().text_color(theme.muted_foreground).child(
-                            "Earmarks are separate objects, so several goals can use one account without fake bank accounts. Paying an obligation releases its earmark: cash falls, free cash does not (E01).",
+                            "Earmark money for a purpose without opening a separate bank account. Paying the obligation releases its earmark: cash falls, free cash does not.",
                         ))
                         .when(can_edit, |this| {
                             this.child(

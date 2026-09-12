@@ -117,7 +117,7 @@ impl RenderOnce for Figure {
 pub struct ExplainedFigure {
     pub id: SharedString,
     pub label: SharedString,
-    /// Node already projected for the viewer (M55).
+    /// Node already projected for the viewer.
     pub calc: Calc<Money>,
     disclosure: Disclosure,
     content: Arc<ExplainContent>,

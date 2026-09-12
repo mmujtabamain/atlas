@@ -1,4 +1,4 @@
-//! Data-entry dialogs (M12.4, M12.5): people, companies, accounts, event
+//! Data-entry dialogs: people, companies, accounts, event
 //! series, assumptions, scenarios, actual transactions with reconciliation,
 //! and account reconciliation. Every form keeps its values in retained
 //! entities (the dialog builder runs during render and must not read the
@@ -254,7 +254,7 @@ impl AtlasApp {
                         Form::vertical()
                             .child(Field::new().label("Name").required(true).child(Input::new(&name).id("entry-person-name")))
                             .child(
-                                Field::new().label("Household role (§5.15)").child(
+                                Field::new().label("Household role").child(
                                     RadioGroup::vertical("entry-person-role")
                                         .children(ROLES.iter().map(|r| r.label()))
                                         .selected_index(Some(role))
@@ -276,7 +276,7 @@ impl AtlasApp {
                     Box::new(move |_| {
                         Form::vertical()
                             .child(Field::new().label("Name").required(true).child(Input::new(&name).id("entry-company-name")))
-                            .child(Field::new().label("Jurisdiction (free text — never inferred, §12.7)").child(Input::new(&jurisdiction)))
+                            .child(Field::new().label("Jurisdiction (free text; nothing is inferred from it)").child(Input::new(&jurisdiction)))
                             .child(Field::new().label("Owner (100 %; add co-owners later)").child(Select::new(&owner)))
                             .into_any_element()
                     }),
@@ -312,20 +312,20 @@ impl AtlasApp {
                             .child(Field::new().label("Name").required(true).child(Input::new(&f.0).id("entry-account-name")))
                             .child(Field::new().label("Institution").child(Input::new(&f.1)))
                             .child(Field::new().label("Type").child(Select::new(&f.2)))
-                            .child(Field::new().label_indent(false).child(Checkbox::new("entry-account-company").label("Held by a company (business cash, §8.5)").checked(account_company).on_change(move |v, _, cx| d1.update(cx, |d, cx| { d.account_company = *v; cx.notify(); }))))
+                            .child(Field::new().label_indent(false).child(Checkbox::new("entry-account-company").label("Held by a company (business cash, not household cash)").checked(account_company).on_change(move |v, _, cx| d1.update(cx, |d, cx| { d.account_company = *v; cx.notify(); }))))
                             .child(if account_company {
                                 Field::new().label("Company").child(Select::new(&f.5))
                             } else {
                                 Field::new().label("Economic owner").child(Select::new(&f.3))
                             })
-                            .child(Field::new().label_indent(false).child(Checkbox::new("entry-account-joint").label("Joint 50/50 with a second person (§7)").checked(account_joint && !account_company).on_change(move |v, _, cx| d2.update(cx, |d, cx| { d.account_joint = *v; cx.notify(); }))))
+                            .child(Field::new().label_indent(false).child(Checkbox::new("entry-account-joint").label("Joint 50/50 with a second person").checked(account_joint && !account_company).on_change(move |v, _, cx| d2.update(cx, |d, cx| { d.account_joint = *v; cx.notify(); }))))
                             .child(Field::new().label("Second owner").child(Select::new(&f.4)))
                             .child(Field::new().label("Settled balance today").required(true).child(Input::new(&f.6).id("entry-account-balance")))
                             .child(Field::new().label("Bank minimum balance").child(Input::new(&f.7)))
                             .child(Field::new().label("Liquidity").child(Select::new(&f.8)))
                             .child(Field::new().label_indent(false).child(Checkbox::new("entry-account-include").label("Include in household calculations").checked(account_include).on_change(move |v, _, cx| d3.update(cx, |d, cx| { d.account_include = *v; cx.notify(); }))))
-                            .child(Field::new().label("Visibility to other people (§7.2)").child(Select::new(&f.9)))
-                            .child(Field::new().label("Calculation access (§7.3)").child(Select::new(&f.10)))
+                            .child(Field::new().label("Visibility to other people").child(Select::new(&f.9)))
+                            .child(Field::new().label("Use in calculations").child(Select::new(&f.10)))
                             .into_any_element()
                     }),
                     "entry-save-account",
@@ -371,17 +371,17 @@ impl AtlasApp {
                                 ),
                             )
                             .child(Field::new().label("Expected amount per occurrence").required(true).child(Input::new(&f.1).id("entry-series-amount")))
-                            .child(Field::new().label_indent(false).child(Checkbox::new("entry-series-ranged").label("Give a range (§10.4)").checked(series_ranged).on_change(move |v, _, cx| d2.update(cx, |d, cx| { d.series_ranged = *v; cx.notify(); }))))
+                            .child(Field::new().label_indent(false).child(Checkbox::new("entry-series-ranged").label("Give a range").checked(series_ranged).on_change(move |v, _, cx| d2.update(cx, |d, cx| { d.series_ranged = *v; cx.notify(); }))))
                             .child(Field::new().label("Lowest").child(Input::new(&f.2)))
                             .child(Field::new().label("Highest").child(Input::new(&f.3)))
-                            .child(Field::new().label("Recurrence (§9.1)").child(Select::new(&f.4)))
+                            .child(Field::new().label("Recurrence").child(Select::new(&f.4)))
                             .child(Field::new().label("Day of month / every N weeks").child(Input::new(&f.5)))
                             .child(Field::new().label("First occurrence on / from").child(DatePicker::new(&f.6)))
                             .child(Field::new().label("Until (optional)").child(DatePicker::new(&f.7)))
                             .child(Field::new().label("Account it posts to").child(Select::new(&f.8)))
                             .child(Field::new().label("Transfer to (transfers only)").child(Select::new(&f.9)))
-                            .child(Field::new().label("Whose movement is it (§5)").child(Select::new(&f.10)))
-                            .child(Field::new().label("Certainty (§10.3)").child(Select::new(&f.11)))
+                            .child(Field::new().label("Whose movement is it").child(Select::new(&f.10)))
+                            .child(Field::new().label("Certainty").child(Select::new(&f.11)))
                             .child(Field::new().label("Category (tax rules match on it)").child(Input::new(&f.12)))
                             .into_any_element()
                     }),
@@ -396,9 +396,9 @@ impl AtlasApp {
                     Box::new(move |_| {
                         Form::vertical()
                             .child(Field::new().label("Assumption").required(true).child(Input::new(&f.0).id("entry-assumption-text")))
-                            .child(Field::new().label("Kind (§10.3)").child(Select::new(&f.1)))
+                            .child(Field::new().label("Certainty").child(Select::new(&f.1)))
                             .child(Field::new().label("Applies to").child(Select::new(&f.2)))
-                            .child(Field::new().label("Expires (optional, F117)").child(DatePicker::new(&f.3)))
+                            .child(Field::new().label("Expires (optional)").child(DatePicker::new(&f.3)))
                             .into_any_element()
                     }),
                     "entry-save-assumption",
@@ -416,7 +416,7 @@ impl AtlasApp {
                         Form::vertical()
                             .child(Field::new().label("Name").required(true).child(Input::new(&f.0).id("entry-scenario-name")))
                             .child(Field::new().label("What changes").child(Input::new(&f.1)))
-                            .child(Field::new().label_indent(false).child(Checkbox::new("entry-scenario-private").label("Private to me (§18.5)").checked(private).on_change(move |v, _, cx| d.update(cx, |x, cx| { x.scenario_private = *v; cx.notify(); }))))
+                            .child(Field::new().label_indent(false).child(Checkbox::new("entry-scenario-private").label("Private to me").checked(private).on_change(move |v, _, cx| d.update(cx, |x, cx| { x.scenario_private = *v; cx.notify(); }))))
                             .into_any_element()
                     }),
                     "entry-save-scenario",
@@ -435,7 +435,7 @@ impl AtlasApp {
                             .child(Field::new().label("Account").child(Select::new(&f.1)))
                             .child(Field::new().label("Signed amount (+ in, − out)").required(true).child(Input::new(&f.2).id("entry-actual-amount")))
                             .child(Field::new().label("Description").child(Input::new(&f.3).id("entry-actual-description")))
-                            .child(Field::new().label("Fulfils the planned occurrence of (§16)").child(Select::new(&f.4)))
+                            .child(Field::new().label("Fulfils the planned occurrence of").child(Select::new(&f.4)))
                             .child(Field::new().label("… that was due on").child(DatePicker::new(&f.5)))
                             .into_any_element()
                     }),
@@ -533,7 +533,7 @@ impl AtlasApp {
                         constraints: Vec::new(),
                     })
                     .map_err(|e| e.to_string())?;
-                format!("Company {name} added (business cash stays out of household cash, §8.5)")
+                format!("Company {name} added; its cash stays out of household cash")
             }
             Entry::Account => {
                 let f = &self.entry_forms;
@@ -721,7 +721,7 @@ impl AtlasApp {
                     self.household
                         .link_actual(ReconciliationLink { series, original_due: due, transaction: id, amount: amount.abs() })
                         .map_err(|e| e.to_string())?;
-                    summary.push_str(&format!("; reconciled to the occurrence due {} (V012: never counted twice)", due.format("%d %b %Y")));
+                    summary.push_str(&format!("; reconciled to the occurrence due {}", due.format("%d %b %Y")));
                 }
                 summary
             }

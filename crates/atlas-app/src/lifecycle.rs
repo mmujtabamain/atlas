@@ -1,4 +1,4 @@
-//! Household lifecycle (M12.2) and identity (M12.3): new / open / save /
+//! Household lifecycle and identity: new / open / save /
 //! save-as / load-sample, the dirty state, the lock, and the "who is looking?"
 //! picker. Native file dialogs are used when the platform has them; a path
 //! field always works (the Linux box has no portal).
@@ -426,10 +426,10 @@ impl AtlasApp {
     /// Loads the fictitious sample household.
     pub fn load_sample(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.replace_household(fixtures::plan_household(), None, window, cx);
-        window.push_notification("Sample household loaded (fictitious plan numbers).", cx);
+        window.push_notification("Sample household loaded — fictitious people, accounts and amounts.", cx);
     }
 
-    /// "Who is looking?" — a button per person (M12.3, no secret by design).
+    /// "Who is looking?" — a button per person (no secret by design).
     pub fn open_viewer_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let people: Vec<(PersonId, String, String)> = self.household.people.iter().map(|p| (p.id, p.name.clone(), p.role.label().to_string())).collect();
         if people.is_empty() {
@@ -446,7 +446,7 @@ impl AtlasApp {
                 .child(
                     v_flex()
                         .gap_2()
-                        .child(div().text_xs().text_color(muted).child("Every screen is filtered by this person's access policies (§7). The demo identifies people by choice, without a secret."))
+                        .child(div().text_xs().text_color(muted).child("Every screen is filtered by this person's access policies. People are identified by choice, without a password."))
                         .children(people.iter().map(|(id, name, role)| {
                             let id = *id;
                             let this = this.clone();

@@ -1,5 +1,5 @@
-//! People (§5.2, §7): roles, held accounts with shares, companies, income,
-//! and the person's attributed economic share — with its chain.
+//! People: roles, held accounts with shares, companies, income, and the
+//! person's attributed economic share — with its chain.
 
 use atlas_core::ids::PersonId;
 use atlas_core::model::Household;
@@ -51,7 +51,7 @@ pub fn render(models: &EntityModels, household: &Household, selected: Option<Per
         .child(
             h_flex().justify_between().items_start().gap_4().child(page_header(
                 "People",
-                format!("{} participants · a person may own accounts, co-own accounts, earn salaries, own companies and owe taxes (§5.2)", household.people.len()),
+                format!("{} people · who owns which accounts and companies, what they earn and what they owe in tax", household.people.len()),
                 cx,
             ))
             .child(
@@ -100,7 +100,7 @@ fn render_detail(person: &atlas_core::model::Person, model: &super::entities::Pe
                 .child(Tag::secondary().xsmall().outline().child(person.role.label())),
         )
         .child(
-            GroupBox::new().id("person-facts").title("Ownership and roles (§7)").child(
+            GroupBox::new().id("person-facts").title("Ownership and roles").child(
                 DescriptionList::new()
                     .columns(1)
                     .child(DescriptionItem::new("Household role").value(person.role.label()))
@@ -111,17 +111,17 @@ fn render_detail(person: &atlas_core::model::Person, model: &super::entities::Pe
             ),
         )
         .child(
-            GroupBox::new().id("person-attribution").title("Economic attribution (§7)").child(
+            GroupBox::new().id("person-attribution").title("Economic share").child(
                 v_flex()
                     .gap_3()
                     .child(model.attribution.figure(true))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
-                        "The person's share of each held account. The household counts joint accounts once at 100%; attribution never double counts (V066).",
+                        "This person's share of each account they hold. The household view counts a joint account once, so shares never double count.",
                     )),
             ),
         )
         .child(
-            GroupBox::new().id("person-income").title("Income sources (§9)").child(if income.is_empty() {
+            GroupBox::new().id("person-income").title("Income").child(if income.is_empty() {
                 div().text_sm().text_color(theme.muted_foreground).child("No income series attributed to this person.").into_any_element()
             } else {
                 Table::new()

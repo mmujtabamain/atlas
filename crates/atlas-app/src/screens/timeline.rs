@@ -1,7 +1,7 @@
-//! Timeline (§9, §15, §16, M05): every planned occurrence in a window with
-//! its four clocks, status and reconciliation; the series that generate them
-//! with their exceptions and effective-dated changes; the actual transactions
-//! they are reconciled to.
+//! Timeline: every planned occurrence in a window with its four clocks,
+//! status and reconciliation; the series that generate them with their
+//! exceptions and effective-dated changes; the actual transactions they are
+//! reconciled to.
 
 use atlas_core::authz::Viewer;
 use atlas_core::ids::{AccountId, EntityRef, ObjectRef, ScenarioId, SeriesId};
@@ -30,7 +30,7 @@ use crate::widgets::labels;
 use crate::widgets::master::page_header;
 use crate::widgets::table::{money_cell, muted_cell};
 
-/// What the timeline shows (§9 filters).
+/// What the timeline shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimelineFilter {
     pub entity: Option<EntityRef>,
@@ -57,6 +57,8 @@ pub struct TimelineModel {
     /// The actual transactions the viewer may see, with what each is
     /// reconciled to, as grid rows.
     pub actual_rows: grid::Rows,
+    /// The scenario the overlay toggle applies (see [`super::overlay_scenario`]).
+    pub overlay_scenario: Option<ScenarioId>,
 }
 
 /// Columns of the actual-transactions grid, in display order.
@@ -127,7 +129,7 @@ fn occurrence_row(o: &Occurrence, household: &Household) -> Row {
         subtitle.push_str(&format!(" · scenario “{}”", scenario.name));
     }
     if o.linked_account.is_some() {
-        subtitle.push_str(" · linked movement (§8.4)");
+        subtitle.push_str(" · linked movement");
     }
     let remaining = o.remaining_expected();
     let signed = match o.direction {
@@ -192,7 +194,8 @@ impl TimelineModel {
         let total_out = Money::sum(currency, occurrences.iter().filter(|o| o.direction == Direction::Expense && o.is_live()).map(|o| o.remaining_expected()))?;
         let rows = Arc::new(occurrences.iter().map(|o| occurrence_row(o, household)).collect());
         let actual_rows = actual_rows(household, viewer);
-        Ok(TimelineModel { filter, occurrences, rows, total_in, total_out, series, hidden_series, actual_rows })
+        let overlay_scenario = super::overlay_scenario(household, viewer);
+        Ok(TimelineModel { filter, occurrences, rows, total_in, total_out, series, hidden_series, actual_rows, overlay_scenario })
     }
 }
 
@@ -201,7 +204,8 @@ pub fn render(model: &TimelineModel, controls: &TimelineControls, grids: &Grids,
     grid::sync(&grids.timeline_actuals, &model.actual_rows, cx);
     let theme = cx.theme();
     let scenario_name = model.filter.scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone());
-    let buy_car_on = model.filter.scenario.is_some();
+    let overlay_on = model.filter.scenario.is_some();
+    let overlay_name = model.overlay_scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone());
 
     v_flex()
         .id("screen-timeline")
@@ -212,7 +216,7 @@ pub fn render(model: &TimelineModel, controls: &TimelineControls, grids: &Grids,
             h_flex().justify_between().items_start().gap_4().child(page_header(
                 "Timeline",
                 format!(
-                    "{} occurrences from {} through {} — every planned movement with its due, posting, settlement and availability dates (M05) and its reconciliation status (§16)",
+                    "{} planned movements from {} through {}, each with its due, settlement and availability dates and whether it has been paid",
                     model.occurrences.len(),
                     household.as_of.format("%d %b %Y"),
                     model.filter.through.format("%d %b %Y")
@@ -250,12 +254,14 @@ pub fn render(model: &TimelineModel, controls: &TimelineControls, grids: &Grids,
                 .child(labelled("Certainty", Select::new(&controls.certainty).small().w_40(), cx))
                 .child(labelled("Status", Select::new(&controls.status).small().w_40(), cx))
                 .child(labelled("Horizon", Select::new(&controls.horizon).small().w_48(), cx))
-                .child(
-                    Checkbox::new("timeline-buy-car")
-                        .label("Overlay scenario “Buy car” (§18)")
-                        .checked(buy_car_on)
-                        .on_change(cx.listener(|this, checked, _, cx| this.set_timeline_scenario(*checked, cx))),
-                ),
+                .when_some(overlay_name, |this, name| {
+                    this.child(
+                        Checkbox::new("timeline-buy-car")
+                            .label(format!("Overlay scenario “{name}”"))
+                            .checked(overlay_on)
+                            .on_change(cx.listener(|this, checked, _, cx| this.set_timeline_scenario(*checked, cx))),
+                    )
+                }),
         )
         .child(
             GroupBox::new().id("timeline-occurrences").title(match &scenario_name {
@@ -265,7 +271,7 @@ pub fn render(model: &TimelineModel, controls: &TimelineControls, grids: &Grids,
                 v_flex()
                     .gap_3()
                     .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                        "Live inflows {} · live outflows {} (expected values, remainders after reconciliation). Skipped, cancelled and fulfilled rows post nothing (§16).",
+                        "Still to come: {} in · {} out (expected values, less what has already been received or paid). Skipped, cancelled and fulfilled rows post nothing.",
                         model.total_in.format(),
                         model.total_out.format()
                     )))
@@ -286,11 +292,11 @@ fn labelled(label: &'static str, control: impl IntoElement, cx: &App) -> impl In
 
 fn render_series(model: &TimelineModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("timeline-series").title("Event series (§5.6, §9)").child(
+    GroupBox::new().id("timeline-series").title("Event series").child(
         v_flex()
             .gap_3()
             .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                "{} series generate the occurrences above{}. Edit one occurrence, this-and-future amounts, or end a series without recreating anything (§9.2–9.4).",
+                "{} series generate the movements above{}. Edit one occurrence, change the amount from a date on, or end a series without recreating it.",
                 model.series.len(),
                 if model.hidden_series > 0 { format!(" ({} not disclosed to this viewer)", model.hidden_series) } else { String::new() }
             )))
@@ -369,11 +375,11 @@ fn render_series(model: &TimelineModel, household: &Household, cx: &mut Context<
 
 fn render_actuals(model: &TimelineModel, grids: &Grids, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("timeline-actuals").title("Actual transactions and reconciliation (§5.7, §16)").child(
+    GroupBox::new().id("timeline-actuals").title("Actual transactions").child(
         v_flex()
             .gap_3()
             .child(div().text_xs().text_color(theme.muted_foreground).child(
-                "Once an actual transaction is linked, the planned occurrence counts only its remainder — never twice (V012).",
+                "Once an actual transaction is linked to a planned occurrence, only the remainder of that occurrence stays in the forecast — nothing is counted twice.",
             ))
             .child(if model.actual_rows.is_empty() {
                 div().text_sm().text_color(theme.muted_foreground).child("No actual transactions visible to this viewer.").into_any_element()

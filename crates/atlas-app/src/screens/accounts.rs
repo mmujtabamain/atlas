@@ -1,6 +1,6 @@
-//! Accounts (§5.4, §7): every property the plan lists, the balance-definition
-//! strip with chains, the reservations on the account and the series that
-//! touch it — as far as the viewer's disclosure allows.
+//! Accounts: every property of an account, the balance-definition strip
+//! with chains, the reservations on the account and the series that touch
+//! it — as far as the viewer's disclosure allows.
 
 use atlas_core::authz::Viewer;
 use atlas_core::ids::{AccountId, EntityRef, ObjectRef};
@@ -57,7 +57,7 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
                                 .small()
                                 .outline()
                                 .label("Reconcile…")
-                                .tooltip("Set the settled balance from a statement (§7 last reconciliation)")
+                                .tooltip("Set the settled balance from a statement")
                                 .on_click(cx.listener(move |this, _, window, cx| this.open_entry(crate::entry::Entry::Reconcile(id), window, cx))),
                         )
                         .child(
@@ -84,11 +84,11 @@ pub fn render(models: &EntityModels, household: &Household, viewer: Viewer, sele
             h_flex().justify_between().items_start().gap_4().child(page_header(
                 "Accounts",
                 format!(
-                    "{} of {} accounts visible to {}{} · every property of §7, every balance with its chain",
+                    "{} of {} accounts visible to {}{} · every balance with its calculation",
                     models.accounts.len(),
                     household.accounts.len(),
                     viewer_name,
-                    if hidden > 0 { format!(" ({hidden} not disclosed, V062)") } else { String::new() }
+                    if hidden > 0 { format!(" ({hidden} not disclosed)") } else { String::new() }
                 ),
                 cx,
             ))
@@ -146,10 +146,10 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                 .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(account.name.clone()))
                 .child(Tag::secondary().xsmall().outline().child(account.kind.label()))
                 .child(labels::disclosure_tag(model.disclosure))
-                .when(account.is_company_account(), |this| this.child(Tag::secondary().xsmall().outline().child("business cash — not household cash (§8.5)"))),
+                .when(account.is_company_account(), |this| this.child(Tag::secondary().xsmall().outline().child("business cash — not household cash"))),
         )
         .child(
-            GroupBox::new().id("account-balances").title("Balance definitions (§6)").child(
+            GroupBox::new().id("account-balances").title("Balances").child(
                 v_flex()
                     .gap_4()
                     .child(
@@ -169,7 +169,7 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                                                 .font_family(theme.mono_font_family.clone())
                                                 .child(account.pending_balance.format()),
                                         )
-                                        .child(div().text_xs().text_color(theme.muted_foreground).child("posted, not yet settled — never spendable (M01)")),
+                                        .child(div().text_xs().text_color(theme.muted_foreground).child("posted, not yet settled — not spendable")),
                                 ),
                             )
                             .when(derived_visible, |this| {
@@ -178,14 +178,14 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                             })
                             .when(!derived_visible, |this| {
                                 this.child(
-                                    div().w_64().flex_shrink_0().text_sm().text_color(theme.muted_foreground).child("Reserved and free cash are not disclosed under a balance-only policy (§7.2)."),
+                                    div().w_64().flex_shrink_0().text_sm().text_color(theme.muted_foreground).child("Reserved and free cash are not disclosed under a balance-only policy."),
                                 )
                             }),
                     ),
             ),
         )
         .child(
-            GroupBox::new().id("account-properties").title("Properties (§7)").child(
+            GroupBox::new().id("account-properties").title("Properties").child(
                 DescriptionList::new()
                     .columns(2)
                     .child(DescriptionItem::new("Institution").value(account.institution.clone()))
@@ -202,15 +202,15 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                     .child(DescriptionItem::new("Last reconciliation").value(account.last_reconciled.map(|d| d.format("%d %b %Y").to_string()).unwrap_or_else(|| "never".into())))
                     .child(DescriptionItem::new("Withdrawals permitted").value(yes_no(account.withdrawals_permitted)))
                     .child(DescriptionItem::new("Can fund").value(if account.funds_categories.is_empty() { "Any expense category".to_string() } else { account.funds_categories.join(", ") }))
-                    .child(DescriptionItem::new("Visibility policy").value(policy.map(|p| format!("{} (v{}, effective {})", p.preset_label(), p.version, p.effective_from.format("%d %b %Y"))).unwrap_or_else(|| "none — fails closed (F162)".into())))
-                    .child(DescriptionItem::new("Calculation access (§7.3)").value(policy.map(|p| p.calculation_access.label().to_string()).unwrap_or_else(|| "Excluded (no policy)".into()))),
+                    .child(DescriptionItem::new("Visibility policy").value(policy.map(|p| format!("{} (v{}, effective {})", p.preset_label(), p.version, p.effective_from.format("%d %b %Y"))).unwrap_or_else(|| "none — hidden until an owner sets one".into())))
+                    .child(DescriptionItem::new("Calculation access").value(policy.map(|p| p.calculation_access.label().to_string()).unwrap_or_else(|| "Excluded (no policy)".into()))),
             ),
         );
 
     if derived_visible {
         detail = detail
             .child(
-                GroupBox::new().id("account-reservations").title("Reservations on this account (§17)").child(if reservations.is_empty() {
+                GroupBox::new().id("account-reservations").title("Reservations on this account").child(if reservations.is_empty() {
                     div().text_sm().text_color(theme.muted_foreground).child("No earmarks; the whole settled balance is free unless a bank minimum applies.").into_any_element()
                 } else {
                     Table::new()
@@ -244,7 +244,7 @@ fn render_detail(account: &Account, model: &AccountModel, household: &Household,
                 }),
             )
             .child(
-                GroupBox::new().id("account-series").title("Series touching this account (§9)").child(if model.series.is_empty() {
+                GroupBox::new().id("account-series").title("Series touching this account").child(if model.series.is_empty() {
                     div().text_sm().text_color(theme.muted_foreground).child("No planned series post to or from this account.").into_any_element()
                 } else {
                     Table::new()

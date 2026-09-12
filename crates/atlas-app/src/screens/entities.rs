@@ -1,5 +1,5 @@
-//! Derived models for the People, Companies and Accounts screens (M1),
-//! computed once per state change and projected for the viewer.
+//! Derived models for the People, Companies and Accounts screens, computed
+//! once per state change and projected for the viewer.
 
 use atlas_core::authz::Viewer;
 use atlas_core::ids::*;
@@ -16,7 +16,7 @@ pub struct PersonModel {
     pub attribution: ExplainedFigure,
     /// Income series attributed to the person.
     pub income: Vec<SeriesId>,
-    /// Tax cash the person owes in the window (§12.6), as text.
+    /// Tax cash the person owes in the window, as text.
     pub tax_text: String,
 }
 
@@ -42,8 +42,8 @@ impl Touch {
     pub fn label(self) -> &'static str {
         match self {
             Touch::PostsHere => "posts here",
-            Touch::LinkedSide => "linked company/person side (§8.4)",
-            Touch::TransferTarget => "transfer target (§15)",
+            Touch::LinkedSide => "linked company/person side",
+            Touch::TransferTarget => "transfer target",
         }
     }
 }
@@ -62,7 +62,7 @@ pub struct AccountModel {
 pub struct EntityModels {
     pub persons: Vec<PersonModel>,
     pub companies: Vec<CompanyModel>,
-    /// Only accounts whose existence the viewer may know (V062).
+    /// Only accounts whose existence the viewer may know.
     pub accounts: Vec<AccountModel>,
 }
 
@@ -78,8 +78,8 @@ impl EntityModels {
                     let own = assessment.by_entity.iter().find(|(e, _)| *e == EntityRef::Person(person.id)).map(|(_, c)| c.money());
                     let events = assessment.events.iter().filter(|e| e.entity == EntityRef::Person(person.id)).count();
                     match own {
-                        Some(total) if events > 0 => format!("{} tax cash in the window from {events} event{} under the DEMO pack (§12.6; a planning estimate, not a filing)", total.format(), if events == 1 { "" } else { "s" }),
-                        _ => "no tax event attributed to this person in the window (§12.6)".into(),
+                        Some(total) if events > 0 => format!("{} in the window from {events} tax event{} under the DEMO pack — a planning estimate, not a filing", total.format(), if events == 1 { "" } else { "s" }),
+                        _ => "no tax event attributed to this person in the window".into(),
                     }
                 }
                 None => "tax assessment unavailable".into(),

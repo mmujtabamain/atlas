@@ -1,5 +1,5 @@
-//! Companies (§5.3, §8): a separate ledger per company — accounts, employees,
-//! constraints, cash — and what a household viewer may see of it (§8.7).
+//! Companies: a separate ledger per company — accounts, employees,
+//! constraints, cash — and what a household viewer may see of it.
 
 use atlas_core::ids::{CompanyId, EntityRef};
 use atlas_core::model::{Company, Household};
@@ -59,7 +59,7 @@ pub fn render(models: &EntityModels, household: &Household, selected: Option<Com
             h_flex().justify_between().items_start().gap_4().child(page_header(
                 "Companies",
                 format!(
-                    "{} of {} companies visible · a company is legally distinct from its owners; its cash is never household cash (§8.5)",
+                    "{} of {} companies visible · a company is legally distinct from its owners, so its cash is never household cash",
                     models.companies.len(),
                     household.companies.len()
                 ),
@@ -106,10 +106,10 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
         );
 
     if !full {
-        // §8.7: a household participant sees only a planning-safe output.
+        // A household participant sees only a planning-safe output.
         return detail
             .child(
-                GroupBox::new().id("company-summary").title("Planning-safe output (§8.7)").child(
+                GroupBox::new().id("company-summary").title("What you may see").child(
                     v_flex()
                         .gap_3()
                         .child(model.ceiling.figure(true))
@@ -123,17 +123,17 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
 
     detail = detail
         .child(
-            GroupBox::new().id("company-facts").title("Entity (§5.3)").child(
+            GroupBox::new().id("company-facts").title("Company").child(
                 DescriptionList::new()
                     .columns(1)
                     .child(DescriptionItem::new("Jurisdiction").value(company.jurisdiction.clone()))
                     .child(DescriptionItem::new("Owners").value(owners.join(" · ")))
-                    .child(DescriptionItem::new("Entity roles (§5.16)").value(if roles.is_empty() { "—".to_string() } else { roles.join(" · ") }))
-                    .child(DescriptionItem::new("Household access").value("Company roles never confer household access, and household membership never grants company access (§8.7)")),
+                    .child(DescriptionItem::new("Roles").value(if roles.is_empty() { "—".to_string() } else { roles.join(" · ") }))
+                    .child(DescriptionItem::new("Access").value("A company role gives no household access, and household membership gives no company access.")),
             ),
         )
         .child(
-            GroupBox::new().id("company-cash").title("Cash position (§6.8, §6.9, E07)").child(
+            GroupBox::new().id("company-cash").title("Cash position").child(
                 v_flex()
                     .gap_4()
                     .child(
@@ -156,13 +156,13 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
                                     .child(labels::strength_tag(model.extractable.calc.node().result_strength())),
                             )
                             .child(div().text_xs().text_color(theme.muted_foreground).child(
-                                "The ceiling is a cash constraint before extraction costs, not lawfully distributable cash. Each route — salary, permitted dividend, documented reimbursement, genuine shareholder-loan repayment — is a separate route on the Decisions screen, each with the legal-capacity caveat (M27).",
+                                "The ceiling is what the cash could bear before extraction costs — not what may lawfully be taken out. Each route (salary, permitted dividend, documented reimbursement, shareholder-loan repayment) is evaluated separately on the Decisions screen, and its legal capacity is never assumed.",
                             )),
                     ),
             ),
         )
         .child(
-            GroupBox::new().id("company-constraints").title("Constraints (§8.6)").child(
+            GroupBox::new().id("company-constraints").title("Constraints").child(
                 v_flex().gap_1().text_sm().children(company.constraints.iter().map(|c| h_flex().gap_2().child("•").child(c.describe()))),
             ),
         )
@@ -192,7 +192,7 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
             ),
         )
         .child(
-            GroupBox::new().id("company-employees").title("Employees and payroll (§8.3)").child(if company.employees.is_empty() {
+            GroupBox::new().id("company-employees").title("Employees and payroll").child(if company.employees.is_empty() {
                 div().text_sm().text_color(theme.muted_foreground).child("No employees.").into_any_element()
             } else {
                 Table::new()
@@ -203,7 +203,7 @@ fn render_detail(company: &Company, model: &CompanyModel, household: &Household,
                                 .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Monthly gross"))
                                 .child(TableHead::new().w_32().flex_shrink_0().child("Start"))
                                 .child(TableHead::new().w_32().flex_shrink_0().child("End"))
-                                .child(TableHead::new().min_w_0().child("Household link (§8.4)")),
+                                .child(TableHead::new().min_w_0().child("Household link")),
                         ),
                     )
                     .child(TableBody::new().children(company.employees.iter().enumerate().map(|(index, employee)| {

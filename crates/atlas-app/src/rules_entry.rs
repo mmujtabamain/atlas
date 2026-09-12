@@ -193,7 +193,7 @@ impl AtlasApp {
                 ],
             };
             dialog
-                .title("New rule (§14.1) — deterministic, effective-dated, versioned")
+                .title("New rule")
                 .w(wide_width)
                 .max_h(relative(0.9))
                 .child(
@@ -201,7 +201,7 @@ impl AtlasApp {
                         Form::vertical()
                             .columns(2)
                             .child(Field::new().label("Name").required(true).child(Input::new(&name).id("rule-name")))
-                            .child(Field::new().label("Priority (higher wins, §14.7)").child(Input::new(&priority).id("rule-priority")))
+                            .child(Field::new().label("Priority (higher wins)").child(Input::new(&priority).id("rule-priority")))
                             .child(
                                 Field::new().label("Scope (more specific scopes win ties)").child(
                                     RadioGroup::horizontal("rule-scope")
@@ -224,7 +224,7 @@ impl AtlasApp {
                                 ),
                             )
                             .child(
-                                Field::new().label("Conditions (typed, §14.1)").child(
+                                Field::new().label("Conditions").child(
                                     v_flex()
                                         .gap_2()
                                         .child(Input::new(&amount_above).id("rule-amount-above"))

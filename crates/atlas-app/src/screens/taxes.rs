@@ -1,11 +1,11 @@
-//! Taxes (§12, M23, M24, §25): rule packs with their versions and effective
-//! dates, the tax events of the window with their cash dates and entity
-//! attribution, the tax reserve for what is payable later, and the E05
-//! with-vs-without comparison.
+//! Taxes: rule packs with their versions and effective dates, the tax events
+//! of the window with their cash dates and entity attribution, the tax
+//! reserve for what is payable later, and the with-vs-without extraction
+//! comparison.
 
 use atlas_core::authz::Viewer;
 use atlas_core::forecast::Case;
-use atlas_core::ids::{EntityRef, ObjectRef};
+use atlas_core::ids::{EntityRef, ObjectRef, ScenarioId};
 use atlas_core::model::{Bracket, Household, TaxRulePack};
 use atlas_core::tax::{TaxAssessment, TaxEvent, YearStrategy, assess, multi_year_comparison};
 use atlas_core::{Disclosure, EngineResult, Money};
@@ -33,10 +33,10 @@ use crate::widgets::labels;
 use crate::widgets::master::page_header;
 use crate::widgets::table::money_cell;
 
-/// Which bracket schedule the E05 panel uses.
+/// Which bracket schedule the extraction comparison uses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum E05Schedule {
-    /// The plan's fictitious example: 10% on the first 100,000, 30% above.
+    /// A fictitious example: 10% on the first 100,000, 30% above.
     PlanExample,
     /// The household's effective annual brackets for the current year.
     HouseholdPack,
@@ -59,6 +59,8 @@ pub struct TaxModel {
     pub packs: Vec<TaxRulePack>,
     /// The tax events as grid rows, formatted once (see `widgets::grid`).
     pub event_rows: grid::Rows,
+    /// The scenario the toggle applies (see [`super::overlay_scenario`]).
+    pub overlay_scenario: Option<ScenarioId>,
 }
 
 /// Columns of the tax-events grid, in display order.
@@ -94,7 +96,8 @@ fn event_row(e: &TaxEvent, through: NaiveDate, household: &Household) -> Row {
 impl TaxModel {
     pub fn compute(household: &Household, viewer: Viewer, through: NaiveDate, scenario_on: bool, e05_amount: Money, e05_split: bool, e05_schedule: E05Schedule) -> EngineResult<Self> {
         log::info!("computing tax model through {through} scenario={scenario_on} e05 amount={} split={e05_split}", e05_amount.format());
-        let scenario = if scenario_on { Some(atlas_core::fixtures::ids::BUY_CAR) } else { None };
+        let overlay_scenario = super::overlay_scenario(household, viewer);
+        let scenario = if scenario_on { overlay_scenario } else { None };
         let assessment = assess(household, through, scenario, Case::Expected)?;
         let by_entity = assessment
             .by_entity
@@ -153,6 +156,7 @@ impl TaxModel {
             e05_incrementals,
             e05_brackets,
             packs: household.tax_packs.clone(),
+            overlay_scenario,
         })
     }
 }
@@ -165,22 +169,22 @@ pub fn render(model: &TaxModel, controls: &TaxControls, grids: &Grids, household
         .gap_6()
         .child(page_header(
             "Taxes",
-            "Taxes are first-class, effective-dated events and liabilities (§12). Every figure is an estimate under the configured packs — not a filing and not advice (§12.7).",
+            "Taxes are dated events with cash dates, not a percentage at the end. Every figure is an estimate under the configured rule packs — not a filing and not advice.",
             cx,
         ))
         .child(
-            Alert::info("tax-caveat", "The DEMO packs are fictitious rule-engine examples, not any country's law. Rules you add are labelled unverified until an official source is attached. No jurisdiction is inferred from currency or language (§12.7, §46).")
+            Alert::info("tax-caveat", "The DEMO packs are fictitious examples, not any country's law. Rules you add stay marked unverified until an official source is attached. No jurisdiction is ever inferred from the currency or the language.")
                 .title("Planning estimates only"),
         )
         .child(render_packs(model, household, cx))
-        .child(render_events(model, grids, cx))
+        .child(render_events(model, grids, household, cx))
         .child(render_e05(model, controls, cx))
 }
 
 fn render_packs(model: &TaxModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
     let _ = household;
-    GroupBox::new().id("tax-packs").title("Rule packs and their versions (§12.1, §25)").child(
+    GroupBox::new().id("tax-packs").title("Rule packs").child(
         v_flex()
             .gap_4()
             .child(
@@ -189,7 +193,7 @@ fn render_packs(model: &TaxModel, household: &Household, cx: &mut Context<AtlasA
                     .items_start()
                     .gap_4()
                     .child(div().flex_1().min_w_0().text_xs().text_color(theme.muted_foreground).child(
-                        "A forecast for 2027 never silently applies a 2026 rule: rules carry effective dates and the engine picks the pack in force on each occurrence's date. Your own rules go into an unverified user pack.",
+                        "Rules carry effective dates, so a 2027 forecast never silently applies a 2026 rule. Your own rules go into a separate, unverified pack.",
                     ))
                     .child(
                         Button::new("new-tax-rule")
@@ -256,13 +260,13 @@ fn render_packs(model: &TaxModel, household: &Household, cx: &mut Context<AtlasA
     )
 }
 
-fn render_events(model: &TaxModel, grids: &Grids, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+fn render_events(model: &TaxModel, grids: &Grids, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     grid::sync(&grids.tax_events, &model.event_rows, cx);
     let theme = cx.theme();
     let events = &model.assessment.events;
     GroupBox::new()
         .id("tax-events")
-        .title(format!("Tax events through {} — cash dates, not just amounts (§12.3, §12.6)", model.assessment.through.format("%d %b %Y")))
+        .title(format!("Tax events through {}", model.assessment.through.format("%d %b %Y")))
         .child(
             v_flex()
                 .gap_4()
@@ -271,12 +275,14 @@ fn render_events(model: &TaxModel, grids: &Grids, cx: &mut Context<AtlasApp>) ->
                         .flex_wrap()
                         .gap_6()
                         .items_end()
-                        .child(
-                            Checkbox::new("tax-buy-car")
-                                .label("With scenario “Buy car”")
-                                .checked(model.scenario_on)
-                                .on_change(cx.listener(|this, checked, _, cx| this.set_tax_scenario(*checked, cx))),
-                        )
+                        .when_some(model.overlay_scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone()), |this, name| {
+                            this.child(
+                                Checkbox::new("tax-buy-car")
+                                    .label(format!("With scenario “{name}”"))
+                                    .checked(model.scenario_on)
+                                    .on_change(cx.listener(|this, checked, _, cx| this.set_tax_scenario(*checked, cx))),
+                            )
+                        })
                         .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
                             "{} events · creditable withholding {} · packs used: {}",
                             events.len(),
@@ -292,7 +298,7 @@ fn render_events(model: &TaxModel, grids: &Grids, cx: &mut Context<AtlasApp>) ->
                         .child(card(model.reserve.figure(true))),
                 )
                 .child(div().text_xs().text_color(theme.muted_foreground).child(
-                    "Attribution stays with the entity that owes the tax (§12.6). An assessment balance payable after the horizon is a tax reserve (§12.4), not a posting in this window; a negative balance is a receivable, not cash (V018).",
+                    "Each tax stays with the person or company that owes it. What falls due after the horizon is a reserve, not a posting in this window; a negative balance is a refund to come, not cash.",
                 ))
                 .child(if events.is_empty() {
                     div().text_sm().text_color(theme.muted_foreground).child("No rule applies to any occurrence in the window.").into_any_element()
@@ -305,11 +311,11 @@ fn render_events(model: &TaxModel, grids: &Grids, cx: &mut Context<AtlasApp>) ->
 fn render_e05(model: &TaxModel, controls: &TaxControls, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
     let years = model.e05_strategies.first().map(|s| s.taxable_by_year.len()).unwrap_or(2);
-    GroupBox::new().id("tax-e05").title("Incremental tax: with versus without a proposed extraction (§12.5, E05)").child(
+    GroupBox::new().id("tax-e05").title("Extra tax from taking money out: all at once versus split over two years").child(
         v_flex()
             .gap_4()
             .child(div().text_xs().text_color(theme.muted_foreground).child(
-                "Baseline taxable income 60,000 in each of two years (E05). Enter a lawful discretionary extraction and compare taking it all in year 1 with splitting it — undiscounted, the same brackets each year, no other interactions. A split is invalid when the money is needed in year 1 or the action is not deferrable.",
+                "Starts from a taxable income of 60,000 in each of two years. Enter an amount you could take out and compare taking it all in year 1 with splitting it evenly — same brackets each year, nothing else changing. A split only works when the money is not needed in year 1.",
             ))
             .child(
                 h_flex()
@@ -328,7 +334,7 @@ fn render_e05(model: &TaxModel, controls: &TaxControls, cx: &mut Context<AtlasAp
                     .child(
                         v_flex().gap_1().child(div().text_xs().text_color(theme.muted_foreground).child("Bracket schedule")).child(
                             RadioGroup::horizontal("e05-schedule")
-                                .children(["E05 example: 10% ≤ 100,000, 30% above", "Household pack (current year)"])
+                                .children(["Example: 10% up to 100,000, 30% above", "This household's pack (current year)"])
                                 .selected_index(Some(match model.e05_schedule { E05Schedule::PlanExample => 0, E05Schedule::HouseholdPack => 1 }))
                                 .on_change(cx.listener(|this, index: &usize, _, cx| this.set_e05_schedule(if *index == 1 { E05Schedule::HouseholdPack } else { E05Schedule::PlanExample }, cx))),
                         ),
@@ -375,7 +381,7 @@ fn render_e05(model: &TaxModel, controls: &TaxControls, cx: &mut Context<AtlasAp
                     )
                     .child(h_flex().flex_wrap().gap_8().children(model.e05_incrementals.iter().map(|f| card(f.figure(false)))))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
-                        "Why both eligibility and dated liquidity must constrain tax minimisation: the cheaper split is only available when the second year's rules and the household's cash allow it (E05, §13.6).",
+                        "The cheaper split is only available when next year's rules and the household's cash allow it — timing and eligibility matter as much as the rate.",
                     ))
                     .into_any_element()
             }),

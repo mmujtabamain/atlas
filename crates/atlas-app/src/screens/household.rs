@@ -1,6 +1,6 @@
-//! The Household overview (§5–§7, §2.1): money definitions with their chains,
-//! the conditional projection and its assumptions, and the people, companies
-//! and accounts of the boundary — each as the viewer is authorized to see it.
+//! The Household overview: money definitions with their chains, the
+//! conditional projection and its assumptions, and the people, companies and
+//! accounts of the household — each as the viewer is authorized to see it.
 
 use atlas_core::authz::Viewer;
 use atlas_core::forecast::{Case, ForecastOptions, forecast};
@@ -41,7 +41,7 @@ pub struct HouseholdOverview {
     pub people: Vec<PersonRow>,
     pub companies: Vec<CompanyRow>,
     pub accounts: Vec<AccountRow>,
-    /// Accounts whose existence is not disclosed to the viewer (V062).
+    /// Accounts whose existence is not disclosed to the viewer.
     pub hidden_accounts: usize,
 }
 
@@ -54,7 +54,7 @@ pub struct PersonRow {
     pub companies: SharedString,
 }
 
-/// One row of the Companies table; `cash` is `None` when not disclosed (§8.7).
+/// One row of the Companies table; `cash` is `None` when not disclosed.
 #[derive(Clone, Debug)]
 pub struct CompanyRow {
     pub name: SharedString,
@@ -150,7 +150,7 @@ fn account_rows(household: &Household, viewer: Viewer) -> (Vec<AccountRow>, usiz
                 reserved: derived.as_ref().map(|l| l.reserved.money()),
                 free: derived.as_ref().map(|l| l.free.money()),
                 disclosure,
-                access: household.policy_for(ObjectRef::Account(account.id)).map(|p| p.calculation_access.label()).unwrap_or("no policy — excluded (F162)").into(),
+                access: household.policy_for(ObjectRef::Account(account.id)).map(|p| p.calculation_access.label()).unwrap_or("no policy — excluded").into(),
             })
         })
         .collect();
@@ -180,7 +180,7 @@ impl HouseholdOverview {
             )
             .money_class(MoneyClass::ConditionalFuture)
             .strength(ResultStrength::ScenarioTested)
-            .note("An earmark reduces unreserved cash, not the bank balance; paying the obligation later reduces cash and releases the earmark (§2.1)."),
+            .note("An earmark reduces unreserved cash, not the bank balance; paying the obligation later reduces cash and releases the earmark."),
         );
         let viewer_name = household.entity_name(atlas_core::ids::EntityRef::Person(viewer.person));
         let figure = |id, label, calc: &Calc<Money>| ExplainedFigure::new(id, label, calc, household, viewer);
@@ -238,11 +238,11 @@ pub fn render(overview: &HouseholdOverview, household: &Household, cx: &App) -> 
                 ))),
         )
         .child(
-            GroupBox::new().id("money-definitions").title("Money definitions (§6)").child(
+            GroupBox::new().id("money-definitions").title("Money today").child(
                 v_flex()
                     .gap_4()
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
-                        "One bank balance is never one number: settled cash, earmarked cash and free cash are kept apart, and every figure opens its chain.",
+                        "Settled cash, earmarked cash and free cash are kept apart. Open “Why?” on any figure to see how it was calculated.",
                     ))
                     .child(h_flex().flex_wrap().gap_8().children(overview.money.iter().map(|f| card(f.figure(f.id.as_ref() == "free-cash"))))),
             ),
@@ -250,7 +250,7 @@ pub fn render(overview: &HouseholdOverview, household: &Household, cx: &App) -> 
         .child(
             GroupBox::new()
                 .id("conditional-projection")
-                .title(format!("Conditional projection through {} (§2.1)", overview.horizon.format("%d %b %Y")))
+                .title(format!("Projection through {}", overview.horizon.format("%d %b %Y")))
                 .child(
                     h_flex()
                         .w_full()
@@ -264,7 +264,7 @@ pub fn render(overview: &HouseholdOverview, household: &Household, cx: &App) -> 
                                 .child(overview.conditional.figure(true))
                                 .child(overview.unreserved.figure(false))
                                 .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                                    "{} postings entered the chain (expected case, baseline, taxes included once). Only the first term is money already received; the rest is conditional on the assumptions below (§2.4).",
+                                    "{} planned postings, expected case, baseline, taxes included once. Only the starting cash is money already received; everything after it depends on the assumptions below.",
                                     overview.occurrence_count
                                 ))),
                         )
@@ -273,7 +273,7 @@ pub fn render(overview: &HouseholdOverview, household: &Household, cx: &App) -> 
                                 .flex_1()
                                 .min_w_0()
                                 .gap_2()
-                                .child(div().text_xs().text_color(theme.muted_foreground).child("Chain as the plan lays it out — nested terms open with “Why?”"))
+                                .child(div().text_xs().text_color(theme.muted_foreground).child("How the projection is built up — nested terms open with “Why?”"))
                                 .child(explain::render_top_block(overview.unreserved.calc.node(), cx)),
                         ),
                 ),
@@ -281,7 +281,7 @@ pub fn render(overview: &HouseholdOverview, household: &Household, cx: &App) -> 
         .child(
             GroupBox::new()
                 .id("assumptions")
-                .title("Assumptions this projection depends on (§10.2)")
+                .title("Assumptions this projection depends on")
                 // Plain full-width rows: a sentence in a flex_1/min_w_0 cell of a
                 // wrap row costs taffy ~1,500 measure callbacks per assumption per
                 // frame; a column with the tag on its own line costs ~100.
@@ -309,7 +309,7 @@ pub fn render(overview: &HouseholdOverview, household: &Household, cx: &App) -> 
 
 fn render_people(overview: &HouseholdOverview, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("people").title("People (§5.2)").child(
+    GroupBox::new().id("people").title("People").child(
         Table::new()
             .child(
                 TableHeader::new().child(
@@ -333,11 +333,11 @@ fn render_people(overview: &HouseholdOverview, cx: &App) -> impl IntoElement {
 
 fn render_companies(overview: &HouseholdOverview, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("companies").title("Companies (§5.3, §8)").child(
+    GroupBox::new().id("companies").title("Companies").child(
         v_flex()
             .gap_3()
             .child(div().text_xs().text_color(theme.muted_foreground).child(
-                "A company is legally distinct from its owners. Its cash is shown here as business cash and never enters household free cash (§8.5).",
+                "A company is legally distinct from its owners. Its cash is business cash and never counts as household free cash.",
             ))
             .child(
                 Table::new()
@@ -347,14 +347,14 @@ fn render_companies(overview: &HouseholdOverview, cx: &App) -> impl IntoElement 
                                 .child(TableHead::new().w_48().flex_shrink_0().child("Company"))
                                 .child(TableHead::new().w_40().flex_shrink_0().child("Owners"))
                                 .child(TableHead::new().w_24().flex_shrink_0().text_right().child("Employees"))
-                                .child(TableHead::new().min_w_0().child("Constraints (§8.6)"))
+                                .child(TableHead::new().min_w_0().child("Constraints"))
                                 .child(TableHead::new().w_40().flex_shrink_0().text_right().child("Business cash")),
                         ),
                     )
                     .child(TableBody::new().children(overview.companies.iter().enumerate().map(|(index, company)| {
                         let cash_cell = match company.cash {
                             Some(cash) => money_cell(cash, cx).w_40().flex_shrink_0().text_color(theme.muted_foreground),
-                            None => muted_cell("not disclosed (§8.7)", cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis().text_right(),
+                            None => muted_cell("not disclosed", cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis().text_right(),
                         };
                         TableRow::new()
                             .when(index % 2 == 1, |row| row.bg(theme.table_even))
@@ -372,15 +372,19 @@ fn render_accounts(overview: &HouseholdOverview, household: &Household, cx: &App
     let theme = cx.theme();
     let visible = overview.accounts.len();
     let hidden_count = overview.hidden_accounts;
-    GroupBox::new().id("accounts").title("Accounts (§7)").child(
+    GroupBox::new().id("accounts").title("Accounts").child(
         v_flex()
             .gap_3()
-            .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                "{} of {} accounts are visible to {} under the current access policies; the others may still contribute to household figures as authorized aggregates (§7.2).",
-                visible,
-                household.accounts.len(),
-                overview.viewer_name
-            )))
+            .child(div().text_xs().text_color(theme.muted_foreground).child(if hidden_count == 0 {
+                format!("All {} accounts are visible to {}.", visible, overview.viewer_name)
+            } else {
+                format!(
+                    "{} of {} accounts are visible to {} under the current access policies; the others can still contribute to household figures as authorized totals.",
+                    visible,
+                    household.accounts.len(),
+                    overview.viewer_name
+                )
+            }))
             .child(
                 Table::new()
                     .child(
@@ -423,7 +427,7 @@ fn render_accounts(overview: &HouseholdOverview, household: &Household, cx: &App
             )
             .when(hidden_count > 0, |this| {
                 this.child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                    "{hidden_count} account(s) not listed: their existence is not disclosed to this viewer (V062)."
+                    "{hidden_count} account(s) not listed: their existence is not disclosed to this viewer."
                 )))
             }),
     )

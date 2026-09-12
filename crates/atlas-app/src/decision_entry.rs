@@ -1,7 +1,7 @@
 //! The decision builder's form state (M9): one retained input per field of
 //! the concrete plan, read back step by step into a [`PurchasePlan`]. The
 //! builder runs as a stepper on the Decisions screen; every "Next" validates
-//! the current step through the plan's own rules before moving on.
+//! the current step through the engine's own rules before moving on.
 
 use atlas_core::decision::{CompanyRoute, ExtractionMethod, Financing, FundingSource, Objective, OtherCost, PurchasePlan, RunningCost};
 use atlas_core::ids::*;
@@ -143,9 +143,9 @@ impl DecisionForm {
             window_to: date(plan.window_to, window, cx),
             reserve: text(plan.reserve.format(), "household reserve to keep", window, cx),
             down_payment: text(plan.down_payment.format(), "down payment", window, cx),
-            down_low: text(plan.down_payment_low.format(), "grid: lowest", window, cx),
-            down_high: text(plan.down_payment_high.format(), "grid: highest", window, cx),
-            down_step: text(plan.down_payment_step.format(), "grid: step", window, cx),
+            down_low: text(plan.down_payment_low.format(), "lowest down payment to compare", window, cx),
+            down_high: text(plan.down_payment_high.format(), "highest down payment to compare", window, cx),
+            down_step: text(plan.down_payment_step.format(), "step between them", window, cx),
             source_floors,
             routes,
             max_tax: text(plan.max_tax_and_fees.map(|m| m.format()).unwrap_or_default(), "maximum tax + fees (optional)", window, cx),
@@ -205,14 +205,14 @@ impl AtlasApp {
                 if plan.down_payment.minor() > plan.price.minor() {
                     return Err("The down payment exceeds the price.".into());
                 }
-                plan.down_payment_low = read_money(&f.down_low, currency, cx, "Grid lowest")?.unwrap_or(plan.down_payment);
-                plan.down_payment_high = read_money(&f.down_high, currency, cx, "Grid highest")?.unwrap_or(plan.down_payment);
-                plan.down_payment_step = read_money(&f.down_step, currency, cx, "Grid step")?.unwrap_or(Money::zero(currency));
+                plan.down_payment_low = read_money(&f.down_low, currency, cx, "Lowest down payment")?.unwrap_or(plan.down_payment);
+                plan.down_payment_high = read_money(&f.down_high, currency, cx, "Highest down payment")?.unwrap_or(plan.down_payment);
+                plan.down_payment_step = read_money(&f.down_step, currency, cx, "Step between down payments")?.unwrap_or(Money::zero(currency));
                 if plan.down_payment_high.minor() < plan.down_payment_low.minor() {
-                    return Err("The grid's highest down payment is below its lowest.".into());
+                    return Err("The highest down payment to compare is below the lowest.".into());
                 }
                 if plan.down_payment_step.is_positive() && (plan.down_payment_high.minor() - plan.down_payment_low.minor()) / plan.down_payment_step.minor() > 30 {
-                    return Err("The grid would have more than 30 down-payment steps; use a larger step.".into());
+                    return Err("That would compare more than 30 down payments; use a larger step.".into());
                 }
                 let mut sources = Vec::new();
                 for (index, (account, floor)) in f.source_floors.iter().enumerate() {
@@ -309,7 +309,7 @@ impl AtlasApp {
     /// Runs the engine on the current plan.
     pub fn evaluate_decision(&mut self) {
         log::info!("evaluating decision “{}”: price {} on {}, down payment {}", self.decision_plan.name, self.decision_plan.price.format(), self.decision_plan.purchase_on, self.decision_plan.down_payment.format());
-        let result = crate::perf::timed(&format!("evaluate decision “{}” (§19.2 grid)", self.decision_plan.name), || {
+        let result = crate::perf::timed(&format!("evaluate decision “{}” (grid)", self.decision_plan.name), || {
             atlas_core::decision::evaluate(&self.household, &self.decision_plan, self.horizon)
         });
         if let Err(err) = &result {

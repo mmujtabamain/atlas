@@ -1,8 +1,7 @@
-//! Projections (§11, §2.1, §2.4, §10.6): the chronological forecast of a
-//! boundary under a named case — path chart against the hard floor, the
-//! §2.1 chain, lowest balance and breaches, per-account paths and transfer
-//! points, the assumptions the path depends on, and the §11.4 record that
-//! makes the run reproducible.
+//! Projections: the chronological forecast of a boundary under a named case
+//! — path chart against the hard floor, the calculation chain, lowest balance
+//! and breaches, per-account paths and transfer points, the assumptions the
+//! path depends on, and the record that makes the run reproducible.
 
 use atlas_core::authz::Viewer;
 use atlas_core::forecast::{BoundaryForecast, Case, ForecastOptions, forecast};
@@ -48,6 +47,8 @@ pub struct ProjectionModel {
     pub lowest: ExplainedFigure,
     pub injection: ExplainedFigure,
     pub chart: Vec<ChartPoint>,
+    /// The scenario the overlay toggle applies (see [`super::overlay_scenario`]).
+    pub overlay_scenario: Option<ScenarioId>,
 }
 
 impl ProjectionModel {
@@ -76,9 +77,10 @@ impl ProjectionModel {
             start: ExplainedFigure::new(format!("{slug}-proj-start"), "Reconciled starting cash", &result.start, household, viewer),
             end: ExplainedFigure::new(format!("{slug}-proj-end"), "Conditional projected cash at horizon", &result.end, household, viewer),
             lowest: ExplainedFigure::new(format!("{slug}-proj-lowest"), "Lowest projected cash", &result.lowest, household, viewer),
-            injection: ExplainedFigure::new(format!("{slug}-proj-injection"), "Minimum immediate injection K*", &result.breach.minimum_injection, household, viewer),
+            injection: ExplainedFigure::new(format!("{slug}-proj-injection"), "Cash needed today to never breach", &result.breach.minimum_injection, household, viewer),
             chart,
             boundaries,
+            overlay_scenario: super::overlay_scenario(household, viewer),
             forecast: result,
         })
     }
@@ -91,6 +93,7 @@ pub fn render(model: &ProjectionModel, household: &Household, cx: &mut Context<A
     let boundaries = model.boundaries.clone();
     let case_index = Case::ALL.iter().position(|c| *c == f.case).unwrap_or(1);
     let scenario_name = f.scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone());
+    let overlay_name = model.overlay_scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone());
 
     v_flex()
         .id("screen-projections")
@@ -100,7 +103,7 @@ pub fn render(model: &ProjectionModel, household: &Household, cx: &mut Context<A
         .child(page_header(
             "Projections",
             format!(
-                "Chronological forecast from {} through {} (§11.1): reconciled cash plus every signed posting in date and intraday order. Future money is conditional, never available (§2.4).",
+                "Cash from {} through {}: the reconciled balance plus every planned posting in date order. Future money is conditional on the assumptions, never money in hand.",
                 f.as_of.format("%d %b %Y"),
                 f.through.format("%d %b %Y")
             ),
@@ -112,7 +115,7 @@ pub fn render(model: &ProjectionModel, household: &Household, cx: &mut Context<A
                 .gap_6()
                 .items_end()
                 .child(
-                    v_flex().gap_1().child(div().text_xs().text_color(theme.muted_foreground).child("Boundary (§11.2)")).child(
+                    v_flex().gap_1().child(div().text_xs().text_color(theme.muted_foreground).child("Whose money")).child(
                         TabBar::new("projection-boundaries")
                             .selected_index(boundary_index)
                             .on_click(cx.listener(move |this, index: &usize, _, cx| {
@@ -124,7 +127,7 @@ pub fn render(model: &ProjectionModel, household: &Household, cx: &mut Context<A
                     ),
                 )
                 .child(
-                    v_flex().gap_1().child(div().text_xs().text_color(theme.muted_foreground).child("Named case (§10.6)")).child(
+                    v_flex().gap_1().child(div().text_xs().text_color(theme.muted_foreground).child("Case")).child(
                         TabBar::new("projection-cases")
                             .selected_index(case_index)
                             .on_click(cx.listener(|this, index: &usize, _, cx| {
@@ -135,12 +138,14 @@ pub fn render(model: &ProjectionModel, household: &Household, cx: &mut Context<A
                             .children(Case::ALL.iter().map(|c| Tab::new().label(c.label()))),
                     ),
                 )
-                .child(
-                    Checkbox::new("projection-buy-car")
-                        .label("Overlay scenario “Buy car” (§18)")
-                        .checked(f.scenario.is_some())
-                        .on_change(cx.listener(|this, checked, _, cx| this.set_projection_scenario(*checked, cx))),
-                ),
+                .when_some(overlay_name, |this, name| {
+                    this.child(
+                        Checkbox::new("projection-buy-car")
+                            .label(format!("Overlay scenario “{name}”"))
+                            .checked(f.scenario.is_some())
+                            .on_change(cx.listener(|this, checked, _, cx| this.set_projection_scenario(*checked, cx))),
+                    )
+                }),
         )
         .child(
             GroupBox::new()
@@ -177,19 +182,19 @@ pub fn render(model: &ProjectionModel, household: &Household, cx: &mut Context<A
                                 .flex_wrap()
                                 .child(labels::strength_tag(atlas_core::ResultStrength::ScenarioTested))
                                 .child(div().text_xs().text_color(theme.muted_foreground).child(
-                                    "Three named cases are three explicit paths, not an uncertainty envelope and not a confidence level (§10.6, V032). Robust and probabilistic labels require their own methods (M08–M12).",
+                                    "Expected, conservative and optimistic are three explicit paths — not a range of outcomes and not a probability.",
                                 )),
                         ),
                 ),
         )
         .child(render_chart(model, household, cx))
         .child(
-            GroupBox::new().id("projection-runway").title(format!("Runway against the {} hard floor (M13)", f.floor.format())).child(
+            GroupBox::new().id("projection-runway").title(format!("Runway against the {} hard floor", f.floor.format())).child(
                 v_flex()
                     .gap_2()
                     .child(div().id("projection-runway-summary").test_support().text_sm().child(f.breach.summary()))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                        "Days below the floor {} · integrated shortfall {} currency-days (severity over time, not cash — E08).",
+                        "Days below the floor {} · shortfall over time {} currency-days (how long and how deep, not an amount of cash).",
                         f.breach.days_below, f.breach.integrated_shortfall_currency_days
                     ))),
             ),
@@ -197,7 +202,7 @@ pub fn render(model: &ProjectionModel, household: &Household, cx: &mut Context<A
         .child(render_accounts(model, household, cx))
         .child(render_transfer_points(model, household, cx))
         .child(
-            GroupBox::new().id("projection-chain").title("Chain as the plan lays it out (§2.1)").child(explain::render_top_block(model.end.calc.node(), cx)),
+            GroupBox::new().id("projection-chain").title("How the end figure is built up").child(explain::render_top_block(model.end.calc.node(), cx)),
         )
         .child(render_assumptions(model, cx))
         .child(render_record(model, household, cx))
@@ -210,7 +215,7 @@ fn render_chart(model: &ProjectionModel, household: &Household, cx: &App) -> imp
     let background = theme.background;
     let points = model.chart.clone();
     let tick_margin = (points.len() / 8).max(1);
-    GroupBox::new().id("projection-chart").title("Path: boundary balance after every posting, against the hard floor").child(
+    GroupBox::new().id("projection-chart").title("Balance after every posting, against the hard floor").child(
         v_flex()
             .gap_3()
             .child(
@@ -238,14 +243,14 @@ fn render_chart(model: &ProjectionModel, household: &Household, cx: &App) -> imp
                 ),
             )
             .child(div().text_xs().text_color(theme.muted_foreground).child(
-                "Chart values are the exact minor-unit balances shown in major units; the chain and figures remain exact.",
+                "The chart rounds to whole currency units; the figures and their calculations stay exact.",
             )),
     )
 }
 
 fn render_accounts(model: &ProjectionModel, household: &Household, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("projection-accounts").title("Accounts of the boundary (§11.3: an aggregate can be fine while one account fails)").child(
+    GroupBox::new().id("projection-accounts").title("Account by account — the total can be fine while one account fails").child(
         Table::new()
             .child(
                 TableHeader::new().child(
@@ -285,7 +290,7 @@ fn render_accounts(model: &ProjectionModel, household: &Household, cx: &App) -> 
 fn render_transfer_points(model: &ProjectionModel, household: &Household, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let points = &model.forecast.transfer_points;
-    GroupBox::new().id("projection-transfers").title("Required transfer points (§11.3)").child(if points.is_empty() {
+    GroupBox::new().id("projection-transfers").title("Transfers needed between accounts").child(if points.is_empty() {
         div().text_sm().text_color(theme.muted_foreground).child("No account falls below its hard floor on this path; no internal transfer is required.").into_any_element()
     } else {
         v_flex()
@@ -307,7 +312,7 @@ fn render_transfer_points(model: &ProjectionModel, household: &Household, cx: &A
 
 fn render_assumptions(model: &ProjectionModel, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("projection-assumptions").title("This path depends on (§10.2)").child(
+    GroupBox::new().id("projection-assumptions").title("This path depends on").child(
         // Full-width rows, not wrap rows with a flex_1 sentence (see the
         // household screen): the difference is ~1,500 taffy measure callbacks
         // per assumption per frame.
@@ -335,7 +340,7 @@ fn render_record(model: &ProjectionModel, household: &Household, _cx: &App) -> i
         .collect();
     let series: Vec<String> = r.included_series.iter().filter_map(|id| household.series_by_id(*id)).map(|s| s.name.clone()).collect();
     let policies = format!("{} policies at versions {}", r.policy_versions.len(), r.policy_versions.iter().map(|(_, v)| format!("v{v}")).collect::<Vec<_>>().join(", "));
-    GroupBox::new().id("projection-record").title("Forecast record — enough to reproduce this run (§11.4, §24)").child(
+    GroupBox::new().id("projection-record").title("Forecast record — enough to reproduce this run").child(
         DescriptionList::new()
             .columns(1)
             .child(DescriptionItem::new("Algorithm").value(r.algorithm.to_string()))

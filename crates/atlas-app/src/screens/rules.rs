@@ -1,11 +1,11 @@
-//! Rules (§14, M54): the user's deterministic rules, the conflict-resolution
-//! inspector (every decision with its losing candidates and why), the fee
-//! events the rules add to the window, the funding order (§14.5), bank
-//! selection (§14.6) and a with-vs-without simulation (§14.8).
+//! Rules: the user's deterministic rules, the conflict-resolution inspector
+//! (every decision with its losing candidates and why), the fee events the
+//! rules add to the window, the funding order, bank selection and a
+//! with-vs-without simulation.
 
 use atlas_core::authz::Viewer;
 use atlas_core::forecast::{Case, ForecastOptions};
-use atlas_core::ids::{AccountId, RuleId};
+use atlas_core::ids::{AccountId, RuleId, ScenarioId};
 use atlas_core::liquidity::Boundary;
 use atlas_core::model::Household;
 use atlas_core::rules::{FeePosting, FundingStep, Rule, RuleAction, RuleDecision, RuleEvaluation, RuleSimulation, TieBreak, Trigger, account_for_expense, evaluate, funding_order, simulate};
@@ -50,6 +50,8 @@ pub struct RulesModel {
     pub simulation: Option<RuleSimulation>,
     /// The fee postings as grid rows, formatted once (see `widgets::grid`).
     pub fee_rows: grid::Rows,
+    /// The scenario the toggle applies (see [`super::overlay_scenario`]).
+    pub overlay_scenario: Option<ScenarioId>,
 }
 
 /// Columns of the fee-postings grid, in display order.
@@ -73,8 +75,9 @@ fn fee_row(fee: &FeePosting, household: &Household) -> Row {
 }
 
 impl RulesModel {
-    pub fn compute(household: &Household, _viewer: Viewer, through: NaiveDate, scenario_on: bool, simulated: Option<RuleId>) -> EngineResult<Self> {
-        let scenario = if scenario_on { Some(atlas_core::fixtures::ids::BUY_CAR) } else { None };
+    pub fn compute(household: &Household, viewer: Viewer, through: NaiveDate, scenario_on: bool, simulated: Option<RuleId>) -> EngineResult<Self> {
+        let overlay_scenario = super::overlay_scenario(household, viewer);
+        let scenario = if scenario_on { overlay_scenario } else { None };
         log::info!("evaluating {} rules through {through} scenario={scenario_on} tie_break={}", household.rules.len(), household.rule_tie_break.slug());
         let evaluation = evaluate(household, through, scenario, Case::Expected, household.rule_tie_break)?;
         let conflicts: Vec<RuleDecision> = evaluation.decisions.iter().filter(|d| d.candidates.len() > 1).cloned().collect();
@@ -104,9 +107,10 @@ impl RulesModel {
         if !conflicts.is_empty() {
             log::info!("{} rule decisions, {} with competing candidates", evaluation.decisions.len(), conflicts.len());
         }
-                let fee_rows = Arc::new(evaluation.fees.iter().map(|fee| fee_row(fee, household)).collect());
-Ok(RulesModel {
+        let fee_rows = Arc::new(evaluation.fees.iter().map(|fee| fee_row(fee, household)).collect());
+        Ok(RulesModel {
             fee_rows,
+            overlay_scenario,
             through,
             scenario_on,
             tie_break: household.rule_tie_break,
@@ -131,14 +135,14 @@ pub fn render(model: &RulesModel, grids: &Grids, household: &Household, cx: &mut
         .gap_6()
         .child(page_header(
             "Rules",
-            "User-defined rules are deterministic: a scope, a trigger, typed conditions, one action, a priority and an effective range (§14.1). Every decision they take is inspectable — the winner, every loser and the reason (§14.7).",
+            "Your rules are deterministic: a scope, a trigger, conditions, one action, a priority and an effective range. Every decision they take can be inspected — the winner, every loser and the reason.",
             cx,
         ))
         .child(
-            Alert::info("rules-caveat", "Rules never learn or infer (§14.3). A rule that is not in force on an occurrence's date does nothing; an unknown situation is left alone rather than guessed. Conflicts are resolved by explicit priority, then scope specificity, then the tie-break policy chosen below.")
+            Alert::info("rules-caveat", "Rules never learn or guess. A rule that is not in force on a date does nothing, and an unknown situation is left alone. When two rules compete, priority wins, then the more specific scope, then the tie-break chosen below.")
                 .title("Deterministic, not heuristic"),
         )
-        .child(render_controls(model, cx))
+        .child(render_controls(model, household, cx))
         .child(render_register(model, household, cx))
         .child(render_conflicts(model, household, cx))
         .child(render_fees(model, grids, cx))
@@ -146,20 +150,22 @@ pub fn render(model: &RulesModel, grids: &Grids, household: &Household, cx: &mut
         .child(render_simulation(model, household, cx))
 }
 
-fn render_controls(model: &RulesModel, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+fn render_controls(model: &RulesModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
     h_flex()
         .flex_wrap()
         .gap_6()
         .items_end()
+        .when_some(model.overlay_scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone()), |this, name| {
+            this.child(
+                Checkbox::new("rules-buy-car")
+                    .label(format!("Evaluate inside scenario “{name}” (its rules apply too)"))
+                    .checked(model.scenario_on)
+                    .on_change(cx.listener(|this, checked, _, cx| this.set_rules_scenario(*checked, cx))),
+            )
+        })
         .child(
-            Checkbox::new("rules-buy-car")
-                .label("Evaluate inside scenario “Buy car” (scenario-scoped rules apply)")
-                .checked(model.scenario_on)
-                .on_change(cx.listener(|this, checked, _, cx| this.set_rules_scenario(*checked, cx))),
-        )
-        .child(
-            v_flex().gap_1().child(div().text_xs().text_color(theme.muted_foreground).child("Tie-break policy (§14.7, persisted with the household)")).child(
+            v_flex().gap_1().child(div().text_xs().text_color(theme.muted_foreground).child("Tie-break when priority and scope are equal")).child(
                 RadioGroup::horizontal("rules-tie-break")
                     .children(TieBreak::ALL.iter().map(|t| t.label()))
                     .selected_index(Some(TieBreak::ALL.iter().position(|t| *t == model.tie_break).unwrap_or(0)))
@@ -179,7 +185,7 @@ fn render_controls(model: &RulesModel, cx: &mut Context<AtlasApp>) -> impl IntoE
 
 fn render_register(model: &RulesModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("rules-register").title("Rule register (§14.1) — every rule with its version history").child(
+    GroupBox::new().id("rules-register").title("Rules — each with its version history").child(
         v_flex()
             .gap_4()
             .child(
@@ -313,7 +319,7 @@ fn render_rule_row(index: usize, rule: &Rule, model: &RulesModel, household: &Ho
 fn render_conflicts(model: &RulesModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
     let decisions = &model.evaluation.decisions;
-    GroupBox::new().id("rules-conflicts").title("Conflict-resolution inspector (§14.7) — who won, who lost, and why").child(
+    GroupBox::new().id("rules-conflicts").title("Decisions the rules took — who won, who lost, and why").child(
         v_flex()
             .gap_4()
             .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
@@ -354,11 +360,11 @@ fn render_fees(model: &RulesModel, grids: &Grids, cx: &mut Context<AtlasApp>) ->
     grid::sync(&grids.rule_fees, &model.fee_rows, cx);
     let theme = cx.theme();
     let fees: &[FeePosting] = &model.evaluation.fees;
-    GroupBox::new().id("rules-fees").title(format!("Fee events the rules add to the window (§14.4) — {} postings, {}", fees.len(), model.fee_total.format())).child(
+    GroupBox::new().id("rules-fees").title(format!("Fees the rules add to the window — {} postings, {}", fees.len(), model.fee_total.format())).child(
         v_flex()
             .gap_4()
             .child(div().text_xs().text_color(theme.muted_foreground).child(
-                "A fee is its own event on the same date, right after the posting it belongs to, so the intraday path shows the fee leaving after the payment (V010). Fees enter the projection once and appear in its §2.1 chain as “Fees from user rules”.",
+                "A fee is its own event on the same date, right after the payment it belongs to. Fees enter the projection once and appear in its calculation as “Fees from user rules”.",
             ))
             .child(if fees.is_empty() {
                 div().text_sm().text_color(theme.muted_foreground).child("No fee rule fired in the window.").into_any_element()
@@ -371,14 +377,14 @@ fn render_fees(model: &RulesModel, grids: &Grids, cx: &mut Context<AtlasApp>) ->
 fn render_funding(model: &RulesModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
     let name = |id: AccountId| household.account(id).map(|a| a.name.clone()).unwrap_or_else(|| id.to_string());
-    GroupBox::new().id("rules-funding").title(format!("Funding order (§14.5) and bank selection (§14.6) on {}", model.funding_date.format("%d %b %Y"))).child(
+    GroupBox::new().id("rules-funding").title(format!("Funding order and bank selection on {}", model.funding_date.format("%d %b %Y"))).child(
         v_flex()
             .gap_4()
             .child(div().text_xs().text_color(theme.muted_foreground).child(
                 "Funding rules are read by the funding search in priority order: preferred accounts with their floors first, prohibitions as hard exclusions. The steps below are what the search would be allowed to use today; a prohibition with a date lifts itself once that date passes.",
             ))
             .child(if model.funding.is_empty() {
-                div().text_sm().text_color(theme.muted_foreground).child(if model.scenario_on { "No funding rule is in force today." } else { "No household-wide funding rule; the fixture's funding rules live inside scenario “Buy car” — tick the scenario above to see them." }).into_any_element()
+                div().text_sm().text_color(theme.muted_foreground).child(if model.scenario_on || model.overlay_scenario.is_none() { "No funding rule is in force today.".to_string() } else { format!("No household-wide funding rule is in force today; rules scoped to scenario “{}” apply only when the scenario is ticked above.", model.overlay_scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone()).unwrap_or_default()) }).into_any_element()
             } else {
                 v_flex()
                     .gap_1()
@@ -420,7 +426,7 @@ fn render_funding(model: &RulesModel, household: &Household, cx: &mut Context<At
 
 fn render_simulation(model: &RulesModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("rules-simulation").title("Simulation (§14.8): the household forecast with the rule versus without it").child(
+    GroupBox::new().id("rules-simulation").title("Simulation: the household forecast with the rule versus without it").child(
         v_flex()
             .gap_4()
             .child(div().text_xs().text_color(theme.muted_foreground).child(
@@ -487,7 +493,7 @@ fn render_simulation(model: &RulesModel, household: &Household, cx: &mut Context
                                                 .child(TableCell::new().w_48().flex_shrink_0().child("Floor breach"))
                                                 .child(muted_cell(sim.with_rule.breach.summary(), cx).w_64().flex_shrink_0().text_right().overflow_hidden().text_ellipsis())
                                                 .child(muted_cell(sim.without_rule.breach.summary(), cx).w_64().flex_shrink_0().text_right().overflow_hidden().text_ellipsis())
-                                                .child(muted_cell("Whether the household floor is crossed in the window (M13 first passage).", cx).min_w_0()),
+                                                .child(muted_cell("Whether the household floor is crossed in the window.", cx).min_w_0()),
                                         )
                                         .child(
                                             TableRow::new()

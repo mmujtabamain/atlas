@@ -1,12 +1,12 @@
-//! Assumptions (§2.5, §10, §32.2): the register with kinds, sources,
-//! acceptance and freshness; deterministic derivation from history with the
-//! formula and sample disclosed; the vocabulary legends every value is
-//! tagged with; and one-at-a-time sensitivity with the joint caveat.
+//! Assumptions: the register with kinds, sources, acceptance and freshness;
+//! deterministic derivation from history with the formula and sample
+//! disclosed; the vocabulary legends every value is tagged with; and
+//! one-at-a-time sensitivity with the joint caveat.
 
 use atlas_core::assumptions::{ConditionalStatement, DerivedAssumption, derive, Derivation};
 use atlas_core::authz::Viewer;
 use atlas_core::forecast::{Case, ForecastOptions};
-use atlas_core::ids::{EntityRef, ObjectRef, SeriesId};
+use atlas_core::ids::{EntityRef, ObjectRef, ScenarioId, SeriesId};
 use atlas_core::liquidity::Boundary;
 use atlas_core::model::{Freshness, Household};
 use atlas_core::sensitivity::{SensitivityReport, one_at_a_time};
@@ -44,6 +44,8 @@ pub struct AssumptionsModel {
     pub sensitivity_scenario: bool,
     pub sensitivity: SensitivityReport,
     pub statement: ConditionalStatement,
+    /// The scenario the sensitivity toggle applies (see [`super::overlay_scenario`]).
+    pub overlay_scenario: Option<ScenarioId>,
 }
 
 impl AssumptionsModel {
@@ -81,9 +83,10 @@ impl AssumptionsModel {
                 .map(|a| Boundary::Account(a.id)),
         );
         let sensitivity_boundary = if sensitivity_boundaries.contains(&sensitivity_boundary) { sensitivity_boundary } else { Boundary::Household };
+        let overlay_scenario = super::overlay_scenario(household, viewer);
         let options = ForecastOptions {
             through: horizon,
-            scenario: if sensitivity_scenario { Some(atlas_core::fixtures::ids::BUY_CAR) } else { None },
+            scenario: if sensitivity_scenario { overlay_scenario } else { None },
             case: Case::Expected,
         };
         let sensitivity = one_at_a_time(household, sensitivity_boundary, options)?;
@@ -109,7 +112,7 @@ impl AssumptionsModel {
             assumptions: ConditionalStatement::assumption_texts(&forecast.assumptions.iter().filter(|a| a.private_to.is_none_or(|p| p == viewer.person)).cloned().collect::<Vec<_>>()),
             excluded_shocks: vec![
                 "unplanned expenses beyond the one-off limit below".into(),
-                "several assumptions failing together (one-at-a-time breakpoints only, §10.8)".into(),
+                "several assumptions failing together (each limit below is found on its own)".into(),
                 "changes to the effective tax packs or user rules".into(),
             ],
         };
@@ -125,6 +128,7 @@ impl AssumptionsModel {
             sensitivity_scenario,
             sensitivity,
             statement,
+            overlay_scenario,
         })
     }
 }
@@ -152,7 +156,7 @@ pub fn render(model: &AssumptionsModel, household: &Household, viewer: Viewer, c
             h_flex().justify_between().items_start().gap_4().child(page_header(
                 "Assumptions",
                 format!(
-                    "{} assumptions visible to {} · the application never invents one: each is entered, derived by a disclosed formula, imported from a rule pack or created by a scenario (§2.5)",
+                    "{} assumptions visible to {} · none is invented: each was entered, derived from history by a shown formula, imported from a rule pack or created by a scenario",
                     visible.len(),
                     viewer_name
                 ),
@@ -171,11 +175,11 @@ pub fn render(model: &AssumptionsModel, household: &Household, viewer: Viewer, c
         .child(render_derivation(model, household, cx))
         .child(render_sensitivity(model, household, cx))
         .child(
-            GroupBox::new().id("conditional-statement").title("How this conclusion is phrased (§10.1, V031)").child(
+            GroupBox::new().id("conditional-statement").title("The conclusion, stated with its conditions").child(
                 v_flex()
                     .gap_2()
                     .child(div().id("conditional-statement-text").test_support().text_sm().font_family(mono).whitespace_normal().child(model.statement.render()))
-                    .child(div().text_xs().text_color(muted).child("Never “you can afford it”; always the claim, the horizon, the coverage label, the assumptions and what was left out.")),
+                    .child(div().text_xs().text_color(muted).child("Never a bare “you can afford it”: always the claim, the horizon, what was checked, the assumptions and what was left out.")),
             ),
         )
         .child(render_legends(cx))
@@ -184,7 +188,7 @@ pub fn render(model: &AssumptionsModel, household: &Household, viewer: Viewer, c
 fn render_register(model: &AssumptionsModel, household: &Household, visible: &[&atlas_core::model::Assumption], cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
     let _ = model;
-    GroupBox::new().id("assumption-register").title("Register (§5.9, §10.3, F117)").child(
+    GroupBox::new().id("assumption-register").title("Register").child(
         v_flex()
             .gap_1()
             .child(
@@ -195,8 +199,8 @@ fn render_register(model: &AssumptionsModel, household: &Household, visible: &[&
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .child(div().w_6().flex_shrink_0().child("#"))
-                    .child(div().flex_1().min_w_0().child("Assumption · source (§2.5) · applies to"))
-                    .child(div().w_40().flex_shrink_0().child("Kind (§10.3)"))
+                    .child(div().flex_1().min_w_0().child("Assumption · source · applies to"))
+                    .child(div().w_40().flex_shrink_0().child("Kind"))
                     .child(div().w_48().flex_shrink_0().child("Accepted · expires"))
                     .child(div().w_32().flex_shrink_0().child("Freshness"))
                     .child(div().w_20().flex_shrink_0()),
@@ -244,7 +248,7 @@ fn render_register(model: &AssumptionsModel, household: &Household, visible: &[&
                             .xsmall()
                             .outline()
                             .label("Accept")
-                            .tooltip("Record your acceptance today (§2.5)")
+                            .tooltip("Record that you accept this assumption as of today")
                             .on_click(cx.listener(move |this, _, window, cx| this.accept_assumption(id, window, cx)))
                             .into_any_element()
                     }))
@@ -257,7 +261,7 @@ fn render_derivation(model: &AssumptionsModel, household: &Household, cx: &mut C
     let series_index = model.derivable.iter().position(|s| *s == model.derivation_series).unwrap_or(0);
     let derivation_index = Derivation::ALL.iter().position(|d| *d == model.derivation).unwrap_or(0);
     let derivable = model.derivable.clone();
-    GroupBox::new().id("derivation").title("Derive an assumption from reconciled history (§2.5, §10.7)").child(
+    GroupBox::new().id("derivation").title("Derive an assumption from past payments").child(
         v_flex()
             .gap_4()
             .child(
@@ -322,7 +326,7 @@ fn render_derivation(model: &AssumptionsModel, household: &Household, cx: &mut C
                                 Some(id) => Button::new("apply-derivation")
                                     .small()
                                     .outline()
-                                    .label(format!("Apply to assumption #{} (then accept it)", id.raw()))
+                                    .label(format!("Apply to assumption #{} — then accept it", id.raw()))
                                     .on_click(cx.listener(move |this, _, window, cx| this.apply_derivation(id, window, cx)))
                                     .into_any_element(),
                                 None => div().text_xs().text_color(theme.muted_foreground).child("No assumption applies to this series yet.").into_any_element(),
@@ -341,7 +345,7 @@ fn render_sensitivity(model: &AssumptionsModel, household: &Household, cx: &mut 
     let report = &model.sensitivity;
     let boundary_index = model.sensitivity_boundaries.iter().position(|b| *b == model.sensitivity_boundary).unwrap_or(0);
     let boundaries = model.sensitivity_boundaries.clone();
-    GroupBox::new().id("sensitivity").title("Which assumptions would have to fail? One-at-a-time breakpoints (§10.8)").child(
+    GroupBox::new().id("sensitivity").title("Which assumption would have to fail, and by how much?").child(
         v_flex()
             .gap_4()
             .child(
@@ -361,12 +365,14 @@ fn render_sensitivity(model: &AssumptionsModel, household: &Household, cx: &mut 
                                 .children(model.sensitivity_boundaries.iter().map(|b| Tab::new().label(b.label(household)))),
                         ),
                     )
-                    .child(
-                        Checkbox::new("sensitivity-buy-car")
-                            .label("With scenario “Buy car”")
-                            .checked(model.sensitivity_scenario)
-                            .on_change(cx.listener(|this, checked, _, cx| this.set_sensitivity_scenario(*checked, cx))),
-                    ),
+                    .when_some(model.overlay_scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone()), |this, name| {
+                        this.child(
+                            Checkbox::new("sensitivity-buy-car")
+                                .label(format!("With scenario “{name}”"))
+                                .checked(model.sensitivity_scenario)
+                                .on_change(cx.listener(|this, checked, _, cx| this.set_sensitivity_scenario(*checked, cx))),
+                        )
+                    }),
             )
             .child(div().id("sensitivity-summary").test_support().text_sm().child(format!(
                 "Floor {} · lowest on the expected path {} · {} · the path absorbs a one-off unplanned expense of at most {} on its worst day.",
@@ -393,7 +399,7 @@ fn render_sensitivity(model: &AssumptionsModel, household: &Household, cx: &mut 
             .child(Alert::warning("joint-caveat", report.caveat).title("Single-assumption limits only"))
             .child(
                 h_flex().gap_2().items_center().child(labels::strength_tag(report.coverage)).child(div().text_xs().text_color(theme.muted_foreground).child(
-                    "Bisection is exact to the minor unit and valid because the lowest balance is monotone in one amount or arrival date in this additive cash model; with threshold taxes or fee rules in the window the breakpoint is verified by re-running the forecast at the found value.",
+                    "Each limit is found by bisection, exact to the smallest currency unit, and confirmed by re-running the forecast at that value.",
                 )),
             ),
     )
@@ -401,7 +407,7 @@ fn render_sensitivity(model: &AssumptionsModel, household: &Household, cx: &mut 
 
 fn render_legends(cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("legends").title("What the tags on every figure mean (§2.4, §10.3, §32.2)").child(
+    GroupBox::new().id("legends").title("What the tags on every figure mean").child(
         v_flex()
             .gap_6()
             .child(
@@ -427,12 +433,12 @@ fn render_legends(cx: &App) -> impl IntoElement {
                     .items_start()
                     .flex_wrap()
                     .child(
-                        v_flex().gap_2().min_w_80().flex_1().child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Money classes (§2.4)")).children(MoneyClass::ALL.iter().map(|c| {
+                        v_flex().gap_2().min_w_80().flex_1().child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Kinds of money")).children(MoneyClass::ALL.iter().map(|c| {
                             h_flex().gap_2().items_start().child(div().w_40().flex_shrink_0().child(h_flex().child(labels::money_class_tag(*c)))).child(div().flex_1().min_w_0().text_xs().text_color(theme.muted_foreground).child(c.description()))
                         })),
                     )
                     .child(
-                        v_flex().gap_2().min_w_80().flex_1().child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Certainty (§10.3)")).children(Certainty::ALL.iter().map(|c| {
+                        v_flex().gap_2().min_w_80().flex_1().child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Certainty")).children(Certainty::ALL.iter().map(|c| {
                             h_flex().gap_2().items_start().child(div().w_40().flex_shrink_0().child(h_flex().child(labels::certainty_tag(*c)))).child(div().flex_1().min_w_0().text_xs().text_color(theme.muted_foreground).child(c.description()))
                         })),
                     ),

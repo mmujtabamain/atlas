@@ -1,8 +1,8 @@
-//! Privacy & authorization (§7, §5.13–§5.18, M10): the policies the viewer may
-//! see (their own objects in full; others' only where existence is shared),
-//! purpose-specific grants, the immutable audit log, fail-closed problems and
-//! how a denial is explained without exposing the object. Ownership,
-//! visibility, calculation access and disclosure are four separate things.
+//! Privacy & authorization: the policies the viewer may see (their own
+//! objects in full; others' only where existence is shared), purpose-specific
+//! grants, the immutable audit log, fail-closed problems and how a denial is
+//! explained without exposing the object. Ownership, visibility, calculation
+//! access and disclosure are four separate things.
 
 use atlas_core::authz::{AccessGrant, AccessPolicy, AuthorizationProblem, PrivacyAuditEvent, Purpose, Viewer};
 use atlas_core::ids::ObjectRef;
@@ -94,7 +94,7 @@ impl PrivacyModel {
             if owned {
                 viewer_is_owner_of += 1;
             }
-            // V062: an object whose existence the viewer may not learn is not listed at all —
+            // An object whose existence the viewer may not learn is not listed at all —
             // an aggregate-only contribution shows up inside calculations, never as a row here.
             if matches!(disclosure, Disclosure::Hidden | Disclosure::Aggregate) {
                 hidden_policies += 1;
@@ -154,12 +154,12 @@ pub fn render(model: &PrivacyModel, household: &Household, viewer_name: &str, cx
         .gap_6()
         .child(page_header(
             "Privacy & authorization",
-            "Ownership, visibility, calculation access and disclosure are four separate things (§7.1). Every object carries a versioned, effective-dated policy; missing policies fail closed (F162). What you see here is filtered through your own policies too.",
+            "Who owns something, who can see it, whether it counts in calculations and how much of it is shown are four separate settings. Every object carries a versioned, effective-dated policy; an object without one is hidden. This screen is filtered through your own policies too.",
             cx,
         ))
         .child(
-            Alert::info("privacy-caveat", format!("Viewing as {viewer_name}. Objects whose existence you may not learn are not listed — not even as a count on their own row. Restricted contributions appear in explanations only as authorized aggregates, and a lone restricted term is suppressed rather than exposed as a difference (§7.6)."))
-                .title("Fail-closed by design"),
+            Alert::info("privacy-caveat", format!("Viewing as {viewer_name}. Objects you may not know about are not listed at all. Restricted contributions appear in explanations only as authorized totals, and a single restricted term is hidden rather than left to be worked out as a difference."))
+                .title("Hidden unless allowed"),
         )
         .child(render_policies(model, household, cx))
         .child(render_grants(model, cx))
@@ -169,7 +169,7 @@ pub fn render(model: &PrivacyModel, household: &Household, viewer_name: &str, cx
 
 fn render_policies(model: &PrivacyModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("privacy-policies").title(format!("Access policies (§7.5) — {} visible to you, {} of them yours{}", model.policies.len(), model.viewer_is_owner_of, if model.hidden_policies > 0 { format!("; {} other objects are private to someone else", model.hidden_policies) } else { String::new() })).child(
+    GroupBox::new().id("privacy-policies").title(format!("Access policies — {} visible to you, {} of them yours{}", model.policies.len(), model.viewer_is_owner_of, if model.hidden_policies > 0 { format!("; {} other objects are private to someone else", model.hidden_policies) } else { String::new() })).child(
         v_flex()
             .gap_4()
             .child(
@@ -239,11 +239,11 @@ fn render_policies(model: &PrivacyModel, household: &Household, cx: &mut Context
 
 fn render_grants(model: &PrivacyModel, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("privacy-grants").title(format!("Purpose-specific grants (§7.4) — {}", model.grants.len())).child(
+    GroupBox::new().id("privacy-grants").title(format!("Grants for one purpose — {}", model.grants.len())).child(
         v_flex()
             .gap_3()
             .child(div().text_xs().text_color(theme.muted_foreground).child(
-                "A grant lets a restricted resource serve one explicitly modelled purpose — household forecasts, one scenario, decisions, funding searches, tax — for one person or role, between two dates, without sharing it globally. An account authorized only for “Buy home” stays unavailable to “Buy car”, the baseline and unrelated funding searches (V067).",
+                "A grant lets a restricted account or company serve one purpose — household forecasts, one scenario, decisions, funding searches, tax — for one person or role, between two dates, without sharing it with everyone. An account granted only for one scenario stays unavailable to every other scenario, the baseline and unrelated funding searches.",
             ))
             .child(if model.grants.is_empty() {
                 div().text_sm().text_color(theme.muted_foreground).child("No grants.").into_any_element()
@@ -293,7 +293,7 @@ fn render_grants(model: &PrivacyModel, cx: &mut Context<AtlasApp>) -> impl IntoE
 
 fn render_problems(model: &PrivacyModel, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("privacy-problems").title("Fail-closed checks (F162, V077)").child(
+    GroupBox::new().id("privacy-problems").title("Policy problems").child(
         v_flex()
             .gap_2()
             .child(div().text_xs().text_color(theme.muted_foreground).child("Objects without a policy, conflicting policies and dangling grants are listed here for owners. The engine never guesses: such objects are hidden and excluded until an owner fixes the policy."))
@@ -310,7 +310,7 @@ fn render_problems(model: &PrivacyModel, cx: &mut Context<AtlasApp>) -> impl Int
 
 fn render_audit(model: &PrivacyModel, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     let theme = cx.theme();
-    GroupBox::new().id("privacy-audit").title(format!("Privacy audit log (§5.18) — {} events, newest first", model.audit.len())).child(
+    GroupBox::new().id("privacy-audit").title(format!("Audit log — {} events, newest first", model.audit.len())).child(
         v_flex()
             .gap_3()
             .child(div().text_xs().text_color(theme.muted_foreground).child("Immutable: policy changes with their versions, grants, revocations, refused changes, viewer switches and applied suppressions. Objects you may not see appear by kind only."))
