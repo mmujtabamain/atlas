@@ -41,6 +41,7 @@ pub mod nav;
 pub mod occurrence_entry;
 pub mod perf;
 pub mod privacy_entry;
+pub mod rule_builder;
 pub mod rules_entry;
 pub mod scenario_entry;
 pub mod screens;
