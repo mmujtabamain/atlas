@@ -266,7 +266,7 @@ pub fn render_detail(app: &AtlasApp, id: CompanyId, models: &EntityModels, house
             h_flex()
                 .gap_2()
                 .flex_wrap()
-                .child(Button::new("company-tax-details").small().ghost().icon(IconName::Gavel).label("Tax details").on_click(cx.listener(move |this, _, _, cx| this.open_taxes_for_entity(EntityRef::Company(id), cx))))
+                .child(Button::new("company-tax-details").small().ghost().icon(IconName::Gavel).label("Tax details").on_click(cx.listener(move |this, _, window, cx| this.open_taxes_for_entity(EntityRef::Company(id), window, cx))))
                 .child(Button::new("company-extraction").small().ghost().label("Extraction timing illustration").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Extraction, cx))))
                 .child(Button::new("company-policy").small().ghost().label("View policy").on_click(cx.listener(move |this, _, _, cx| this.open_policy_for(ObjectRef::Company(id), cx))))
                 .child(div().text_xs().text_color(theme.muted_foreground).child("The illustration is a bounded tax comparison, not a legal or cash evaluation.")),

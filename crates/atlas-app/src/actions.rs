@@ -181,8 +181,8 @@ impl AtlasApp {
     }
 
     /// Rules & taxes / Taxes with the entity display filter set.
-    pub fn open_taxes_for_entity(&mut self, entity: atlas_core::ids::EntityRef, cx: &mut Context<Self>) {
-        self.tax_entity_filter = Some(entity);
+    pub fn open_taxes_for_entity(&mut self, entity: atlas_core::ids::EntityRef, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_tax_entity_filter(entity, window, cx);
         self.navigate(Route::Taxes, cx);
     }
 

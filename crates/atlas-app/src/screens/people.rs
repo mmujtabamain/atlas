@@ -268,7 +268,7 @@ pub fn render_detail(app: &AtlasApp, id: PersonId, models: &EntityModels, househ
         )
         .child(
             section("person-tax", "Tax cash attributed")
-                .action(Button::new("person-tax-details").small().ghost().icon(IconName::Gavel).label("Tax details").on_click(cx.listener(move |this, _, _, cx| this.open_taxes_for_entity(EntityRef::Person(id), cx))))
+                .action(Button::new("person-tax-details").small().ghost().icon(IconName::Gavel).label("Tax details").on_click(cx.listener(move |this, _, window, cx| this.open_taxes_for_entity(EntityRef::Person(id), window, cx))))
                 .child(tax),
         )
         .into_any_element()

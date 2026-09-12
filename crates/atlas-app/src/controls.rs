@@ -135,6 +135,62 @@ impl AssumptionControls {
     }
 }
 
+/// The tax-event display filters: entity, rule and payability.
+pub struct TaxFilters {
+    pub entity: Choice,
+    pub entities: Vec<atlas_core::ids::EntityRef>,
+    pub rule: Choice,
+    pub rules: Vec<atlas_core::ids::TaxRuleId>,
+    pub payable: Choice,
+}
+
+impl TaxFilters {
+    pub fn new(household: &Household, viewer: Viewer, window: &mut Window, cx: &mut App) -> Self {
+        use atlas_core::ids::{EntityRef, ObjectRef};
+        let mut entities = vec![EntityRef::Household];
+        entities.extend(household.people.iter().map(|p| EntityRef::Person(p.id)));
+        entities.extend(
+            household
+                .companies
+                .iter()
+                .filter(|c| matches!(household.disclosure_for(viewer, ObjectRef::Company(c.id)), atlas_core::Disclosure::Full | atlas_core::Disclosure::SelectedFields))
+                .map(|c| EntityRef::Company(c.id)),
+        );
+        let mut entity_items: Vec<SharedString> = vec!["All entities".into()];
+        entity_items.extend(entities.iter().map(|e| SharedString::from(household.entity_name(*e))));
+        let rules: Vec<atlas_core::ids::TaxRuleId> = household.tax_packs.iter().flat_map(|p| p.rules.iter().map(|r| r.id)).collect();
+        let mut rule_items: Vec<SharedString> = vec!["All rules".into()];
+        rule_items.extend(household.tax_packs.iter().flat_map(|p| p.rules.iter().map(|r| SharedString::from(r.name.clone()))));
+        let payable_items: Vec<SharedString> = ["All", "In the window", "After the horizon"].into_iter().map(SharedString::from).collect();
+        TaxFilters {
+            entity: scope::choice(entity_items, 0, window, cx),
+            entities,
+            rule: scope::choice(rule_items, 0, window, cx),
+            rules,
+            payable: scope::choice(payable_items, 0, window, cx),
+        }
+    }
+}
+
+/// The rule-activity `Rule` filter: all, then one row per rule.
+pub fn rule_filter_choice(household: &Household, window: &mut Window, cx: &mut App) -> Choice {
+    let mut items: Vec<SharedString> = vec!["All rules".into()];
+    items.extend(household.rules.iter().map(|r| SharedString::from(r.name.clone())));
+    scope::choice(items, 0, window, cx)
+}
+
+/// The register's tie-break policy choice.
+pub fn tie_break_choice(current: atlas_core::rules::TieBreak, window: &mut Window, cx: &mut App) -> Choice {
+    use atlas_core::rules::TieBreak;
+    let items: Vec<SharedString> = TIE_BREAKS.iter().map(|t| SharedString::from(t.label())).collect();
+    let selected = TIE_BREAKS.iter().position(|t| *t == current).unwrap_or(0);
+    let _ = TieBreak::OldestRule;
+    scope::choice(items, selected, window, cx)
+}
+
+/// Tie-break policies, in the order the select offers them.
+pub const TIE_BREAKS: [atlas_core::rules::TieBreak; 2] = [atlas_core::rules::TieBreak::OldestRule, atlas_core::rules::TieBreak::NewestVersion];
+
 /// The `Case` choice: conservative / expected / optimistic.
 pub fn case_choice(current: atlas_core::forecast::Case, window: &mut Window, cx: &mut App) -> Choice {
     use atlas_core::forecast::Case;
@@ -266,6 +322,24 @@ impl AtlasApp {
         }));
         subscriptions.push(cx.observe(&self.decision_path_state, |_, _, cx| cx.notify()));
         subscriptions.push(cx.observe(&self.comparison_path_state, |_, _, cx| cx.notify()));
+        for choice in [&self.tax_entity_choice, &self.tax_rule_choice, &self.tax_payable_choice] {
+            subscriptions.push(cx.subscribe_in(choice, window, |this, _, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+                let SelectEvent::Confirm(_) = event;
+                this.tax_event_expanded = None;
+                cx.notify();
+            }));
+        }
+        subscriptions.push(cx.subscribe_in(&self.rule_filter_choice, window, |_, _, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+            let SelectEvent::Confirm(_) = event;
+            cx.notify();
+        }));
+        subscriptions.push(cx.subscribe_in(&self.tie_break_choice, window, |this, state, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+            let SelectEvent::Confirm(_) = event;
+            let row = state.read(cx).selected_index(cx).map(|p| p.row).unwrap_or(0);
+            if let Some(tie_break) = TIE_BREAKS.get(row).copied() {
+                this.apply_tie_break(tie_break, cx);
+            }
+        }));
         subscriptions.push(cx.subscribe_in(&self.comparison_case_choice, window, |this, state, event: &SelectEvent<Vec<SharedString>>, _, cx| {
             let SelectEvent::Confirm(_) = event;
             let row = state.read(cx).selected_index(cx).map(|p| p.row).unwrap_or(1);

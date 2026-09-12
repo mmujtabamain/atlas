@@ -114,8 +114,6 @@ pub struct AtlasApp {
     pub(crate) selected_occurrence: Option<(SeriesId, NaiveDate)>,
     pub(crate) selected_actual: Option<atlas_core::ids::TransactionId>,
     pub(crate) selected_series: Option<SeriesId>,
-    /// Rules & taxes / Taxes: the entity display filter.
-    pub(crate) tax_entity_filter: Option<EntityRef>,
     /// Forecast / Path: the account whose path is expanded, and the report tab.
     pub(crate) forecast_selected_account: Option<AccountId>,
     pub(crate) forecast_report_tab: usize,
@@ -157,6 +155,25 @@ pub struct AtlasApp {
     pub(crate) comparison_path_state: Entity<crate::widgets::chart::PathState>,
     /// Decisions / Extraction timing: which step of the illustration.
     pub(crate) extraction_step: usize,
+    /// Rules & taxes: the selected rule, its detail tab, the expanded
+    /// decision, the activity filters and the create-rule flow's state.
+    pub(crate) selected_rule: Option<RuleId>,
+    pub(crate) rule_tab: usize,
+    pub(crate) rule_decision_expanded: Option<usize>,
+    pub(crate) activity_report_tab: usize,
+    pub(crate) rule_conflicts_only: bool,
+    pub(crate) rule_filter_choice: crate::widgets::scope::Choice,
+    pub(crate) tie_break_choice: crate::widgets::scope::Choice,
+    pub(crate) rule_builder: crate::rule_builder::RuleBuilder,
+    /// Rules & taxes / Taxes: the display filters, the expanded event, and
+    /// which tax packs are open.
+    pub(crate) tax_entity_choice: crate::widgets::scope::Choice,
+    pub(crate) tax_entities: Vec<EntityRef>,
+    pub(crate) tax_rule_choice: crate::widgets::scope::Choice,
+    pub(crate) tax_rules: Vec<atlas_core::ids::TaxRuleId>,
+    pub(crate) tax_payable_choice: crate::widgets::scope::Choice,
+    pub(crate) tax_event_expanded: Option<usize>,
+    pub(crate) tax_pack_open: Vec<usize>,
     /// Earmarks: `Whose money` and the boundaries behind its rows; Active / Released.
     pub(crate) boundary_choice: crate::widgets::scope::Choice,
     pub(crate) boundaries: Vec<Boundary>,
@@ -416,8 +433,8 @@ pub struct ReservationDraft {
 
 /// Retained state of the "New reservation" form.
 pub struct ReservationForm {
-    name: Entity<InputState>,
-    amount: Entity<InputState>,
+    pub(crate) name: Entity<InputState>,
+    pub(crate) amount: Entity<InputState>,
     purpose: Entity<InputState>,
     pub(crate) account: Entity<SelectState<Vec<SharedString>>>,
     nested_in: Entity<SelectState<Vec<SharedString>>>,
@@ -510,6 +527,7 @@ impl AtlasApp {
         let plan_choices = PlanChoices::new(&household, viewer, false, false, false, false, false, _window, _cx);
         let (forecast_boundary_choice, forecast_boundaries) = crate::controls::boundary_choice(&household, viewer, Boundary::Household, _window, _cx);
         let forecast_case_choice = crate::controls::case_choice(Case::Expected, _window, _cx);
+        let tax_filters = crate::controls::TaxFilters::new(&household, viewer, _window, _cx);
         log::info!("Atlas Financer window: route={} viewer={} opened={opened} viewer_pending={viewer_pending}", route.slug(), viewer.person);
         let mut app = AtlasApp {
             household,
@@ -535,7 +553,6 @@ impl AtlasApp {
             selected_occurrence: None,
             selected_actual: None,
             selected_series: None,
-            tax_entity_filter: None,
             forecast_selected_account: None,
             forecast_report_tab: 0,
             forecast_boundary_choice,
@@ -566,6 +583,21 @@ impl AtlasApp {
             comparison_case_choice: crate::controls::case_choice(Case::Expected, _window, _cx),
             comparison_path_state: _cx.new(|_| crate::widgets::chart::PathState::default()),
             extraction_step: 0,
+            selected_rule: None,
+            rule_tab: 0,
+            rule_decision_expanded: None,
+            activity_report_tab: 0,
+            rule_conflicts_only: false,
+            rule_filter_choice: crate::controls::rule_filter_choice(&household_for_controls, _window, _cx),
+            tie_break_choice: crate::controls::tie_break_choice(household_for_controls.rule_tie_break, _window, _cx),
+            rule_builder: crate::rule_builder::RuleBuilder::new(&household_for_controls, viewer, _window, _cx),
+            tax_entity_choice: tax_filters.entity,
+            tax_entities: tax_filters.entities,
+            tax_rule_choice: tax_filters.rule,
+            tax_rules: tax_filters.rules,
+            tax_payable_choice: tax_filters.payable,
+            tax_event_expanded: None,
+            tax_pack_open: Vec::new(),
             boundary_choice,
             boundaries,
             earmarks_released_tab: false,
@@ -664,6 +696,16 @@ impl AtlasApp {
         self.forecast_case_choice = crate::controls::case_choice(self.projection_case, window, cx);
         self.assumption_controls = AssumptionControls::new(&self.household, self.viewer, self.derivation_series, self.sensitivity_boundary, window, cx);
         self.comparison_case_choice = crate::controls::case_choice(self.scenario_case, window, cx);
+        self.rule_filter_choice = crate::controls::rule_filter_choice(&self.household, window, cx);
+        self.tie_break_choice = crate::controls::tie_break_choice(self.household.rule_tie_break, window, cx);
+        self.rule_builder = crate::rule_builder::RuleBuilder::new(&self.household, self.viewer, window, cx);
+        let tax_filters = crate::controls::TaxFilters::new(&self.household, self.viewer, window, cx);
+        self.tax_entity_choice = tax_filters.entity;
+        self.tax_entities = tax_filters.entities;
+        self.tax_rule_choice = tax_filters.rule;
+        self.tax_rules = tax_filters.rules;
+        self.tax_payable_choice = tax_filters.payable;
+        self.tax_event_expanded = None;
         self.subscribe_controls(window, cx);
     }
 
@@ -1972,13 +2014,19 @@ impl AtlasApp {
             Route::Taxes | Route::TaxPacks | Route::Extraction => match self.taxes_result() {
                 Ok(model) => match self.route {
                     Route::Extraction => crate::screens::extraction::render(self, model, cx),
-                    _ => models::taxes::render(model, &self.tax_controls, &self.grids, &self.household, cx).into_any_element(),
+                    Route::TaxPacks => crate::screens::taxes::render_packs(self, model, cx),
+                    _ => crate::screens::taxes::render_taxes(self, model, &self.household, cx),
                 },
                 Err(err) => self.render_engine_failure(self.route, "the tax assessment", err, cx),
             },
             Route::Rules | Route::Rule(_) | Route::CreateRule | Route::RuleActivity => match self.rules_result() {
-                Ok(model) => models::rules::render(model, &self.grids, &self.household, cx).into_any_element(),
-                Err(err) => self.render_engine_failure(Route::Rules, "the rules", err, cx),
+                Ok(model) => match self.route {
+                    Route::Rule(id) => crate::screens::rules::render_detail(self, id, model, &self.household, cx),
+                    Route::CreateRule => crate::screens::rules::render_create(self, &self.household, cx),
+                    Route::RuleActivity => crate::screens::rules::render_activity(self, model, &self.household, cx),
+                    _ => crate::screens::rules::render_register(self, model, &self.household, cx),
+                },
+                Err(err) => self.render_engine_failure(self.route, "the rules", err, cx),
             },
             Route::Scenarios | Route::ScenarioCompare => match self.scenarios_result() {
                 Ok(model) => match self.route {
