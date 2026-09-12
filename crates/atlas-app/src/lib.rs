@@ -11,14 +11,16 @@
 //! | [`shell`] | `Shell`, the window's root view: title bar, cached sidebar, cached content, status bar |
 //! | [`app`] | `AtlasApp`, the content view: household, derived models, the active screen |
 //! | [`derived`] | `Lazy`, a screen model dropped on change and computed on first use |
-//! | [`screens`] | one module per sidebar section |
-//! | [`widgets`] | shared pieces: figures with "Why?", vocabulary tags, the explain sheet |
-//! | [`lifecycle`] | new / open / save / sample, the lock, the who-is-looking picker (M12) |
-//! | [`entry`] | data-entry dialogs for every object (M12) |
-//! | [`rules_entry`] | the rule editor dialog (M7) |
-//! | [`scenario_entry`] | scenario change and composition dialogs (M8) |
-//! | [`decision_entry`] | the decision builder's form state and steps (M9) |
-//! | [`privacy_entry`] | policy editor and purpose-grant dialogs (M10) |
+//! | [`nav`] | destinations, routes and the slugs that address them |
+//! | [`models`] | derived screen models: computed once per state change, read by the screens |
+//! | [`screens`] | one module per screen of the design |
+//! | [`widgets`] | shared compositions: explained figures, the calculation sheet, figure meanings, scope bar, record lists |
+//! | [`lifecycle`] | new / open / save / sample, the lock, the who-is-looking picker |
+//! | [`entry`] | data-entry forms for every object |
+//! | [`rules_entry`] | the rule creation flow |
+//! | [`scenario_entry`] | scenario change and composition forms |
+//! | [`decision_entry`] | the purchase builder's form state and steps |
+//! | [`privacy_entry`] | policy and purpose-grant forms |
 //! | [`alerting`] | failure reporting to the DevBench notify endpoint |
 //! | [`logging`] | stderr + `logs.log` logger with timestamps and per-sink filters |
 //! | [`perf`] | frame meter (FPS counter, per-frame and summary perf log lines), engine timing |
@@ -32,6 +34,8 @@ pub mod entry;
 pub mod launch;
 pub mod lifecycle;
 pub mod logging;
+pub mod models;
+pub mod nav;
 pub mod perf;
 pub mod privacy_entry;
 pub mod rules_entry;

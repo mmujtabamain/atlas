@@ -6,12 +6,14 @@ use chrono::NaiveDate;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::App;
 
-use crate::screens::Section;
+use crate::nav::Route;
 
 /// Which household the app starts with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Start {
-    /// The fictitious plan household (default).
+    /// No household: the Welcome screen (default).
+    Welcome,
+    /// The fictitious sample household.
     Sample,
     /// An empty household (unsaved until Save as…).
     Empty,
@@ -26,10 +28,12 @@ pub struct Launch {
     pub theme: String,
     pub width: f32,
     pub height: f32,
-    /// The sidebar section to open with.
-    pub section: Section,
-    /// Which fixture person is looking (`a` or `b`); `--viewer <person id>` for real households.
-    pub viewer: char,
+    /// The route to open with (after the viewer is chosen).
+    pub route: Route,
+    /// Which fixture person is looking (`a` or `b`) when given explicitly;
+    /// `--viewer <person id>` for real households. Without it a household with
+    /// several people opens behind the "Who is looking?" chooser.
+    pub viewer: Option<char>,
     /// Person id to view as (overrides `viewer` when given).
     pub viewer_id: Option<u32>,
     pub start: Start,
@@ -51,10 +55,10 @@ impl Default for Launch {
             theme: "light".into(),
             width: 1600.,
             height: 1000.,
-            section: Section::Household,
-            viewer: 'a',
+            route: Route::Today,
+            viewer: None,
             viewer_id: None,
-            start: Start::Sample,
+            start: Start::Welcome,
             as_of: None,
             owner: std::env::var("USER").unwrap_or_else(|_| "user".into()),
             take_over: false,
@@ -85,16 +89,16 @@ impl Launch {
                 }
                 "--screen" => {
                     i += 1;
-                    match args.get(i).and_then(|s| Section::from_slug(s)) {
-                        Some(section) => launch.section = section,
-                        None => log::warn!("unknown --screen {:?}; known: {}", args.get(i), Section::slugs().join(", ")),
+                    match args.get(i).and_then(|s| Route::from_slug(s)) {
+                        Some(route) => launch.route = route,
+                        None => log::warn!("unknown --screen {:?}; known: {}", args.get(i), Route::slugs().join(", ")),
                     }
                 }
                 "--viewer" => {
                     i += 1;
                     match args.get(i) {
                         Some(value) if value.chars().all(|c| c.is_ascii_digit()) => launch.viewer_id = value.parse().ok(),
-                        Some(value) => launch.viewer = value.chars().next().map(|c| c.to_ascii_lowercase()).unwrap_or('a'),
+                        Some(value) => launch.viewer = value.chars().next().map(|c| c.to_ascii_lowercase()),
                         None => {}
                     }
                 }
@@ -122,7 +126,7 @@ impl Launch {
                 "-h" | "--help" => {
                     println!(
                         "atlas [--theme light|dark] [--size WxH] [--screen {}] [--viewer a|b|<person id>] [--household FILE.atlas.sqlite | --new | --sample] [--as-of YYYY-MM-DD] [--owner NAME] [--take-over] [--perf-overlay]\n\nLogs go to stderr and logs.log (ATLAS_LOG_FILE=path|off, RUST_LOG=filter, ATLAS_LOG_FILE_FILTER=filter); the status bar shows gpui's frame timing.",
-                        Section::slugs().join("|")
+                        Route::slugs().join("|")
                     );
                     std::process::exit(0);
                 }
@@ -155,8 +159,8 @@ mod tests {
         let launch = Launch::parse(["--theme", "dark", "--size", "1280x800", "--screen", "accounts", "--viewer", "B", "--bogus", "--household", "/tmp/x.atlas.sqlite", "--owner", "ada", "--take-over"].map(String::from));
         assert_eq!(launch.theme, "dark");
         assert_eq!((launch.width, launch.height), (1280., 800.));
-        assert_eq!(launch.section, Section::Accounts);
-        assert_eq!(launch.viewer, 'b');
+        assert_eq!(launch.route, Route::Accounts);
+        assert_eq!(launch.viewer, Some('b'));
         assert_eq!(launch.start, Start::File(PathBuf::from("/tmp/x.atlas.sqlite")));
         assert_eq!(launch.owner, "ada");
         assert!(launch.take_over);
