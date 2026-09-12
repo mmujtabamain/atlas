@@ -9,6 +9,7 @@ use atlas_core::model::Household;
 use atlas_core::timeline::{Direction, Occurrence, OccurrenceStatus};
 use atlas_core::vocab::Certainty;
 use atlas_core::{Disclosure, EngineResult, Money};
+use std::sync::Arc;
 use chrono::NaiveDate;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -18,12 +19,13 @@ use gpui_kit::component::{
     group_box::GroupBox, h_flex,
     select::Select,
     table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
-    tag::Tag, v_flex,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{AtlasApp, TimelineControls};
+use crate::app::{AtlasApp, Grids, TimelineControls};
+use crate::widgets::grid::{self, Cell, GridColumn, Row, Tone};
 use crate::widgets::labels;
 use crate::widgets::master::page_header;
 use crate::widgets::table::{money_cell, muted_cell};
@@ -44,11 +46,79 @@ pub struct TimelineFilter {
 pub struct TimelineModel {
     pub filter: TimelineFilter,
     pub occurrences: Vec<Occurrence>,
+    /// The occurrences as grid rows — every string formatted here, once, so
+    /// the virtualised table only paints (see `widgets::grid`).
+    pub rows: grid::Rows,
     pub total_in: Money,
     pub total_out: Money,
     /// Series the viewer may see, in fixture order.
     pub series: Vec<SeriesId>,
     pub hidden_series: usize,
+}
+
+/// Columns of the occurrences grid, in display order.
+pub const OCCURRENCE_COLUMNS: [GridColumn; 8] = [
+    GridColumn::new("due", "Due", 104.),
+    GridColumn::new("settles", "Settles", 104.),
+    GridColumn::new("available", "Available", 104.),
+    GridColumn::new("series", "Series · entity", 340.),
+    GridColumn::new("account", "Account", 224.),
+    GridColumn::new("expected", "Expected (signed)", 176.).right(),
+    GridColumn::new("certainty", "Certainty", 128.),
+    GridColumn::new("status", "Status", 128.),
+];
+
+/// One occurrence as a grid row: the strings the table paints.
+fn occurrence_row(o: &Occurrence, household: &Household) -> Row {
+    let date = |d: NaiveDate| d.format("%d %b %y").to_string();
+    let account = household.account(o.account).map(|a| a.name.clone()).unwrap_or_default();
+    let account_text = match o.direction {
+        Direction::Transfer { to } => format!("{account} → {}", household.account(to).map(|a| a.name.as_str()).unwrap_or("?")),
+        _ => match o.linked_account.and_then(|id| household.account(id)) {
+            Some(linked) => format!("{account} ⇄ {}", linked.name),
+            None => account,
+        },
+    };
+    let mut subtitle = household.entity_name(o.entity);
+    if o.original_due != o.due {
+        subtitle.push_str(&format!(" · moved from {}", date(o.original_due)));
+    }
+    if let Some(scenario) = o.scenario.and_then(|id| household.scenario(id)) {
+        subtitle.push_str(&format!(" · scenario “{}”", scenario.name));
+    }
+    if o.linked_account.is_some() {
+        subtitle.push_str(" · linked movement (§8.4)");
+    }
+    let remaining = o.remaining_expected();
+    let signed = match o.direction {
+        Direction::Income => format!("+{}", remaining.format()),
+        Direction::Expense => format!("−{}", remaining.format()),
+        Direction::Transfer { .. } => format!("→ {}", remaining.format()),
+    };
+    let detail = if o.fulfilled.is_positive() {
+        Some(format!("{} of {} received", o.fulfilled.format(), o.amount.expected().format()))
+    } else if o.amount.low() != o.amount.high() {
+        Some(format!("{}–{}", o.amount.low().format(), o.amount.high().format()))
+    } else {
+        None
+    };
+    let live = o.is_live();
+    let tone = match o.direction {
+        _ if !live => Tone::Muted,
+        Direction::Income => Tone::Success,
+        _ => Tone::Foreground,
+    };
+    Row::new(vec![
+        Cell::text(date(o.due)),
+        Cell::muted(date(o.settlement)),
+        Cell::muted(date(o.availability)),
+        Cell::stack(o.label.clone(), subtitle),
+        Cell::muted(account_text),
+        Cell::Money { text: signed.into(), tone, line_through: !live, detail: detail.map(SharedString::from) },
+        Cell::Certainty(o.certainty),
+        Cell::Status(o.status),
+    ])
+    .muted(!live)
 }
 
 impl TimelineModel {
@@ -80,19 +150,13 @@ impl TimelineModel {
         let currency = household.base_currency;
         let total_in = Money::sum(currency, occurrences.iter().filter(|o| o.direction == Direction::Income && o.is_live()).map(|o| o.remaining_expected()))?;
         let total_out = Money::sum(currency, occurrences.iter().filter(|o| o.direction == Direction::Expense && o.is_live()).map(|o| o.remaining_expected()))?;
-        Ok(TimelineModel { filter, occurrences, total_in, total_out, series, hidden_series })
+        let rows = Arc::new(occurrences.iter().map(|o| occurrence_row(o, household)).collect());
+        Ok(TimelineModel { filter, occurrences, rows, total_in, total_out, series, hidden_series })
     }
 }
 
-fn status_tag(status: OccurrenceStatus) -> Tag {
-    match status {
-        OccurrenceStatus::Overdue => Tag::danger().xsmall().outline().child(status.label()),
-        OccurrenceStatus::Due | OccurrenceStatus::PartiallyFulfilled => Tag::warning().xsmall().outline().child(status.label()),
-        _ => Tag::secondary().xsmall().outline().child(status.label()),
-    }
-}
-
-pub fn render(model: &TimelineModel, controls: &TimelineControls, household: &Household, viewer: Viewer, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+pub fn render(model: &TimelineModel, controls: &TimelineControls, grids: &Grids, household: &Household, viewer: Viewer, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+    grid::sync(&grids.timeline_occurrences, &model.rows, cx);
     let theme = cx.theme();
     let scenario_name = model.filter.scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone());
     let buy_car_on = model.filter.scenario.is_some();
@@ -166,7 +230,7 @@ pub fn render(model: &TimelineModel, controls: &TimelineControls, household: &Ho
                     .child(if model.occurrences.is_empty() {
                         div().text_sm().text_color(theme.muted_foreground).child("No occurrences match the filters in this window.").into_any_element()
                     } else {
-                        render_occurrences(model, household, cx).into_any_element()
+                        grid::render("timeline-occurrences-grid", &grids.timeline_occurrences, cx).into_any_element()
                     }),
             ),
         )
@@ -176,94 +240,6 @@ pub fn render(model: &TimelineModel, controls: &TimelineControls, household: &Ho
 
 fn labelled(label: &'static str, control: impl IntoElement, cx: &App) -> impl IntoElement {
     v_flex().gap_1().child(div().text_xs().text_color(cx.theme().muted_foreground).child(label)).child(control)
-}
-
-fn render_occurrences(model: &TimelineModel, household: &Household, cx: &App) -> impl IntoElement {
-    let theme = cx.theme();
-    let date = |d: NaiveDate| d.format("%d %b %y").to_string();
-    Table::new()
-        .child(
-            TableHeader::new().child(
-                TableRow::new()
-                    .child(TableHead::new().w_20().flex_shrink_0().child("Due"))
-                    .child(TableHead::new().w_20().flex_shrink_0().child("Settles"))
-                    .child(TableHead::new().w_20().flex_shrink_0().child("Available"))
-                    .child(TableHead::new().min_w_0().child("Series · entity"))
-                    .child(TableHead::new().w_56().flex_shrink_0().child("Account"))
-                    .child(TableHead::new().w_48().flex_shrink_0().text_right().child("Expected (signed)"))
-                    .child(TableHead::new().w_32().flex_shrink_0().child("Certainty"))
-                    .child(TableHead::new().w_32().flex_shrink_0().child("Status")),
-            ),
-        )
-        .child(TableBody::new().children(model.occurrences.iter().enumerate().map(|(index, o)| {
-            let account = household.account(o.account).map(|a| a.name.clone()).unwrap_or_default();
-            let account_text = match o.direction {
-                Direction::Transfer { to } => format!("{account} → {}", household.account(to).map(|a| a.name.as_str()).unwrap_or("?")),
-                _ => match o.linked_account.and_then(|id| household.account(id)) {
-                    Some(linked) => format!("{account} ⇄ {}", linked.name),
-                    None => account,
-                },
-            };
-            let mut subtitle = household.entity_name(o.entity);
-            if o.original_due != o.due {
-                subtitle.push_str(&format!(" · moved from {}", date(o.original_due)));
-            }
-            if let Some(scenario) = o.scenario.and_then(|id| household.scenario(id)) {
-                subtitle.push_str(&format!(" · scenario “{}”", scenario.name));
-            }
-            if o.linked_account.is_some() {
-                subtitle.push_str(" · linked movement (§8.4)");
-            }
-            let remaining = o.remaining_expected();
-            let signed = match o.direction {
-                Direction::Income => format!("+{}", remaining.format()),
-                Direction::Expense => format!("−{}", remaining.format()),
-                Direction::Transfer { .. } => format!("→ {}", remaining.format()),
-            };
-            let detail = if o.fulfilled.is_positive() {
-                Some(format!("{} of {} received", o.fulfilled.format(), o.amount.expected().format()))
-            } else if o.amount.low() != o.amount.high() {
-                Some(format!("{}–{}", o.amount.low().format(), o.amount.high().format()))
-            } else {
-                None
-            };
-            let live = o.is_live();
-            let amount_color = match o.direction {
-                Direction::Income if live => theme.success,
-                _ => theme.foreground,
-            };
-            TableRow::new()
-                .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                .when(!live, |row| row.text_color(theme.muted_foreground))
-                .child(TableCell::new().w_20().flex_shrink_0().child(date(o.due)))
-                .child(muted_cell(date(o.settlement), cx).w_20().flex_shrink_0())
-                .child(muted_cell(date(o.availability), cx).w_20().flex_shrink_0())
-                .child(
-                    TableCell::new().min_w_0().overflow_hidden().child(
-                        v_flex()
-                            .min_w_0()
-                            .child(div().overflow_hidden().text_ellipsis().child(o.label.clone()))
-                            .child(div().text_xs().text_color(theme.muted_foreground).overflow_hidden().text_ellipsis().child(subtitle)),
-                    ),
-                )
-                .child(muted_cell(account_text, cx).w_56().flex_shrink_0().overflow_hidden().text_ellipsis())
-                .child(
-                    TableCell::new().w_48().flex_shrink_0().text_right().child(
-                        v_flex()
-                            .items_end()
-                            .child(
-                                div()
-                                    .font_family(theme.mono_font_family.clone())
-                                    .text_color(if live { amount_color } else { theme.muted_foreground })
-                                    .when(!live, |c| c.line_through())
-                                    .child(signed),
-                            )
-                            .when_some(detail, |this, text| this.child(div().text_xs().text_color(theme.muted_foreground).child(text))),
-                    ),
-                )
-                .child(TableCell::new().w_32().flex_shrink_0().child(labels::certainty_tag(o.certainty)))
-                .child(TableCell::new().w_32().flex_shrink_0().child(status_tag(o.status)))
-        })))
 }
 
 fn render_series(model: &TimelineModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {

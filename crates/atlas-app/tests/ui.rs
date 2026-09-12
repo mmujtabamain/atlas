@@ -368,6 +368,21 @@ fn timeline_scenario_toggle_and_series_editor(cx: &mut TestAppContext) {
         assert_eq!(app.timeline_filter().scenario, Some(fixtures::ids::BUY_CAR));
         assert_eq!(app.timeline().unwrap().occurrences.len(), baseline_count + 1, "the car down payment joins the timeline");
     });
+    // The occurrences are a virtualised grid whose rows follow the model: the
+    // next frame syncs the new rows in, formatted once at compute time.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("timeline-occurrences-grid").visible());
+        let app = app.read(cx);
+        let grid = app.grids().timeline_occurrences.read(cx);
+        let rows = grid.delegate().rows();
+        assert_eq!(rows.len(), baseline_count + 1, "the grid shows every occurrence");
+        let (_, dump) = grid.dump_range(0..rows.len(), cx);
+        assert!(dump.iter().any(|row| row.iter().any(|cell| cell.contains("scenario “Buy car”"))), "the scenario row is in the grid: {dump:?}");
+        let model = app.timeline().unwrap();
+        assert!(std::sync::Arc::ptr_eq(rows, &model.rows), "the grid holds the model's rows, not a copy");
+    })
+    .unwrap();
 
     // Edit the rent series: raise the expected amount for the whole series.
     cx.update_window(window, |_, window, cx| {
@@ -778,6 +793,13 @@ fn rules_inspector_simulation_and_editor(cx: &mut TestAppContext) {
         assert_eq!(model.conflicts.len(), 0, "without the category fee there is nothing to conflict with");
         assert_eq!(model.evaluation.fees.len(), 5);
     });
+    // The fee grid follows the model once a frame has synced it (7 → 5 rows).
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let grid = app.read(cx).grids().rule_fees.read(cx);
+        assert_eq!(grid.delegate().rows().len(), 5, "the fee grid dropped the disabled rule's postings");
+    })
+    .unwrap();
 
     // The editor: a 2% fee on the "Living" category, validated by the engine.
     dismiss_toasts(cx, window);

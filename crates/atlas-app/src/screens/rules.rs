@@ -11,6 +11,7 @@ use atlas_core::model::Household;
 use atlas_core::rules::{FeePosting, FundingStep, Rule, RuleAction, RuleDecision, RuleEvaluation, RuleSimulation, TieBreak, Trigger, account_for_expense, evaluate, funding_order, simulate};
 use atlas_core::{EngineResult, Money};
 use chrono::NaiveDate;
+use std::sync::Arc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _,
@@ -25,7 +26,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::AtlasApp;
+use crate::app::{AtlasApp, Grids};
+use crate::widgets::grid::{self, Cell, GridColumn, Row};
 use crate::widgets::master::page_header;
 use crate::widgets::table::{money_cell, muted_cell};
 
@@ -46,6 +48,28 @@ pub struct RulesModel {
     pub bank_selection: Vec<(String, AccountId, String)>,
     pub simulated: Option<RuleId>,
     pub simulation: Option<RuleSimulation>,
+    /// The fee postings as grid rows, formatted once (see `widgets::grid`).
+    pub fee_rows: grid::Rows,
+}
+
+/// Columns of the fee-postings grid, in display order.
+pub const FEE_COLUMNS: [GridColumn; 5] = [
+    GridColumn::new("date", "Date", 104.),
+    GridColumn::new("account", "Account", 192.),
+    GridColumn::new("event", "Fee event", 420.),
+    GridColumn::new("amount", "Amount", 128.).right(),
+    GridColumn::new("rule", "Rule", 96.),
+];
+
+/// One fee posting as a grid row.
+fn fee_row(fee: &FeePosting, household: &Household) -> Row {
+    Row::new(vec![
+        Cell::text(fee.date.format("%d %b %y").to_string()),
+        Cell::muted(household.account(fee.account).map(|a| a.name.clone()).unwrap_or_default()),
+        Cell::text(fee.label.clone()),
+        Cell::money(fee.amount),
+        Cell::muted(fee.rule.to_string()),
+    ])
 }
 
 impl RulesModel {
@@ -80,7 +104,9 @@ impl RulesModel {
         if !conflicts.is_empty() {
             log::info!("{} rule decisions, {} with competing candidates", evaluation.decisions.len(), conflicts.len());
         }
-        Ok(RulesModel {
+                let fee_rows = Arc::new(evaluation.fees.iter().map(|fee| fee_row(fee, household)).collect());
+Ok(RulesModel {
+            fee_rows,
             through,
             scenario_on,
             tie_break: household.rule_tie_break,
@@ -97,7 +123,7 @@ impl RulesModel {
     }
 }
 
-pub fn render(model: &RulesModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+pub fn render(model: &RulesModel, grids: &Grids, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     v_flex()
         .id("screen-rules")
         .test_support()
@@ -115,7 +141,7 @@ pub fn render(model: &RulesModel, household: &Household, cx: &mut Context<AtlasA
         .child(render_controls(model, cx))
         .child(render_register(model, household, cx))
         .child(render_conflicts(model, household, cx))
-        .child(render_fees(model, household, cx))
+        .child(render_fees(model, grids, cx))
         .child(render_funding(model, household, cx))
         .child(render_simulation(model, household, cx))
 }
@@ -324,7 +350,8 @@ fn render_conflicts(model: &RulesModel, household: &Household, cx: &mut Context<
     )
 }
 
-fn render_fees(model: &RulesModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+fn render_fees(model: &RulesModel, grids: &Grids, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+    grid::sync(&grids.rule_fees, &model.fee_rows, cx);
     let theme = cx.theme();
     let fees: &[FeePosting] = &model.evaluation.fees;
     GroupBox::new().id("rules-fees").title(format!("Fee events the rules add to the window (§14.4) — {} postings, {}", fees.len(), model.fee_total.format())).child(
@@ -336,27 +363,7 @@ fn render_fees(model: &RulesModel, household: &Household, cx: &mut Context<Atlas
             .child(if fees.is_empty() {
                 div().text_sm().text_color(theme.muted_foreground).child("No fee rule fired in the window.").into_any_element()
             } else {
-                Table::new()
-                    .child(
-                        TableHeader::new().child(
-                            TableRow::new()
-                                .child(TableHead::new().w_24().flex_shrink_0().child("Date"))
-                                .child(TableHead::new().w_48().flex_shrink_0().child("Account"))
-                                .child(TableHead::new().min_w_0().child("Fee event"))
-                                .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Amount"))
-                                .child(TableHead::new().w_24().flex_shrink_0().child("Rule")),
-                        ),
-                    )
-                    .child(TableBody::new().children(fees.iter().enumerate().map(|(index, fee)| {
-                        TableRow::new()
-                            .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                            .child(TableCell::new().w_24().flex_shrink_0().child(fee.date.format("%d %b %y").to_string()))
-                            .child(muted_cell(household.account(fee.account).map(|a| a.name.clone()).unwrap_or_default(), cx).w_48().flex_shrink_0().overflow_hidden().text_ellipsis())
-                            .child(TableCell::new().min_w_0().overflow_hidden().text_ellipsis().child(fee.label.clone()))
-                            .child(money_cell(fee.amount, cx).w_32().flex_shrink_0())
-                            .child(muted_cell(fee.rule.to_string(), cx).w_24().flex_shrink_0())
-                    })))
-                    .into_any_element()
+                grid::render("rule-fees-grid", &grids.rule_fees, cx).into_any_element()
             }),
     )
 }

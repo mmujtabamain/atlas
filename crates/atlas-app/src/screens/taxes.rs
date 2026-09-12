@@ -7,9 +7,10 @@ use atlas_core::authz::Viewer;
 use atlas_core::forecast::Case;
 use atlas_core::ids::{EntityRef, ObjectRef};
 use atlas_core::model::{Bracket, Household, TaxRulePack};
-use atlas_core::tax::{TaxAssessment, YearStrategy, assess, multi_year_comparison};
+use atlas_core::tax::{TaxAssessment, TaxEvent, YearStrategy, assess, multi_year_comparison};
 use atlas_core::{Disclosure, EngineResult, Money};
 use chrono::NaiveDate;
+use std::sync::Arc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _,
@@ -25,11 +26,12 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{AtlasApp, TaxControls};
+use crate::app::{AtlasApp, Grids, TaxControls};
 use crate::widgets::figure::{ExplainedFigure, card};
+use crate::widgets::grid::{self, Cell, GridColumn, Row};
 use crate::widgets::labels;
 use crate::widgets::master::page_header;
-use crate::widgets::table::{money_cell, muted_cell};
+use crate::widgets::table::money_cell;
 
 /// Which bracket schedule the E05 panel uses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -55,6 +57,38 @@ pub struct TaxModel {
     pub e05_brackets: Vec<Bracket>,
     /// Packs the viewer may see (company-only data is not a pack concern; all packs are household objects).
     pub packs: Vec<TaxRulePack>,
+    /// The tax events as grid rows, formatted once (see `widgets::grid`).
+    pub event_rows: grid::Rows,
+}
+
+/// Columns of the tax-events grid, in display order.
+pub const EVENT_COLUMNS: [GridColumn; 9] = [
+    GridColumn::new("cash", "Cash date", 104.),
+    GridColumn::new("accrued", "Accrued", 104.),
+    GridColumn::new("entity", "Entity", 128.),
+    GridColumn::new("rule", "Rule", 224.),
+    GridColumn::new("base", "Base", 300.),
+    GridColumn::new("base-amount", "Base amount", 128.).right(),
+    GridColumn::new("tax", "Tax", 128.).right(),
+    GridColumn::new("kind", "Kind", 256.),
+    GridColumn::new("account", "Account", 160.),
+];
+
+/// One tax event as a grid row.
+fn event_row(e: &TaxEvent, through: NaiveDate, household: &Household) -> Row {
+    let after = e.cash_date > through;
+    Row::new(vec![
+        Cell::text(e.cash_date.format("%d %b %y").to_string()),
+        Cell::muted(e.accrual_date.format("%d %b %y").to_string()),
+        Cell::muted(household.entity_name(e.entity)),
+        Cell::text(e.rule_name.clone()),
+        Cell::muted(e.base_label.clone()),
+        Cell::money(e.base_amount),
+        Cell::money(e.amount),
+        Cell::Chip(if after { format!("{} · payable after horizon", e.kind.label()).into() } else { e.kind.label().into() }),
+        Cell::muted(household.account(e.account).map(|a| a.name.clone()).unwrap_or_default()),
+    ])
+    .muted(after)
 }
 
 impl TaxModel {
@@ -104,7 +138,9 @@ impl TaxModel {
             .enumerate()
             .map(|(index, s)| ExplainedFigure::new(format!("e05-incremental-{index}"), format!("{} — incremental tax", s.name), &s.incremental, household, viewer))
             .collect();
+        let event_rows = Arc::new(assessment.events.iter().map(|e| event_row(e, assessment.through, household)).collect());
         Ok(TaxModel {
+            event_rows,
             assessment,
             scenario_on,
             by_entity,
@@ -121,7 +157,7 @@ impl TaxModel {
     }
 }
 
-pub fn render(model: &TaxModel, controls: &TaxControls, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+pub fn render(model: &TaxModel, controls: &TaxControls, grids: &Grids, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
     v_flex()
         .id("screen-taxes")
         .test_support()
@@ -137,7 +173,7 @@ pub fn render(model: &TaxModel, controls: &TaxControls, household: &Household, c
                 .title("Planning estimates only"),
         )
         .child(render_packs(model, household, cx))
-        .child(render_events(model, household, cx))
+        .child(render_events(model, grids, cx))
         .child(render_e05(model, controls, cx))
 }
 
@@ -220,7 +256,8 @@ fn render_packs(model: &TaxModel, household: &Household, cx: &mut Context<AtlasA
     )
 }
 
-fn render_events(model: &TaxModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+fn render_events(model: &TaxModel, grids: &Grids, cx: &mut Context<AtlasApp>) -> impl IntoElement {
+    grid::sync(&grids.tax_events, &model.event_rows, cx);
     let theme = cx.theme();
     let events = &model.assessment.events;
     GroupBox::new()
@@ -260,37 +297,7 @@ fn render_events(model: &TaxModel, household: &Household, cx: &mut Context<Atlas
                 .child(if events.is_empty() {
                     div().text_sm().text_color(theme.muted_foreground).child("No rule applies to any occurrence in the window.").into_any_element()
                 } else {
-                    Table::new()
-                        .child(
-                            TableHeader::new().child(
-                                TableRow::new()
-                                    .child(TableHead::new().w_24().flex_shrink_0().child("Cash date"))
-                                    .child(TableHead::new().w_24().flex_shrink_0().child("Accrued"))
-                                    .child(TableHead::new().w_32().flex_shrink_0().child("Entity"))
-                                    .child(TableHead::new().w_56().flex_shrink_0().child("Rule"))
-                                    .child(TableHead::new().min_w_0().child("Base"))
-                                    .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Base amount"))
-                                    .child(TableHead::new().w_32().flex_shrink_0().text_right().child("Tax"))
-                                    .child(TableHead::new().w_64().flex_shrink_0().child("Kind"))
-                                    .child(TableHead::new().w_40().flex_shrink_0().child("Account")),
-                            ),
-                        )
-                        .child(TableBody::new().children(events.iter().enumerate().map(|(index, e)| {
-                            let after = e.cash_date > model.assessment.through;
-                            TableRow::new()
-                                .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                                .when(after, |row| row.text_color(theme.muted_foreground))
-                                .child(TableCell::new().w_24().flex_shrink_0().child(e.cash_date.format("%d %b %y").to_string()))
-                                .child(muted_cell(e.accrual_date.format("%d %b %y").to_string(), cx).w_24().flex_shrink_0())
-                                .child(muted_cell(household.entity_name(e.entity), cx).w_32().flex_shrink_0().overflow_hidden().text_ellipsis())
-                                .child(TableCell::new().w_56().flex_shrink_0().overflow_hidden().text_ellipsis().child(e.rule_name.clone()))
-                                .child(muted_cell(e.base_label.clone(), cx).min_w_0().overflow_hidden().text_ellipsis())
-                                .child(money_cell(e.base_amount, cx).w_32().flex_shrink_0())
-                                .child(money_cell(e.amount, cx).w_32().flex_shrink_0())
-                                .child(TableCell::new().w_64().flex_shrink_0().child(h_flex().child(Tag::secondary().xsmall().outline().child(if after { format!("{} · payable after horizon", e.kind.label()) } else { e.kind.label() }))))
-                                .child(muted_cell(household.account(e.account).map(|a| a.name.clone()).unwrap_or_default(), cx).w_40().flex_shrink_0().overflow_hidden().text_ellipsis())
-                        })))
-                        .into_any_element()
+                    grid::render("tax-events-grid", &grids.tax_events, cx).into_any_element()
                 }),
         )
 }

@@ -142,10 +142,11 @@ our meter's numbers stay in the log, where the phase split is the point.
 
 ## 4. What remains, in order of expected gain
 
-- **Node count** (Timeline: 1,800 nodes, ~25 per occurrence row; layout 22 +
-  prepaint 29 + paint 11 ms on the box). Options: page the occurrence table
-  (25 rows + "show all"), or a virtualised list (`uniform_list` / DataTable,
-  which brings its own scroll region). Product decision.
+- ~~**Node count**~~ (Timeline: 1,800 nodes, ~25 per occurrence row) — done
+  (`widgets/grid.rs`, perf step 5 in `perf-plan.md`): the occurrences, the
+  tax events and the fee postings are gpui-kit `DataTable`s (virtualised,
+  own scroll region) fed from rows the models format once. Only the rows in
+  view exist as elements, whatever the horizon.
 - ~~Per-node cost of the debug profile~~ — done, see §3c.
 - **Residual re-measurement** on Scenarios (10 callbacks/node: the chart and
   comparison table), Taxes and Rules (5/node) — same bisection as above.
