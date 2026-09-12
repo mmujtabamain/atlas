@@ -17,7 +17,7 @@ data model, not a later feature (§7.1).
 | `crates/atlas-store` | Persistence: one SQLite file per household, backups, lock file. |
 | `crates/atlas-app` | The gpui-kit window: shell, screens, the explain sheet, data entry, failure alerting. Binary `atlas`. |
 | `docs/ui-implementation-plan.md` | Milestones M0–M11 and their tasks (mirrored on the DevBench board). |
-| `scripts/shoot.sh` | Headless screenshots of every screen, light and dark, plus dialogs (Linux box). |
+| `scripts/shoot.sh` | Headless screenshots of every screen, light and dark, plus sheets and details (Linux box). |
 | `scripts/walkthrough.sh` | The captioned walkthrough video (`shots/walkthrough.mp4`) from a gpui-shot step sequence. |
 | `docs/handover.md` | What was built per milestone, how to run and test, known limits. |
 | `plan.md` | The requirements document this repo implements. |
@@ -25,13 +25,33 @@ data model, not a later feature (§7.1).
 ## Build and run
 
 ```bash
-cargo run --bin atlas -- --theme dark --screen household --viewer a
+cargo run --bin atlas -- --theme dark --sample --viewer a --screen today
 cargo test                      # engine unit tests, E01–E08 examples, store, app UI integration tests
 ```
 
-Options: `--theme light|dark`, `--size WxH`, `--screen <section>` (see `atlas --help`),
+Options: `--theme light|dark`, `--size WxH`, `--screen <slug>` (see `atlas --help`),
 `--viewer a|b` (which fixture person is looking — private objects project to aggregates),
-`--perf-overlay` (show gpui's frame-time overlay, see below).
+`--perf-overlay` (show gpui's frame-time overlay, see below). With no household flag the app
+opens on **Welcome**: create a household, open a file, or explore the fictitious sample.
+
+## The screens
+
+Eight destinations in the sidebar, each with its own tabs; details are addressable routes of
+their own, so `--screen <slug>` reaches any of them.
+
+| Destination | Tabs | Details |
+|---|---|---|
+| **Today** | — | the setup checklist, what is free now, the outlook and its assumptions |
+| **Decisions** | Purchase · Scenarios · Extraction timing | the purchase result, a scenario comparison |
+| **Forecast** | Path · Assumptions · Sensitivity | Derive from history, the read-only forecast record |
+| **Accounts** | Accounts · Earmarks · Funding | one account (Overview, Earmarks, Planned movements, Properties) |
+| **Activity** | Upcoming · Series · Actuals | one series; the occurrence and transaction inspectors |
+| **People & companies** | People · Companies | one person, one company (full or planning-safe summary) |
+| **Rules & taxes** | Rules · Rule activity · Taxes · Tax packs | one rule (Details, Decisions, Simulation, History), Create rule |
+| **Sharing** | Policies · Grants · Audit | — |
+
+Older slugs still work (`household`, `liquidity`, `timeline`, `projections`, `decisions`,
+`privacy` …), so scripts and bookmarks from before the rebuild keep resolving.
 
 ### Logs and the frame meter (performance work)
 
@@ -75,8 +95,10 @@ is off by default).
   numbers and the **layout rules that keep taffy cheap** are in `docs/perf.md` — read it
   before writing a screen.
 
-The app boots with the fictitious *plan household* fixture (`atlas_core::fixtures`), whose
-numbers come from the plan's own worked examples (E01, E03, E07, §13.1, §10.2).
+`--sample` loads the fictitious sample household (`atlas_core::fixtures`), whose numbers come
+from the requirements' own worked examples. It is labelled *Fictitious sample* in the title
+bar, and a real household never inherits its figures: a purchase draft, for instance, starts
+empty rather than prefilled.
 
 ### Linux DevBench box
 
@@ -86,13 +108,15 @@ system libraries through `.cargo/config.toml` and the `.sysroot` symlink into
 `~/.cargo/config.toml` at `jobs = 2` (2 GiB memory cgroup). Screenshots:
 `scripts/shoot.sh [scenario]`, then `devbench media put shots/<name>.png`.
 
-## Your data (M12)
+## Your data
 
-The app starts with the fictitious sample household. **Household ▸ New household…** creates an
-empty one (name, base currency — USD by default — reconciliation date, first person); every
-screen then has a **New …** button (people, companies, accounts with the §7 properties, event
-series with any recurrence, assumptions, scenarios, actual transactions with reconciliation,
-tax rules) and account detail has **Reconcile…** and **Delete**.
+Welcome offers **Create household…**, **Open household…** and **Explore the sample**;
+**Household ▸ New household…** does the same later (name, base currency — USD by default —
+reconciliation date, first person). Every register then has its own **Add …** command (people,
+companies, accounts with their properties, planned movements with any supported recurrence,
+assumptions, scenarios, transactions with matching, rules, tax rules), and a detail carries
+the commands that belong to it — **Reconcile…**, **Change series…**, one-occurrence changes,
+**Pay and release…**, **Delete …** with its consequence named.
 
 - **Household ▸ Save as…** writes one SQLite file, `<name>.atlas.sqlite`, wherever you choose
   (default `~/Documents/Atlas/`). **Save** rewrites it in one transaction after copying the
@@ -121,8 +145,9 @@ policy fails closed (F162). **Privacy** shows, filtered through the viewer's own
   not listed at all (V062). **Set policy…** writes a new, effective-dated version (owners only;
   `previous_versions` keep every earlier one so a historical calculation replays under the
   policy that governed it, V071; the forecast record pins policy versions).
-- **Purpose-specific grants** (§7.4): one object, one person or role, one purpose (household
-  forecasts, a scenario, decisions, funding searches, tax), an effective range. The engine
+- **Purpose-specific grants** (§7.4): one object, one person or a household role, one purpose
+  (household forecasts, a scenario, decisions, funding searches, tax, taking money out of a
+  company), an effective range. The engine
   evaluates authorization before an object becomes a forecast input or funding source; an
   account authorized only for one scenario is unavailable everywhere else (V067).
 - **Difference-attack suppression** (§7.6, V073): in any projected chain, a single restricted

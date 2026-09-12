@@ -26,13 +26,42 @@ object has a screen; nothing is inferred and no AI sits in the calculation path.
 | M11 Verification | E01–E08 regression suite tagged with model ids, per-screen UI tests, screenshot script, walkthrough video, docs. |
 | M12 Real data | SQLite household files with backups and a lock, New/Open/Save/Save as…, who-is-looking picker, data entry for every object, selectable currency (USD default). |
 
+## The rebuild from the UX design (September 2026)
+
+The customer had the screens re-designed from scratch: a separate agent wrote a screen
+"contract" per capability (information, actions, rules and states only, with no reference to
+the then-current UI), a design agent turned those into an interaction design, and the whole
+front end was rebuilt from that design. The engine is untouched.
+
+What changed for a reader of this repository:
+
+- **Navigation.** Fourteen flat sections became eight sidebar destinations with their own tabs
+  and addressable details (`crates/atlas-app/src/nav.rs` is the whole map: `Destination`,
+  `Route`, every slug and its legacy aliases). `crates/atlas-app/src/screens/` holds one
+  module per workspace; `crates/atlas-app/src/models/` keeps the derived models they read.
+- **First experience.** The app opens on Welcome (create / open / explore the sample) and asks
+  who is looking before showing any figure; the sample is never loaded behind the chooser.
+- **Shared compositions.** `widgets/figure.rs` (explainable figures, now with a compact variant
+  for table cells), `widgets/record.rs` (lane records), `widgets/chart.rs` (a cash path with
+  Chart/Values and an exact readout), `widgets/statement.rs` (the conditional statement),
+  `widgets/scope.rs` (the scope bars), `widgets/states.rs` (sections, counts, empty states).
+- **Newly exposed engine actions**, all of which the engine already supported: per-occurrence
+  skip / cancel / move / change amount, matching an existing transaction to a planned
+  occurrence, planning a transfer from a forecast shortfall, the dividend company route, rule
+  scopes for person / company / institution / scenario and the full set of typed conditions,
+  role grants and the extraction purpose, deleting a person or an earmark with its consequence
+  named, and Copy statement / Copy recommendation.
+- **Nothing was removed.** Every figure, register and command that existed before has a home;
+  `tests/ui.rs` renders every route for both viewers.
+
 ## How to run and test
 
 ```bash
 cd atlas
-cargo run --bin atlas                     # the sample household
+cargo run --bin atlas                     # Welcome: create, open, or explore the sample
+cargo run --bin atlas -- --sample         # the fictitious sample household
 cargo run --bin atlas -- --new            # an empty household (your data)
-cargo test                                # 90 core + 8 examples + 5 store + 5 app + 18 UI tests
+cargo test                                # 90 core + 8 examples + 5 store + 21 app + 29 UI tests
 scripts/shoot.sh                          # every screen, light + dark (Linux box)
 scripts/walkthrough.sh                    # shots/walkthrough.mp4
 ```
@@ -40,8 +69,9 @@ scripts/walkthrough.sh                    # shots/walkthrough.mp4
 Test suite: `crates/atlas-core/src/*` unit tests (money, provenance, liquidity, timeline,
 forecast, assumptions, sensitivity, tax, rules, scenario, decision, authz, risk),
 `crates/atlas-core/tests/examples.rs` (E01–E08), `crates/atlas-store` (round trip, backups,
-lock, schema), `crates/atlas-app/tests/ui.rs` (gpui-kit `test-support` integration tests, one or
-more per screen, both viewers).
+lock, schema), `crates/atlas-app/tests/ui.rs` (gpui-kit `test-support` integration tests: the welcome and
+viewer gate, the sidebar and workspace tabs, one or more per workspace, every route for both
+viewers, the file round trip, and the view-cache and lazy-model guarantees).
 
 ## Monitoring
 
