@@ -18,6 +18,8 @@
 //! | [`decision_entry`] | the decision builder's form state and steps (M9) |
 //! | [`privacy_entry`] | policy editor and purpose-grant dialogs (M10) |
 //! | [`alerting`] | failure reporting to the DevBench notify endpoint |
+//! | [`logging`] | stderr + `logs.log` logger with timestamps and per-sink filters |
+//! | [`perf`] | frame meter (FPS counter, per-frame and summary perf log lines), engine timing |
 //! | [`launch`] | command-line options and theme selection |
 
 pub mod alerting;
@@ -26,6 +28,8 @@ pub mod decision_entry;
 pub mod entry;
 pub mod launch;
 pub mod lifecycle;
+pub mod logging;
+pub mod perf;
 pub mod privacy_entry;
 pub mod rules_entry;
 pub mod scenario_entry;

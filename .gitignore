@@ -13,3 +13,14 @@
 /shots/*.log
 /shots/*.mp4
 /shots/walkthrough/
+
+# Per-run log files written by the app (see README "Logs and the frame meter").
+/logs.log
+/logs.prev.log
+/shots/logs.log
+/shots/logs.prev.log
+/crates/*/logs.log
+/crates/*/logs.prev.log
+
+# Experiment builds with a different profile (never the product).
+/target-opt

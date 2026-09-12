@@ -4,12 +4,13 @@
 //! atlas [--theme light|dark] [--size WxH] [--screen household|people|…] [--viewer a|b]
 //! ```
 
-use atlas_app::{AtlasApp, Launch, alerting};
+use atlas_app::{AtlasApp, Launch, alerting, logging};
 use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::*;
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // stderr + logs.log (see `atlas_app::logging`); RUST_LOG still works.
+    logging::init();
     alerting::init();
     alerting::install_panic_hook();
     let launch = Launch::parse(std::env::args().skip(1));
@@ -34,6 +35,12 @@ fn main() {
         let launch = launch.clone();
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
+                if launch.perf_overlay {
+                    // gpui's own frame-time readout, painted straight into the
+                    // scene (no view invalidation, so it never causes a frame).
+                    window.set_debug_frame_overlay_mode(DebugFrameOverlayMode::Full);
+                    log::info!("perf: gpui frame-time overlay on (top-right: current draw, 1%/10% worst, max, frame count); --no-perf-overlay hides it");
+                }
                 let view = cx.new(|cx| AtlasApp::new(&launch, window, cx));
                 // Root must be the first view in every gpui-kit window.
                 cx.new(|cx| Root::new(view, window, cx))

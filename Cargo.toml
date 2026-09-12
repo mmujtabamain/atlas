@@ -15,7 +15,10 @@ license = "UNLICENSED"
 # whole UI stack twice (once for `cargo build`, once for `cargo test`). On the
 # 2 GiB DevBench box that is ~8 extra minutes per cold build. Move it to
 # dev-dependencies once the build box has headroom.
-gpui-kit = { version = "0.6", features = ["test-support"] }
+# `profiler` compiles gpui's frame profiler in: the in-scene frame-time overlay
+# (`Window::set_debug_frame_overlay_mode`) and the draw-duration histograms the
+# perf log quotes (`Window::frame_duration_snapshot`). See atlas-app `perf`.
+gpui-kit = { version = "0.6", features = ["test-support", "profiler"] }
 
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -23,7 +26,9 @@ serde_json = "1"
 thiserror = "2"
 anyhow = "1"
 log = "0.4"
-env_logger = "0.11"
+# `RUST_LOG`-style filters for the two log sinks (stderr and logs.log) of
+# atlas-app's logger; the crate behind env_logger, so the syntax is identical.
+env_filter = { version = "2", default-features = false, features = ["std"] }
 # Blocking HTTP client for the production-failure alert hook (DevBench notify endpoint).
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 
