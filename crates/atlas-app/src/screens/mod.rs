@@ -15,6 +15,7 @@ pub mod people;
 pub mod rules;
 pub mod scenarios;
 pub mod settings;
+pub mod sharing;
 pub mod taxes;
 pub mod today;
 pub mod welcome;

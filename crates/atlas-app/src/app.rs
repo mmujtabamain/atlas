@@ -174,6 +174,11 @@ pub struct AtlasApp {
     pub(crate) tax_payable_choice: crate::widgets::scope::Choice,
     pub(crate) tax_event_expanded: Option<usize>,
     pub(crate) tax_pack_open: Vec<usize>,
+    /// Sharing: the selected grant, the expanded audit event and which
+    /// sections of the policy detail are open.
+    pub(crate) selected_grant: Option<atlas_core::ids::GrantId>,
+    pub(crate) audit_expanded: Option<usize>,
+    pub(crate) policy_sections_open: Vec<usize>,
     /// Earmarks: `Whose money` and the boundaries behind its rows; Active / Released.
     pub(crate) boundary_choice: crate::widgets::scope::Choice,
     pub(crate) boundaries: Vec<Boundary>,
@@ -598,6 +603,9 @@ impl AtlasApp {
             tax_payable_choice: tax_filters.payable,
             tax_event_expanded: None,
             tax_pack_open: Vec::new(),
+            selected_grant: None,
+            audit_expanded: None,
+            policy_sections_open: Vec::new(),
             boundary_choice,
             boundaries,
             earmarks_released_tab: false,
@@ -2037,7 +2045,14 @@ impl AtlasApp {
             },
             Route::Purchase => crate::screens::decisions::render_purchase(self, &self.household, cx),
             Route::PurchaseResult => crate::screens::decisions::render_result(self, &self.household, cx),
-            Route::Policies | Route::Grants | Route::Audit => models::privacy::render(self.privacy(), &self.household, &self.viewer_name(), cx).into_any_element(),
+            Route::Policies | Route::Grants | Route::Audit => {
+                let model = self.privacy();
+                match self.route {
+                    Route::Grants => crate::screens::sharing::render_grants(self, model, &self.household, cx),
+                    Route::Audit => crate::screens::sharing::render_audit(self, model, cx),
+                    _ => crate::screens::sharing::render_policies(self, model, &self.household, cx),
+                }
+            }
         }
     }
 

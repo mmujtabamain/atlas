@@ -31,7 +31,17 @@ pub const PRESETS: [VisibilityPreset; 4] = [VisibilityPreset::Private, Visibilit
 pub const ACCESS: [CalculationAccess; 3] = [CalculationAccess::Excluded, CalculationAccess::RestrictedContribution, CalculationAccess::Full];
 pub const RESTRICTED: [Disclosure; 2] = [Disclosure::Aggregate, Disclosure::Hidden];
 pub const GRANT_DISCLOSURE: [Disclosure; 4] = [Disclosure::Aggregate, Disclosure::BalanceOnly, Disclosure::SelectedFields, Disclosure::Full];
-pub const PURPOSES: [&str; 5] = ["Household forecasts", "One scenario", "Decisions and affordability", "Funding searches", "Tax calculations"];
+pub const PURPOSES: [&str; 6] = ["Household forecasts", "One scenario", "Decisions and affordability", "Funding searches", "Tax calculations", "Taking money out of a company"];
+/// Grantee kinds a grant may name.
+pub const GRANTEE_KINDS: [&str; 2] = ["One person", "Everyone with a role"];
+/// Household roles a role grant may name.
+pub const GRANT_ROLES: [atlas_core::model::HouseholdRole; 5] = [
+    atlas_core::model::HouseholdRole::Owner,
+    atlas_core::model::HouseholdRole::Member,
+    atlas_core::model::HouseholdRole::Dependent,
+    atlas_core::model::HouseholdRole::Adviser,
+    atlas_core::model::HouseholdRole::ReadOnly,
+];
 
 #[derive(Debug, Clone, Default)]
 pub struct PrivacyDraft {
@@ -43,6 +53,9 @@ pub struct PrivacyDraft {
     pub grant_purpose: usize,
     pub grant_disclosure: usize,
     pub grant_access: usize,
+    /// 0 = one person, 1 = everyone with a role.
+    pub grantee_kind: usize,
+    pub grant_role: usize,
 }
 
 /// Retained state of both dialogs; rebuilt when the household changes.
@@ -68,6 +81,11 @@ fn selected_row(state: &Choice, cx: &App) -> usize {
 }
 
 impl PrivacyForms {
+    /// The row of an object among the ones the viewer administers.
+    pub fn object_row(&self, object: ObjectRef) -> Option<usize> {
+        self.objects.iter().position(|o| *o == object)
+    }
+
     /// Objects the viewer administers (owner of the policy), people other than the viewer, scenarios.
     pub fn new(household: &Household, viewer: PersonId, window: &mut Window, cx: &mut Context<AtlasApp>) -> Self {
         let mut objects: Vec<(ObjectRef, String)> = Vec::new();
@@ -257,8 +275,8 @@ impl AtlasApp {
             let this = this.clone();
             let wide_width = window.rem_size() * 52.;
             let (draft, object, person, scenario, effective_from, effective_to, note) = fields.clone();
-            let PrivacyDraft { grant_purpose, grant_disclosure, grant_access, .. } = draft.read(cx).clone();
-            let (d1, d2, d3) = (draft.clone(), draft.clone(), draft.clone());
+            let PrivacyDraft { grant_purpose, grant_disclosure, grant_access, grantee_kind, grant_role, .. } = draft.read(cx).clone();
+            let (d1, d2, d3, d4, d5) = (draft.clone(), draft.clone(), draft.clone(), draft.clone(), draft.clone());
             dialog
                 .title("Grant access for one purpose — without sharing the object with everyone")
                 .w(wide_width)
@@ -268,7 +286,24 @@ impl AtlasApp {
                         Form::vertical()
                             .columns(2)
                             .child(Field::new().label("Object (only ones you own)").child(if no_objects { div().text_sm().child("You own no policed object.").into_any_element() } else { Select::new(&object).into_any_element() }))
-                            .child(Field::new().label("Grantee").child(if no_people { div().text_sm().child("Nobody else in the household yet.").into_any_element() } else { Select::new(&person).into_any_element() }))
+                            .child(
+                                Field::new().label("Grantee").child(
+                                    RadioGroup::horizontal("grantee-kind")
+                                        .children(GRANTEE_KINDS)
+                                        .selected_index(Some(grantee_kind))
+                                        .on_change(move |index, _, cx| d4.update(cx, |d, cx| { d.grantee_kind = *index; cx.notify(); })),
+                                ),
+                            )
+                            .child(if grantee_kind == 1 {
+                                Field::new().label("Role").child(
+                                    RadioGroup::vertical("grant-role")
+                                        .children(GRANT_ROLES.iter().map(|r| r.label()))
+                                        .selected_index(Some(grant_role))
+                                        .on_change(move |index, _, cx| d5.update(cx, |d, cx| { d.grant_role = *index; cx.notify(); })),
+                                )
+                            } else {
+                                Field::new().label("Person").child(if no_people { div().text_sm().child("Nobody else in the household yet.").into_any_element() } else { Select::new(&person).into_any_element() })
+                            })
                             .child(
                                 Field::new().label("Purpose").child(
                                     RadioGroup::vertical("grant-purpose")
@@ -332,13 +367,18 @@ impl AtlasApp {
         let f = &self.privacy_forms;
         let draft = f.draft.read(cx).clone();
         let object = *f.objects.get(selected_row(&f.object, cx)).ok_or("You own no object to grant access to.")?;
-        let person = *f.people.get(selected_row(&f.person, cx)).ok_or("There is nobody else in the household to grant to.")?;
+        let grantee = if draft.grantee_kind == 1 {
+            Grantee::Role(GRANT_ROLES.get(draft.grant_role).copied().ok_or("Pick the role.")?)
+        } else {
+            Grantee::Person(*f.people.get(selected_row(&f.person, cx)).ok_or("There is nobody else in the household to grant to.")?)
+        };
         let purpose = match draft.grant_purpose {
             0 => Purpose::HouseholdForecast,
             1 => Purpose::Scenario(*f.scenarios.get(selected_row(&f.scenario, cx)).ok_or("Create a scenario first.")?),
             2 => Purpose::Decision,
             3 => Purpose::FundingSearch,
-            _ => Purpose::Tax,
+            4 => Purpose::Tax,
+            _ => Purpose::Extraction,
         };
         let effective_from = f.effective_from.read(cx).date().start().ok_or("Pick the effective date.")?;
         let effective_to = f.effective_to.read(cx).date().start();
@@ -346,7 +386,7 @@ impl AtlasApp {
         let grant = AccessGrant {
             id: GrantId::new(0),
             object,
-            grantee: Grantee::Person(person),
+            grantee: grantee.clone(),
             purpose,
             disclosure: GRANT_DISCLOSURE.get(draft.grant_disclosure).copied().unwrap_or(Disclosure::Aggregate),
             calculation: ACCESS.get(draft.grant_access).copied().unwrap_or(CalculationAccess::RestrictedContribution),
@@ -357,7 +397,7 @@ impl AtlasApp {
             revoked_on: None,
             note: f.note.read(cx).value().trim().to_string(),
         };
-        let described = format!("{} for {}", self.household.entity_name(EntityRef::Person(person)), purpose.describe(&self.household));
+        let described = format!("{} for {}", grantee.describe(&self.household), purpose.describe(&self.household));
         match self.household.add_grant(grant, self.viewer.person, at) {
             Ok(id) => {
                 log::info!("grant {id} on {object}: {described}");
