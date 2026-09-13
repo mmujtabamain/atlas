@@ -3,12 +3,14 @@
 //! chart first, then Affordability, Funding, Combinations, Goals and Basis.
 //! A finite, deterministic search over the person's own inputs; not advice.
 
-use atlas_core::decision::{Decision, ExtractionMethod, Objective};
+use atlas_core::decision::{AffordabilityMetric, Decision, ExtractionMethod, Objective};
 use atlas_core::model::Household;
+use atlas_core::vocab::{Certainty, MoneyClass};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _,
     alert::Alert,
+    breadcrumb::{Breadcrumb, BreadcrumbItem},
     button::{Button, ButtonVariants as _, DropdownButton},
     chart::AreaChart,
     checkbox::Checkbox,
@@ -36,12 +38,11 @@ use crate::nav::{Destination, Route};
 use crate::widgets::chart::{self, Legend, PathCommand};
 use crate::widgets::copy::copy_button;
 use crate::widgets::explain;
-use crate::widgets::figure::card;
 use crate::widgets::grid;
 use crate::widgets::labels;
 use crate::widgets::record::{self, Lane};
 use crate::widgets::statement::{self, Line, Statement};
-use crate::widgets::states::{fact, lanes, note, section};
+use crate::widgets::states::{action_bar, columns, empty_state, fact, hairline, info_card, note, section};
 
 const STEP_TITLES: [&str; 4] = ["Purchase", "Down payment", "Recurring payment", "Other costs"];
 
@@ -114,32 +115,23 @@ pub fn render_purchase(app: &AtlasApp, household: &Household, cx: &mut Context<A
         )
         .child(h_flex().w_full().gap_8().items_start().child(v_flex().flex_1().min_w_0().child(step_body)).child(summary))
         .children(wide_body)
-        .child(
-            h_flex()
-                .w_full()
-                .justify_between()
-                .items_center()
-                .pt_3()
-                .border_t_1()
-                .border_color(theme.border)
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(Button::new("purchase-cancel").outline().label("Cancel").on_click(cx.listener(|this, _, window, cx| this.cancel_purchase(window, cx))))
-                        .child(Button::new("purchase-back").ghost().label("Back").disabled(step == 0).on_click(cx.listener(move |this, _, window, cx| this.go_to_decision_step(step.saturating_sub(1), window, cx)))),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(div().text_xs().text_color(theme.muted_foreground).child(if step < 3 { format!("Next: {}", STEP_TITLES[step + 1]) } else { "Next: the result".to_string() }))
-                        .child(if step < 3 {
-                            Button::new("purchase-next").primary().label("Next").on_click(cx.listener(move |this, _, window, cx| this.go_to_decision_step(step + 1, window, cx))).into_any_element()
-                        } else {
-                            Button::new("purchase-calculate").primary().icon(IconName::Play).label("Calculate purchase").on_click(cx.listener(|this, _, window, cx| this.calculate_purchase(window, cx))).into_any_element()
-                        }),
-                ),
-        )
+        // The step's commands in one bar at the foot: leaving on the left,
+        // moving through the flow on the right, with the step that follows
+        // named beside the command that commits to it.
+        .child(action_bar(
+            "purchase-actions",
+            vec![Button::new("purchase-cancel").outline().label("Cancel").on_click(cx.listener(|this, _, window, cx| this.cancel_purchase(window, cx))).into_any_element()],
+            vec![
+                div().text_xs().text_color(theme.muted_foreground).child(if step < 3 { format!("Next: {}", STEP_TITLES[step + 1]) } else { "Next: the result".to_string() }).into_any_element(),
+                Button::new("purchase-back").ghost().label("Back").disabled(step == 0).on_click(cx.listener(move |this, _, window, cx| this.go_to_decision_step(step.saturating_sub(1), window, cx))).into_any_element(),
+                if step < 3 {
+                    Button::new("purchase-next").primary().label("Next").on_click(cx.listener(move |this, _, window, cx| this.go_to_decision_step(step + 1, window, cx))).into_any_element()
+                } else {
+                    Button::new("purchase-calculate").primary().icon(IconName::Play).label("Calculate purchase").on_click(cx.listener(|this, _, window, cx| this.calculate_purchase(window, cx))).into_any_element()
+                },
+            ],
+            cx,
+        ))
         .into_any_element()
 }
 
@@ -187,27 +179,38 @@ fn render_summary(app: &AtlasApp, household: &Household, cx: &mut Context<AtlasA
         } else {
             DescriptionList::new().columns(1).children(items.into_iter().map(|(k, v)| DescriptionItem::new(k).value(v))).into_any_element()
         })
-        .child(div().text_xs().text_color(theme.muted_foreground).child(format!("Household · evaluated through {} · not saved as a scenario", date(app.horizon()))))
+        // The scope of the draft is a different kind of statement from the
+        // values above it, so it is ruled off rather than run on.
+        .child(hairline(cx))
+        .child(div().text_xs().text_color(theme.muted_foreground).child(format!("Household · {}", household.base_currency.code())))
+        .child(div().text_xs().text_color(theme.muted_foreground).child(format!("Evaluated through {}", date(app.horizon()))))
+        .child(div().text_xs().text_color(theme.muted_foreground).child("Nothing is paid, borrowed or saved by building this plan."))
         .into_any_element()
 }
 
 fn render_step_purchase(form: &DecisionForm, household: &Household, cx: &mut Context<AtlasApp>) -> AnyElement {
     let draft = form.draft.clone();
     let objective = draft.read(cx).objective;
+    // The two-column grid with the qualifications as each field's own
+    // description: `What` and the objective take the whole row because their
+    // controls do, the money and date pairs share one, and the sentences that
+    // used to sit under the whole step now sit under the field they qualify.
     section("purchase-step-1", "What are you buying?")
-        .description(format!("The price, when, and the reserve the household must keep throughout. Every month between the earliest and latest month is compared as well. Balances as of {}.", date(household.as_of)))
+        .description(format!("The price, when, and the reserve the household must keep throughout. Balances as of {}.", date(household.as_of)))
         .child(
             Form::vertical()
                 .columns(2)
-                .child(Field::new().label("What").required(true).child(Input::new(&form.name).id("decision-name")))
+                .child(Field::new().label("What").required(true).col_span(2).child(Input::new(&form.name).id("decision-name")))
                 .child(Field::new().label("Total price").required(true).child(Input::new(&form.price).id("decision-price")))
                 .child(Field::new().label("Purchase date").required(true).child(DatePicker::new(&form.purchase_on)))
-                .child(Field::new().label("Household reserve to keep").child(Input::new(&form.reserve).id("decision-reserve")))
-                .child(Field::new().label("Earliest purchase month to compare").child(DatePicker::new(&form.window_from)))
+                .child(Field::new().label("Household reserve to keep").description("Kept throughout the tested path; what you enter, never inferred as enough.").child(Input::new(&form.reserve).id("decision-reserve")))
+                .child(Field::new().label("Earliest purchase month to compare").description("Every month in the window is evaluated as well; at most 24 of them.").col_start(1).child(DatePicker::new(&form.window_from)))
                 .child(Field::new().label("Latest purchase month to compare").child(DatePicker::new(&form.window_to)))
                 .child(
-                    Field::new().label("What matters most").child(
-                        RadioGroup::vertical("decision-objective")
+                    Field::new().label("What matters most").col_span(2).child(
+                        // Across the row rather than down it: four objectives
+                        // stacked cost the step four lines before its footer.
+                        RadioGroup::horizontal("decision-objective")
                             .children(Objective::ALL.iter().map(|o| o.label()))
                             .selected_index(Some(objective))
                             .on_change(move |index, _, cx| {
@@ -219,7 +222,6 @@ fn render_step_purchase(form: &DecisionForm, household: &Household, cx: &mut Con
                     ),
                 ),
         )
-        .child(note("The reserve is what you enter, never inferred as enough. The window is at most 24 months.", cx))
         .into_any_element()
 }
 
@@ -336,33 +338,49 @@ fn render_step_down_payment(app: &AtlasApp, form: &DecisionForm, household: &Hou
         .collect();
     let no_sources = form.source_floors.is_empty();
     let amounts = section("purchase-step-2", "The down payment and where it comes from")
-        .description("Paid on the purchase date from the allowed sources below. Fees and withholding are worked out on gross amounts. The alternative down payments in the range are compared too.")
+        .description("Paid on the purchase date from the allowed sources below. Fees and withholding are worked out on gross amounts.")
         .child(
             Form::vertical()
                 .columns(2)
                 .child(Field::new().label("Down payment").required(true).child(Input::new(&form.down_payment).id("decision-down-payment")))
-                .child(Field::new().label("Maximum tax + fees (optional)").child(Input::new(&form.max_tax).id("decision-max-tax")))
+                .child(Field::new().label("Maximum tax + fees (optional)").description("A ceiling on what funding may cost now; it never overrides an account or company constraint.").child(Input::new(&form.max_tax).id("decision-max-tax"))),
+        )
+        // The range is one thought — from, to, by — so it reads across three
+        // columns of its own rather than wrapping out of a two-column grid.
+        .child(
+            Form::vertical()
+                .columns(3)
                 .child(Field::new().label("Compare down payments from").child(Input::new(&form.down_low).id("decision-down-low")))
                 .child(Field::new().label("… up to").child(Input::new(&form.down_high).id("decision-down-high")))
-                .child(Field::new().label("… in steps of").child(Input::new(&form.down_step).id("decision-down-step"))),
+                .child(Field::new().label("… in steps of").description("Every down payment in the range is evaluated too, at most thirty of them.").child(Input::new(&form.down_step).id("decision-down-step"))),
         )
         .into_any_element();
     let tables = section("purchase-sources", "Funding sources")
                 .description("Hard earmarks and funding prohibitions always apply; a floor you enter can only be stricter. Moving a row changes the search order in this draft, not a standing rule.")
                 .action(Button::new("purchase-funding-rules").small().ghost().icon(IconName::Gavel).label("Funding rules").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Funding, cx))))
                 .child(if no_sources {
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(div().text_sm().text_color(cx.theme().muted_foreground).child("No personal account can fund a purchase yet."))
-                        .child(Button::new("purchase-add-account").small().outline().icon(IconName::Plus).label("Add account…").on_click(cx.listener(|this, _, window, cx| this.open_entry(Entry::Account, window, cx))))
-                        .into_any_element()
+                    empty_state(
+                        "purchase-no-sources",
+                        "No personal account can fund a purchase yet",
+                        "A source has to be a personal account that is not a liability. Add one and this step can be validated.",
+                        Some(Button::new("purchase-add-account").small().outline().icon(IconName::Plus).label("Add account…").on_click(cx.listener(|this, _, window, cx| this.open_entry(Entry::Account, window, cx))).into_any_element()),
+                        cx,
+                    )
                 } else {
                     record::list("purchase-source-list", record::header(&SOURCE_LANES, cx), source_rows).into_any_element()
                 })
-                .when(!unavailable.is_empty(), |this| this.child(v_flex().gap_0p5().child(div().text_xs().text_color(cx.theme().muted_foreground).child("Unavailable sources")).children(unavailable.into_iter().map(|u| div().text_xs().text_color(cx.theme().muted_foreground).child(u)))))
+                .when(!unavailable.is_empty(), |this| this.child(v_flex().w_full().gap_0p5().child(div().text_xs().text_color(cx.theme().muted_foreground).child("Unavailable sources")).children(unavailable.into_iter().map(|u| div().w_full().text_xs().text_color(cx.theme().muted_foreground).child(u)))))
                 .child(if route_rows.is_empty() { note("No company in the household; no company route.", cx).into_any_element() } else { record::list("purchase-route-list", record::header(&ROUTE_LANES, cx), route_rows).into_any_element() })
-        .child(note("Legal capacity is not established by this calculation. A route that breaks a company reserve is rejected, whatever its tax.", cx))
+        // What a company route does not establish is a standing fact about
+        // this step, true whether or not a route is allowed, so it is stated
+        // as one instead of trailing off as a muted afterthought.
+        .child(info_card(
+            "purchase-legal-capacity",
+            IconName::Gavel,
+            "Legal capacity is not established by this calculation",
+            "A route that would break a company reserve is rejected whatever its tax, and a permitted route here is still not proof that the company may pay it out.",
+            cx,
+        ))
         .into_any_element();
     (amounts, tables)
 }
@@ -378,7 +396,10 @@ fn render_step_recurring(app: &AtlasApp, form: &DecisionForm, _household: &House
         let months: Option<u32> = form.months.read(cx).value().trim().parse().ok().filter(|m| (1..=480).contains(m));
         let rate: Option<f64> = form.rate.read(cx).value().trim().replace('%', "").parse().ok().filter(|r: &f64| (0.0..=100.0).contains(r));
         match (months, rate) {
-            (Some(m), Some(r)) if principal.is_positive() => Some(format!("{} a month for {m} months at {r}% nominal, on {} financed — the supplied annuity model.", atlas_core::decision::monthly_payment(principal, m, (r * 100.0).round() as u32).format(), principal.format())),
+            (Some(m), Some(r)) if principal.is_positive() => Some((
+                format!("{} a month for {m} months", atlas_core::decision::monthly_payment(principal, m, (r * 100.0).round() as u32).format()),
+                format!("The supplied annuity model on {} financed at {r}% nominal. It is shown only because every input above parses; it is not a loan quote from any lender.", principal.format()),
+            )),
             _ => None,
         }
     } else {
@@ -397,12 +418,15 @@ fn render_step_recurring(app: &AtlasApp, form: &DecisionForm, _household: &House
                 Form::vertical()
                     .columns(2)
                     .child(Field::new().label("Months").required(true).child(Input::new(&form.months).id("decision-months")))
-                    .child(Field::new().label("Nominal annual rate (%)").required(true).child(Input::new(&form.rate).id("decision-rate")))
+                    .child(Field::new().label("Nominal annual rate (%)").required(true).description("Zero is a valid rate.").child(Input::new(&form.rate).id("decision-rate")))
                     .child(Field::new().label("First instalment").child(DatePicker::new(&form.first_instalment)))
                     .child(Field::new().label("Paying account").child(Select::new(&form.financing_account))),
             )
         })
-        .when_some(preview, |this, p| this.child(div().text_sm().child(p)))
+        // The instalment the entered term and rate imply is what this step is
+        // for, so it is stated as a fact of the step rather than as one more
+        // sentence under the form.
+        .when_some(preview, |this, (payment, how)| this.child(info_card("purchase-instalment-preview", IconName::Percent, payment, how, cx)))
         .when(!draft.financing, |this| this.child(note("Without financing the down payment must cover the price.", cx)))
         .into_any_element()
 }
@@ -450,6 +474,43 @@ fn render_step_other(form: &DecisionForm, cx: &mut Context<AtlasApp>) -> AnyElem
 
 // ----- Result --------------------------------------------------------------------
 
+/// The result's header: the trail that reaches it, the purchase's own name as
+/// the title, and one meta line of what was entered.
+///
+/// `common::detail_header` spells the last crumb with the title, which here
+/// would read `Decisions / Purchase / Family car — result` and then repeat the
+/// same words as the heading. The crumb is the place — `Result` — and the
+/// title is the thing the result is about.
+fn result_header(name: SharedString, meta: SharedString, actions: Vec<AnyElement>, cx: &mut Context<AtlasApp>) -> AnyElement {
+    let theme = cx.theme();
+    v_flex()
+        .w_full()
+        .gap_2()
+        .child(
+            Breadcrumb::new()
+                .child(BreadcrumbItem::new("Decisions").on_click(cx.listener(|this, _, _, cx| this.navigate(Destination::Decisions.home(), cx))))
+                .child(BreadcrumbItem::new("Purchase").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Purchase, cx))))
+                .child(BreadcrumbItem::new("Result")),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_start()
+                .gap_4()
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_1()
+                        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(name))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(meta)),
+                )
+                .when(!actions.is_empty(), |this| this.child(h_flex().flex_shrink_0().gap_2().children(actions))),
+        )
+        .into_any_element()
+}
+
 pub fn render_result(app: &AtlasApp, household: &Household, cx: &mut Context<AtlasApp>) -> AnyElement {
     let decision = match &app.decision {
         Some(Ok(d)) => d,
@@ -483,28 +544,23 @@ pub fn render_result(app: &AtlasApp, household: &Household, cx: &mut Context<Atl
     let keeps = decision.statement.claim.contains("keeps");
     let saved = app.decision_saved_scenario;
     let stale = app.decision_result_stale;
-    let subtitle = div()
-        .text_sm()
-        .text_color(cx.theme().muted_foreground)
-        .child(format!(
-            "{} on {} · {} down · {} · through {}",
-            plan.price.format(),
-            date(plan.purchase_on),
-            plan.down_payment.format(),
-            plan.financing.as_ref().map(|f| format!("{} instalments of {}", f.months, decision.monthly_payment.format())).unwrap_or_else(|| "paid in full".into()),
-            date(decision.through)
-        ))
-        .into_any_element();
+    // The meta line reads left to right the way the purchase was entered:
+    // when, for how much, how much of it now, and what follows monthly.
+    let meta = format!(
+        "{} · Price {} · Down payment {} · {} · through {}",
+        date(plan.purchase_on),
+        plan.price.format(),
+        plan.down_payment.format(),
+        plan.financing.as_ref().map(|f| format!("{} payments of {}", f.months, decision.monthly_payment.format())).unwrap_or_else(|| "paid in full".into()),
+        date(decision.through)
+    );
     let save: AnyElement = match saved {
         Some(id) => Button::new("decision-open-scenario").small().outline().label("Open saved scenario").on_click(cx.listener(move |this, _, _, cx| this.open_scenario_detail(id, cx))).into_any_element(),
         None => Button::new("decision-save-scenario").small().primary().icon(IconName::Save).label("Save as scenario").disabled(stale).tooltip(if stale { "Recalculate first; the inputs changed" } else { "Creates “Decision: <purchase>” with its planned movements" }).on_click(cx.listener(|this, _, window, cx| this.save_decision_as_scenario(window, cx))).into_any_element(),
     };
-    let header = detail_header(
-        Destination::Decisions,
-        Route::Purchase,
-        "Purchase",
-        format!("{} — result", plan.name),
-        Some(subtitle),
+    let header = result_header(
+        plan.name.clone().into(),
+        meta.into(),
         vec![Button::new("decision-edit").small().outline().label("Edit purchase").on_click(cx.listener(|this, _, window, cx| this.go_to_decision_step(0, window, cx))).into_any_element(), save],
         cx,
     );
@@ -517,6 +573,19 @@ pub fn render_result(app: &AtlasApp, household: &Household, cx: &mut Context<Atl
         _ => render_affordability(app, decision, cx),
     };
     let chart_block = render_decision_chart(app, decision, household, cx);
+    // Whether the reserve survives the conservative test is the one thing
+    // that can be wrong here, so it is an alert when it is; when it holds it
+    // is a standing fact and reads as a card, not as a warning that passed.
+    let verdict_fact: AnyElement = if keeps {
+        info_card("decision-verdict-fact", IconName::ShieldCheck, "Reserve kept in the Conservative case", decision.statement.claim.clone(), cx)
+    } else {
+        div()
+            .id("decision-verdict-fact")
+            .test_support()
+            .w_full()
+            .child(Alert::warning("decision-verdict-alert", decision.statement.claim.clone()).title("Reserve breached in the Conservative case"))
+            .into_any_element()
+    };
     let theme = cx.theme();
     v_flex()
         .id("screen-purchase-result")
@@ -526,19 +595,34 @@ pub fn render_result(app: &AtlasApp, household: &Household, cx: &mut Context<Atl
         .child(header)
         .when(stale, |this| this.child(Alert::warning("decision-stale", "The inputs changed after this result was calculated. Recalculate to refresh it; saving is disabled until then.").title("Out of date")))
         .child(
-            section("decision-verdict", "Verdict")
+            // No heading over the verdict: the card or the alert *is* the
+            // verdict, and the sentence under it is what the search chose.
+            v_flex()
+                .id("decision-verdict")
+                .test_support()
+                .w_full()
+                .gap_3()
+                .child(verdict_fact)
                 .child(
-                    h_flex()
+                    v_flex()
+                        .w_full()
                         .gap_2()
-                        .items_center()
-                        .flex_wrap()
-                        .child(if keeps { Tag::success().small().outline().child("Keeps the reserve in the conservative case") } else { Tag::danger().small().outline().child("Breaches the reserve in the conservative case") })
-                        .child(labels::strength_tag(decision.statement.coverage))
-                        .child(labels::money_class_tag(atlas_core::vocab::MoneyClass::ConditionalFuture))
-                        .child(div().text_xs().text_color(theme.muted_foreground).child(format!("Conservative test through {}; the chart below is the expected path.", date(decision.through)))),
-                )
-                .child(div().id("decision-recommendation").test_support().text_sm().child(decision.recommendation.action.clone()))
-                .child(div().text_xs().text_color(theme.muted_foreground).child(format!("Objective: {} · best among {} tested strategies, {} feasible — a finite search, not a global optimum.", decision.recommendation.objective, decision.recommendation.candidates_evaluated, decision.recommendation.feasible))),
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap_1()
+                                .flex_wrap()
+                                .items_center()
+                                .child(labels::money_class_tag(MoneyClass::ConditionalFuture))
+                                .child(labels::certainty_tag(Certainty::ScenarioOnly))
+                                .child(labels::strength_tag(decision.statement.coverage)),
+                        )
+                        .child(div().id("decision-recommendation").test_support().w_full().text_base().child(decision.recommendation.action.clone()))
+                        .child(div().w_full().text_xs().text_color(theme.muted_foreground).child(format!(
+                            "Objective: {} · best among {} tested strategies, {} feasible — a finite search, not a global optimum. The verdict is the conservative test through {}; the chart below is the expected path.",
+                            decision.recommendation.objective, decision.recommendation.candidates_evaluated, decision.recommendation.feasible, date(decision.through)
+                        ))),
+                ),
         )
         .child(chart_block)
         .child(
@@ -611,24 +695,100 @@ fn render_decision_chart(app: &AtlasApp, decision: &Decision, household: &Househ
         )
         .into_any_element();
     let values = grid::render("decision-values-grid", &app.grids.decision_values, cx).into_any_element();
-    let immediate: AnyElement = match &app.decision_immediate {
-        Some(f) => card(f.standard()).into_any_element(),
-        None => fact("Immediate cash after the purchase", decision.immediate_cash.money().format(), cx).into_any_element(),
-    };
-    section("decision-chart", "Expected cash paths")
-        .description("Baseline against the purchase, with your reserve. Expected case; the verdict above is the conservative test.")
-        .child(chart::cash_path("decision-path", &app.decision_path_state, format!("Household · Expected case · through {}", date(decision.through)), chart_el, values, legend, commands, readout, cx))
-        .child(lanes([immediate]))
+    let showing_values = app.decision_path_state.read(cx).values;
+    let cash_path = chart::cash_path(
+        "decision-path",
+        &app.decision_path_state,
+        format!("Expected graph · the Conservative reserve test is above · through {}", date(decision.through)),
+        chart_el,
+        values,
+        legend,
+        commands,
+        readout,
+        cx,
+    );
+    // The equation behind the immediate cash rather than its chain as a
+    // table: the terms of the terms are what `Full calculation…` opens, and
+    // the figure itself leads the Affordability grid below.
+    let equation = app.decision_immediate.as_ref().map(|f| explain::render_equation("decision-immediate-equation", f.calc.node(), f.content(), cx));
+    let theme = cx.theme();
+    let (border, radius) = (theme.border, theme.radius);
+    v_flex()
+        .id("decision-chart")
+        .test_support()
+        .w_full()
+        .gap_4()
+        // The plot, its title, its Chart/Values toggle and its legend are one
+        // bordered object; a borderless plot under a floating title reads as
+        // three unrelated things stacked.
+        .child(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .p_4()
+                .rounded(radius)
+                .border_1()
+                .border_color(border)
+                .child(div().w_full().text_sm().font_weight(FontWeight::MEDIUM).child(if showing_values { "Exact cash-path values" } else { "Expected cash paths" }))
+                .child(cash_path),
+        )
+        .children(equation)
+        .into_any_element()
+}
+
+/// The four metrics the result answers with, lifted out of the table into the
+/// grid under the report tabs; every other metric continues in the table.
+///
+/// They are matched by the engine's own names rather than by position, so a
+/// metric that is renamed or dropped falls back into the table instead of
+/// putting the wrong number under a heading. Each of these is a single figure:
+/// a metric whose value states two cases (the lowest cash, its dates) reads as
+/// a row, not as a grid cell that wraps while its neighbours do not.
+const LEAD_METRICS: [&str; 4] = ["Immediate cash after purchase", "Emergency reserve remaining", "Monthly repayment", "Total financing cost"];
+
+/// One cell of that grid for a metric the engine states as a value and a
+/// method: it has no chain of its own to open, so it carries no `ⓘ` and no
+/// vocabulary terms — the engine's `How` is what it can say for itself.
+fn metric_cell(m: &AffordabilityMetric, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let negative = m.money.is_some_and(|v| v.is_negative());
+    v_flex()
+        .w_full()
+        .min_w_0()
+        .gap_1()
+        .child(div().w_full().text_xs().text_color(theme.muted_foreground).whitespace_normal().child(m.name.clone()))
+        .child(
+            div()
+                .w_full()
+                .font_family(theme.mono_font_family.clone())
+                .text_xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .when(negative, |d| d.text_color(theme.danger))
+                .child(m.value.clone()),
+        )
+        .child(div().w_full().text_xs().text_color(theme.muted_foreground).whitespace_normal().child(m.how.clone()))
         .into_any_element()
 }
 
 fn render_affordability(app: &AtlasApp, decision: &Decision, cx: &mut Context<AtlasApp>) -> AnyElement {
     let lanes_def: [(&str, Lane); 3] = [("Metric", Lane::fixed(300.)), ("Value", Lane::fixed(260.)), ("How", Lane::flex())];
     let expanded = app.decision_metric_expanded;
+    // The headline grid, in the order the four are named — the immediate cash
+    // through its own explained figure (it is the one with a chain), the rest
+    // as the engine states them.
+    let mut cells: Vec<AnyElement> = Vec::with_capacity(LEAD_METRICS.len());
+    for name in LEAD_METRICS {
+        let Some(m) = decision.metrics.iter().find(|m| m.name == name) else { continue };
+        match &app.decision_immediate {
+            Some(f) if name == LEAD_METRICS[0] => cells.push(f.leading().into_any_element()),
+            _ => cells.push(metric_cell(m, cx)),
+        }
+    }
     let rows: Vec<AnyElement> = decision
         .metrics
         .iter()
         .enumerate()
+        .filter(|(_, m)| !LEAD_METRICS.contains(&m.name.as_str()))
         .map(|(i, m)| {
             let is_open = expanded == Some(i);
             let row = record::row(
@@ -655,9 +815,45 @@ fn render_affordability(app: &AtlasApp, decision: &Decision, cx: &mut Context<At
         .collect();
     let theme = cx.theme();
     section("decision-affordability", "Affordability")
-        .description("Every metric with the engine's own account of how it was worked out. Select a row to read the whole explanation.")
+        .description("What the purchase does to the household's cash: the four figures it answers with, then every other metric the engine reports with its own account of how it was worked out.")
+        .child(div().id("decision-affordability-figures").test_support().w_full().child(columns(cells)))
+        .child(hairline(cx))
         .child(v_flex().w_full().gap_0p5().child(record::header(&lanes_def, cx)).children(rows))
-        .when(!decision.company_consequences.is_empty(), |this| this.child(v_flex().gap_1().child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Company consequences")).children(decision.company_consequences.iter().map(|c| div().text_sm().child(c.clone())))).child(div().text_xs().text_color(theme.muted_foreground).child("Business cash is never counted as household cash.")))
+        .when(!decision.company_consequences.is_empty(), |this| {
+            this.child(v_flex().w_full().gap_1().child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Company consequences")).children(decision.company_consequences.iter().map(|c| div().w_full().text_sm().child(c.clone()))))
+                .child(div().w_full().text_xs().text_color(theme.muted_foreground).child("Business cash is never counted as household cash."))
+        })
+        .into_any_element()
+}
+
+/// The lanes the funding strategies are compared down. The last is the
+/// caveat or the reason a strategy is infeasible, so it takes what is left.
+const STRATEGY_LANES: [(&str, Lane); 8] = [
+    ("Strategy", Lane::fixed(220.)),
+    ("Status", Lane::fixed(150.)),
+    ("Immediate tax", Lane::money(120.)),
+    ("Fees", Lane::money(100.)),
+    ("Net delivered", Lane::money(130.)),
+    ("Future incremental tax", Lane::money(150.)),
+    ("Transfers", Lane::fixed(80.)),
+    ("Caveat / why not", Lane::flex()),
+];
+
+/// A right-aligned money cell of a fixed lane, outside a `record::row`.
+fn lane_money(lane: Lane, money: atlas_core::Money, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    div()
+        .w(px(lane.width.unwrap_or(120.)))
+        .flex_shrink_0()
+        .min_w_0()
+        .overflow_hidden()
+        .flex()
+        .justify_end()
+        .text_right()
+        .font_family(theme.mono_font_family.clone())
+        .text_sm()
+        .when(money.is_negative(), |d| d.text_color(theme.danger))
+        .child(money.format())
         .into_any_element()
 }
 
@@ -674,12 +870,14 @@ fn render_funding(app: &AtlasApp, decision: &Decision, cx: &mut Context<AtlasApp
         .map(|(index, s)| {
             let preferred = report.preferred == Some(index);
             let is_open = expanded == Some(index);
+            // The strategies compare across the same five figures, so they
+            // read down lanes; the sentence of metadata they used to carry
+            // put five numbers on one wrapping line nobody could compare.
             let header = h_flex()
                 .id(SharedString::from(format!("strategy-{index}")))
                 .w_full()
-                .gap_2()
+                .gap_4()
                 .items_center()
-                .flex_wrap()
                 .px_3()
                 .py_2()
                 .rounded(theme.radius)
@@ -690,11 +888,26 @@ fn render_funding(app: &AtlasApp, decision: &Decision, cx: &mut Context<AtlasApp
                     this.decision_strategy_expanded = Some(index);
                     cx.notify();
                 }))
-                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(format!("{}. {}", index + 1, s.name)))
-                .child(if s.feasible { Tag::secondary().xsmall().outline().child("Feasible") } else { Tag::danger().xsmall().outline().child("Infeasible") })
-                .when(preferred, |row| row.child(Tag::info().xsmall().outline().child("Preferred")))
-                .child(div().text_xs().text_color(theme.muted_foreground).child(format!("Immediate tax {} · fees {} · net {} · future incremental tax {} · {} transfer{}", s.immediate_tax.format(), s.fees.format(), s.net.format(), s.future_tax.format(), s.transfers, if s.transfers == 1 { "" } else { "s" })))
-                .when(!s.feasible && !is_open, |row| row.child(div().text_xs().text_color(theme.danger).child(s.violations.first().cloned().unwrap_or_default())));
+                .child(div().w(px(STRATEGY_LANES[0].1.width.unwrap_or(220.))).flex_shrink_0().min_w_0().overflow_hidden().text_ellipsis().text_sm().font_weight(FontWeight::MEDIUM).child(format!("{}. {}", index + 1, s.name)))
+                .child(
+                    h_flex()
+                        .w(px(STRATEGY_LANES[1].1.width.unwrap_or(150.)))
+                        .flex_shrink_0()
+                        .gap_1()
+                        .items_center()
+                        .child(if s.feasible { Tag::secondary().xsmall().outline().child("Feasible") } else { Tag::danger().xsmall().outline().child("Infeasible") })
+                        .when(preferred, |row| row.child(Tag::info().xsmall().outline().child("Preferred"))),
+                )
+                .child(lane_money(STRATEGY_LANES[2].1, s.immediate_tax, cx))
+                .child(lane_money(STRATEGY_LANES[3].1, s.fees, cx))
+                .child(lane_money(STRATEGY_LANES[4].1, s.net, cx))
+                .child(lane_money(STRATEGY_LANES[5].1, s.future_tax, cx))
+                .child(div().w(px(STRATEGY_LANES[6].1.width.unwrap_or(80.))).flex_shrink_0().text_sm().child(s.transfers.to_string()))
+                .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().text_xs().when(!s.feasible, |d| d.text_color(theme.danger)).when(s.feasible, |d| d.text_color(theme.muted_foreground)).child(if s.feasible {
+                    s.caveats.first().cloned().unwrap_or_else(|| if preferred { "Preferred under the stated objective".to_string() } else { String::new() })
+                } else {
+                    s.violations.first().cloned().unwrap_or_default()
+                }));
             if !is_open {
                 return header.into_any_element();
             }
@@ -747,9 +960,13 @@ fn render_funding(app: &AtlasApp, decision: &Decision, cx: &mut Context<AtlasApp
                 })))
                 .child(Button::new("decision-edit-funding").small().outline().label("Edit funding").on_click(cx.listener(|this, _, window, cx| this.go_to_decision_step(1, window, cx)))),
         )
-        .child(div().id("decision-strategy-status").test_support().text_sm().child(report.status.clone()))
-        .child(div().text_xs().text_color(theme.muted_foreground).child(format!("Search space: {}. Objective: {}. Best among the tested strategies, not a global optimum.", report.search_space, report.objective.label())))
-        .child(if strategies.is_empty() { note("No strategy could be enumerated: no allowed source or route.", cx).into_any_element() } else { v_flex().w_full().gap_2().children(strategies).into_any_element() })
+        .child(div().id("decision-strategy-status").test_support().w_full().text_sm().child(report.status.clone()))
+        .child(div().w_full().text_xs().text_color(theme.muted_foreground).child(format!("Search space: {}. Objective: {}. Best among the tested strategies, not a global optimum.", report.search_space, report.objective.label())))
+        .child(if strategies.is_empty() {
+            note("No strategy could be enumerated: no allowed source or route.", cx).into_any_element()
+        } else {
+            v_flex().w_full().gap_2().child(record::header(&STRATEGY_LANES, cx)).children(strategies).into_any_element()
+        })
         .when(show_basis, |this| {
             this.child(
                 v_flex()
@@ -884,8 +1101,10 @@ fn render_combinations(app: &AtlasApp, decision: &Decision, cx: &mut Context<Atl
             .pt_2()
             .border_t_1()
             .border_color(theme.border)
-            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(format!("Selected: {} · {} down", date(c.purchase_on), c.down_payment.format())))
-            .child(lanes([
+            .child(div().w_full().text_sm().font_weight(FontWeight::MEDIUM).child(format!("Selected: {} · {} down", date(c.purchase_on), c.down_payment.format())))
+            // An even grid, not a wrap row: four readings of one cell divide
+            // the width between them instead of leaving the right third empty.
+            .child(columns([
                 fact("Conservative lowest cash", format!("{}{}", c.lowest.format(), c.lowest_on.map(|d| format!(" on {}", date(d))).unwrap_or_default()), cx).into_any_element(),
                 fact("Reserve shortfall", if c.shortfall.is_positive() { c.shortfall.format() } else { "None".into() }, cx).into_any_element(),
                 fact("Financing cost", c.financing_cost.format(), cx).into_any_element(),
@@ -896,7 +1115,12 @@ fn render_combinations(app: &AtlasApp, decision: &Decision, cx: &mut Context<Atl
             .into_any_element()
     });
     section("decision-combinations", "Purchase month × down payment")
-        .description(format!("Conservative case · {total} combinations · every cell is a full evaluation. {}", decision.grid_status))
+        .badge("Conservative case")
+        .description(format!(
+            "{total} combinations · {} keep the reserve · every cell is a full evaluation. {}",
+            decision.grid.iter().filter(|c| c.reserve_ok && !outside(c)).count(),
+            decision.grid_status
+        ))
         .action(
             h_flex()
                 .gap_3()
@@ -989,7 +1213,15 @@ fn render_basis(app: &AtlasApp, decision: &Decision, household: &Household, cx: 
                 .children(decision.recommendation.constraints.iter().map(|c| div().text_xs().pl_4().child(format!("• {c}"))))
                 .child(div().text_xs().text_color(theme.muted_foreground).child(decision.recommendation.explanation.clone())),
         )
-        .child(explain::render_preview(decision.immediate_cash.node(), app.decision_immediate.as_ref().map(|f| f.content()).unwrap_or_else(|| std::sync::Arc::new(explain::ExplainContent::new("Immediate cash after the purchase", decision.immediate_cash.money(), decision.immediate_cash.shared_node(), household.entity_name(atlas_core::ids::EntityRef::Person(viewer.person)), atlas_core::Disclosure::Full))), cx))
+        // The equation, not the chain as a table: the chain is what
+        // `Full calculation…` opens, and as a table here it cost the tab
+        // twenty rows of what the sheet already lists exactly.
+        .child(explain::render_equation(
+            "decision-basis-equation",
+            decision.immediate_cash.node(),
+            app.decision_immediate.as_ref().map(|f| f.content()).unwrap_or_else(|| std::sync::Arc::new(explain::ExplainContent::new("Immediate cash after the purchase", decision.immediate_cash.money(), decision.immediate_cash.shared_node(), household.entity_name(atlas_core::ids::EntityRef::Person(viewer.person)), atlas_core::Disclosure::Full))),
+            cx,
+        ))
         .into_any_element()
 }
 
