@@ -6,6 +6,7 @@
 //! this crate boundary.
 
 mod connection;
+mod entities;
 mod legacy;
 mod migrations;
 mod repository;
