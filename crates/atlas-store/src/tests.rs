@@ -32,6 +32,10 @@ fn normalized_round_trip_preserves_household_and_forecast() {
 
 #[test]
 fn repeated_open_is_idempotent_and_checksum_drift_is_rejected() {
+    assert_eq!(
+        migrations::embedded_versions().expect("embedded migrations are valid"),
+        ["20260913180000_baseline"]
+    );
     let directory = tempfile::tempdir().expect("temporary directory");
     let file = HouseholdFile::new(directory.path().join("plan.atlas.sqlite"));
     file.acquire(OWNER, false).expect("lock acquired");
