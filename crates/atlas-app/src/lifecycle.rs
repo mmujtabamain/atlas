@@ -501,11 +501,11 @@ impl AtlasApp {
                     log::info!("perf: household load path_id={} took {:.1}ms off the UI thread", file.identity(), crate::perf::ms(started.elapsed()));
                     let mut lock_holder = None;
                     match lock {
-                        Some(Err(StoreError::Locked { owner, since, .. })) => {
+                        Err(StoreError::Locked { owner, since, .. }) => {
                             window.push_notification(format!("Viewing only: {owner} has it open since {since}. Save as… keeps a copy."), cx);
                             lock_holder = Some((owner, since));
                         }
-                        Some(Err(err)) => window.push_notification(format!("Opened without a lock: {err}"), cx),
+                        Err(err) => window.push_notification(format!("Opened without a lock: {err}"), cx),
                         _ => {}
                     }
                     let name = household.name.clone();
