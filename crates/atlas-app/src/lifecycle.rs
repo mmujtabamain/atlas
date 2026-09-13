@@ -100,27 +100,37 @@ impl AtlasApp {
                 let file = HouseholdFile::new(path);
                 if file.exists() {
                     let mut lock_holder = None;
-                    match file.acquire(owner, launch.take_over) {
-                        Ok(_) => {}
+                    let writable = match file.acquire(owner, launch.take_over) {
+                        Ok(_) => true,
                         Err(StoreError::Locked { owner: other, since, .. }) => {
                             notices.push(format!("{} is open by {other} since {since}. Viewing only; use Save as… to keep a copy.", path.display()));
                             lock_holder = Some((other, since));
+                            false
                         }
-                        Err(err) => notices.push(format!("Could not lock {}: {err}", path.display())),
-                    }
-                    match file.load() {
+                        Err(err) => {
+                            notices.push(format!("Could not lock {}: {err}", path.display()));
+                            false
+                        }
+                    };
+                    let loaded = if writable { file.load() } else { file.load_read_only() };
+                    match loaded {
                         Ok(household) => Resolved { household, file: Some(file), notices, failure: None, lock_holder },
                         Err(err) => {
-                            alerting::report(Level::Error, format!("failed to load household file {}: {err}", path.display()));
+                            if writable {
+                                let _ = file.release(owner);
+                            }
+                            alerting::report(Level::Error, format!("failed to load household path_id={}: {err}", file.identity()));
                             Resolved { household: placeholder(), file: None, notices, failure: Some(format!("Could not open {}: {err}", path.display())), lock_holder: None }
                         }
                     }
                 } else {
                     let household = Household::empty("New household", Currency::USD, launch.as_of.unwrap_or_else(|| chrono::Local::now().date_naive()));
-                    match file.save(&household).and_then(|_| file.acquire(owner, true).map(|_| ())) {
+                    let created = file.acquire(owner, false).and_then(|_| file.save_owned(&household, owner));
+                    match created {
                         Ok(()) => notices.push(format!("Created {}.", path.display())),
                         Err(err) => {
-                            alerting::report(Level::Error, format!("failed to create household file {}: {err}", path.display()));
+                            let _ = file.release(owner);
+                            alerting::report(Level::Error, format!("failed to create household path_id={}: {err}", file.identity()));
                             notices.push(format!("Could not create {}: {err}", path.display()));
                         }
                     }
@@ -141,7 +151,11 @@ impl AtlasApp {
         if let Some(old) = self.file.take() {
             let _ = old.release(&self.owner);
         }
-        log::info!("household replaced: “{}” ({} people, sample={is_sample}, file={:?})", household.name, household.people.len(), file.as_ref().map(|f| f.path().to_path_buf()));
+        log::info!(
+            "household replaced records={} sample={is_sample} path_id={}",
+            household.people.len(),
+            file.as_ref().map(HouseholdFile::identity).unwrap_or_else(|| "none".into())
+        );
         self.household = household;
         self.file = file;
         self.dirty = false;
@@ -310,10 +324,17 @@ impl AtlasApp {
         let edits = self.edits;
         self.saving = true;
         cx.notify();
-        log::info!("saving {} to {} in the background", household.name, file.path().display());
+        log::info!("household save started path_id={}", file.identity());
         let started = std::time::Instant::now();
         let write = cx.background_spawn(async move {
-            let result = file.save(&household).and_then(|_| if take_over { file.acquire(&owner, true).map(|_| ()) } else { Ok(()) });
+            let result = if take_over {
+                file.acquire(&owner, true).and_then(|_| file.save_owned(&household, &owner))
+            } else {
+                file.save_owned(&household, &owner)
+            };
+            if result.is_err() && take_over {
+                let _ = file.release(&owner);
+            }
             (file, result)
         });
         cx.spawn(async move |this, cx| {
@@ -327,7 +348,7 @@ impl AtlasApp {
         self.saving = false;
         match result {
             Ok(()) => {
-                log::info!("perf: save of {} took {:.1}ms off the UI thread", file.path().display(), crate::perf::ms(took));
+                log::info!("perf: household save path_id={} took {:.1}ms off the UI thread", file.identity(), crate::perf::ms(took));
                 if take_over {
                     if let Some(old) = self.file.take()
                         && old.path() != file.path()
@@ -351,7 +372,7 @@ impl AtlasApp {
                 }
             }
             Err(err) => {
-                alerting::report(Level::Error, format!("save failed for {}: {err}", file.path().display()));
+                alerting::report(Level::Error, format!("save failed path_id={}: {err}", file.identity()));
                 self.pending_after_save = None;
                 self.note_result(format!("Not saved · {err}"));
                 window.push_notification(format!("Not saved: {err}"), cx);
@@ -465,10 +486,11 @@ impl AtlasApp {
         let owner = self.owner.clone();
         let started = std::time::Instant::now();
         let read = cx.background_spawn(async move {
-            let loaded = file.load();
-            let lock = match &loaded {
-                Ok(_) => Some(file.acquire(&owner, false).map(|_| ())),
-                Err(_) => None,
+            let lock = file.acquire(&owner, false).map(|_| ());
+            let loaded = match &lock {
+                Ok(()) => file.load(),
+                Err(StoreError::Locked { .. }) => file.load_read_only(),
+                Err(_) => file.load_read_only(),
             };
             (file, loaded, lock)
         });
@@ -476,7 +498,7 @@ impl AtlasApp {
             let (file, loaded, lock) = read.await;
             let _ = this.update_in(cx, |app, window, cx| match loaded {
                 Ok(household) => {
-                    log::info!("perf: load of {} took {:.1}ms off the UI thread", file.path().display(), crate::perf::ms(started.elapsed()));
+                    log::info!("perf: household load path_id={} took {:.1}ms off the UI thread", file.identity(), crate::perf::ms(started.elapsed()));
                     let mut lock_holder = None;
                     match lock {
                         Some(Err(StoreError::Locked { owner, since, .. })) => {
@@ -492,7 +514,10 @@ impl AtlasApp {
                     app.note_result(format!("Opened “{name}”."));
                 }
                 Err(err) => {
-                    alerting::report(Level::Error, format!("open failed for {}: {err}", file.path().display()));
+                    if lock.as_ref().is_ok() {
+                        let _ = file.release(&app.owner);
+                    }
+                    alerting::report(Level::Error, format!("open failed path_id={}: {err}", file.identity()));
                     window.push_notification(format!("Could not open: {err}"), cx);
                 }
             });
