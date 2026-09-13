@@ -215,18 +215,27 @@ pub fn equation_text(node: &ProvNode) -> String {
         } else if term.sign() == Sign::Minus {
             text.push_str("− ");
         }
-        text.push_str(&format!("{} {}", term.value().render(), separate_qualifier(label)));
+        text.push_str(&format!("{} {}", term.value().render(), equation_label(label)));
     }
-    format!("{text} = {} {}", node.value().render(), separate_qualifier(result_label))
+    format!("{text} = {} {}", node.value().render(), equation_label(result_label))
 }
 
-/// A label may carry a qualifier after an em dash (`Conditional projected cash
-/// — expected case`). Beside a minus sign that dash reads as arithmetic, so in
-/// an equation the qualifier is separated with a middle dot instead. No word
-/// is dropped: the qualifier says which case the figure is, and losing it
-/// would make two different figures read alike.
-fn separate_qualifier(label: &str) -> String {
-    label.replace(" — ", " · ")
+/// Fits a chain label into an equation.
+///
+/// Two things are done to it. A qualifier after an em dash (`Conditional
+/// projected cash — expected case`) is separated with a middle dot instead:
+/// beside a minus sign that dash reads as arithmetic. And a trailing
+/// parenthesis of per-term metadata (`Rent (4 postings, contractual)`) is
+/// dropped — with twelve terms it is what turns the line into a paragraph,
+/// and it is exactly what the calculation sheet, the Values view and the
+/// Basis tab state in full. The term itself is never dropped: an equation
+/// that omits a term would not add up.
+fn equation_label(label: &str) -> String {
+    let label = label.replace(" — ", " · ");
+    match label.rfind(" (") {
+        Some(at) if label.ends_with(')') => label[..at].to_string(),
+        _ => label,
+    }
 }
 
 /// Drops the words every label in a chain begins with (`Household liquid

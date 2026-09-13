@@ -9,10 +9,12 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, WindowExt as _,
     accordion::Accordion,
+    alert::Alert,
     button::{Button, ButtonVariants as _},
     chart::AreaChart,
     description_list::{DescriptionItem, DescriptionList},
     h_flex,
+    select::Select,
     tab::{Tab, TabBar},
     tag::Tag,
     v_flex,
@@ -27,15 +29,37 @@ use crate::nav::{Destination, Route};
 use crate::widgets::chart::{self, Legend, PathCommand};
 use crate::widgets::copy::copy_button;
 use crate::widgets::explain;
-use crate::widgets::figure::card;
+use crate::widgets::figure::{ExplainedFigure, Figure};
 use crate::widgets::grid;
 use crate::widgets::record::{self, Lane};
 use crate::widgets::scope;
 use crate::widgets::statement;
-use crate::widgets::states::{fact, lanes, note, section};
+use crate::widgets::states::{columns, fact, info_card, note, section};
 
 fn date(d: chrono::NaiveDate) -> String {
     d.format("%d %b %Y").to_string()
+}
+
+/// The same figure under a shorter label. Four figures in one grid have room
+/// for `At the horizon`, not `Conditional projected cash at horizon`: a label
+/// that wraps onto a second line pushes its value out of line with the other
+/// three. The calculation sheet still opens under the figure's full name.
+fn relabel(figure: &ExplainedFigure, label: impl Into<SharedString>, emphasis: bool) -> Figure {
+    Figure::new(figure.id.clone(), label, &figure.calc, figure.content()).emphasis(emphasis)
+}
+
+/// One control of the scope row, label beside its select rather than above it.
+///
+/// `widgets::scope::bar` stacks each label over its control, which costs this
+/// screen three lines before the first figure. Composed here because the bar
+/// is shared with every other analysis screen; it wants an inline mode.
+fn inline_select(label: &'static str, choice: &scope::Choice, width: Pixels, cx: &App) -> impl IntoElement {
+    h_flex()
+        .flex_shrink_0()
+        .gap_2()
+        .items_center()
+        .child(div().flex_shrink_0().text_xs().text_color(cx.theme().muted_foreground).child(label))
+        .child(Select::new(choice).small().w(width))
 }
 
 /// The chart element of a path: cash as discrete steps against the floor.
@@ -91,6 +115,7 @@ pub fn render_path(app: &AtlasApp, model: &ProjectionModel, household: &Househol
     if let Some(i) = first_breach_index {
         commands.push(PathCommand { id: "show-first-breach", label: "Show first breach", select: i });
     }
+    let showing_values = app.forecast_path_state.read(cx).values;
     let selected = app.forecast_path_state.read(cx).selected.and_then(|i| f.path.get(i).map(|p| (i, p)));
     let readout = selected.map(|(i, p)| {
         let against = match p.balance.checked_sub(f.floor) {
@@ -111,12 +136,45 @@ pub fn render_path(app: &AtlasApp, model: &ProjectionModel, household: &Househol
         2 => render_basis(app, model, household, cx),
         _ => render_account_paths(app, model, household, cx),
     };
-    let lowest_qualifier = f.lowest_date.map(|d| format!("on {}", date(d))).unwrap_or_else(|| "never below the start".into());
     let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let border = theme.border;
+    let radius = theme.radius;
     let legend = vec![Legend { name: format!("{} cash", f.boundary.label(household)).into(), color: theme.chart_1 }, Legend { name: "Hard floor".into(), color: theme.danger }];
     let values = grid::render("forecast-values-grid", &app.grids.forecast_values, cx).into_any_element();
     let chart_el = path_chart("forecast-line-chart", model.chart.clone(), cx);
     let cash_path = chart::cash_path("forecast-path", &app.forecast_path_state, context, chart_el, values, legend, commands, readout, cx);
+
+    // The lowest point's date belongs in its label: as a qualifier under the
+    // metadata it sat on a line the other three columns leave empty.
+    let lowest = match f.lowest_date {
+        Some(d) => relabel(&model.lowest, format!("Lowest · {}", date(d)), breach),
+        None => relabel(&model.lowest, "Lowest", breach).qualifier("Never below the start"),
+    };
+    let days_line = format!(
+        "Days below the floor {} · shortfall over time {} {}-days (how long and how deep, not an amount of cash){}",
+        f.breach.days_below,
+        f.breach.integrated_shortfall_currency_days,
+        household.base_currency.code(),
+        match (f.breach.first_breach, f.breach.recovery) {
+            (Some(_), Some(r)) => format!(" · recovers {}", date(r)),
+            (Some(_), None) => " · not recovered within this window".to_string(),
+            _ => String::new(),
+        }
+    );
+    // Whether the path holds is a fact about this screen, so it is a card and
+    // not a muted sentence under the plot — and an alert only when the floor
+    // is actually breached.
+    let breach_fact: AnyElement = if breach {
+        div()
+            .id("forecast-breach-summary")
+            .test_support()
+            .w_full()
+            .child(Alert::warning("forecast-breach-alert", days_line).title(f.breach.summary()))
+            .into_any_element()
+    } else {
+        info_card("forecast-breach-summary", IconName::ChartLine, f.breach.summary(), days_line, cx)
+    };
 
     v_flex()
         .id("screen-forecast")
@@ -124,46 +182,76 @@ pub fn render_path(app: &AtlasApp, model: &ProjectionModel, household: &Househol
         .w_full()
         .gap_6()
         .child(header)
-        .child(scope::bar(
-            vec![
-                scope::select("Whose money", &app.forecast_boundary_choice, px(220.), cx).into_any_element(),
-                scope::select("Case", &app.forecast_case_choice, px(160.), cx).into_any_element(),
-                scope::select("Plan", &app.plan_choices.forecast, px(200.), cx).into_any_element(),
-            ],
-            Some(format!("Balances {} → forecast through {} · {}", date(f.as_of), date(f.through), f.case.description())),
-            cx,
-        ))
+        // The scope on one row — `Whose money [Household]  Case [Expected]
+        // Plan [Baseline]` — with the horizon it cannot change at the trailing
+        // edge and the case's own sentence beneath.
         .child(
-            section("forecast-figures", "Where the path goes")
-                .description("Future money is conditional on the assumptions, never money in hand. Three cases are three explicit paths, not a range or a probability.")
-                .child(lanes([
-                    card(model.start.standard()).into_any_element(),
-                    card(if breach { model.end.standard() } else { model.end.leading() }).into_any_element(),
-                    card(if breach { model.lowest.leading() } else { model.lowest.standard() }.qualifier(lowest_qualifier)).into_any_element(),
-                    card(model.injection.standard().qualifier("The minimum addition at the start, not the whole starting balance")).into_any_element(),
-                ])),
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .items_center()
+                        .gap_4()
+                        .child(
+                            h_flex()
+                                .flex_wrap()
+                                .gap_5()
+                                .items_center()
+                                .child(inline_select("Whose money", &app.forecast_boundary_choice, px(200.), cx))
+                                .child(inline_select("Case", &app.forecast_case_choice, px(150.), cx))
+                                .child(inline_select("Plan", &app.plan_choices.forecast, px(190.), cx)),
+                        )
+                        .child(div().flex_shrink_0().text_xs().text_color(muted).child(format!("Balances {} → through {}", date(f.as_of), date(f.through)))),
+                )
+                .child(div().w_full().text_xs().text_color(muted).child(scope::case_description(f.case))),
+        )
+        // No heading over the figures: they are the answer, and the scope line
+        // above already names the path they are on. The paragraph that stood
+        // here repeated what every one of these figures carries as its own
+        // `Conditional future` and `Scenario-tested` terms, each of which
+        // opens Figure meanings.
+        .child(
+            div().id("forecast-figures").test_support().w_full().child(columns([
+                relabel(&model.start, "Reconciled start", false).into_any_element(),
+                relabel(&model.end, "At the horizon", !breach).into_any_element(),
+                lowest.into_any_element(),
+                relabel(&model.injection, "Extra needed at start", false).qualifier("The minimum addition, not the whole starting balance").into_any_element(),
+            ])),
         )
         .child(
-            section("forecast-chart", "Conditional cash path")
-                .child(cash_path)
+            v_flex()
+                .id("forecast-chart")
+                .test_support()
+                .w_full()
+                .gap_4()
+                // The plot, its title, its Chart/Values toggle and its legend
+                // are one bordered object: a borderless plot under a floating
+                // title reads as three unrelated things stacked.
                 .child(
                     v_flex()
-                        .gap_1()
-                        .child(div().id("forecast-breach-summary").test_support().text_sm().child(f.breach.summary()))
-                        .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                            "Days below the floor {} · shortfall over time {} {}-days (how long and how deep, not an amount of cash){}",
-                            f.breach.days_below,
-                            f.breach.integrated_shortfall_currency_days,
-                            household.base_currency.code(),
-                            match (f.breach.first_breach, f.breach.recovery) {
-                                (Some(_), Some(r)) => format!(" · recovers {}", date(r)),
-                                (Some(_), None) => " · not recovered within this window".to_string(),
-                                _ => String::new(),
-                            }
-                        )))
-                        .child(div().text_xs().text_color(theme.muted_foreground).child("The chart rounds to whole currency units and cannot show same-day order; the Values view lists every posting exactly.")),
+                        .w_full()
+                        .gap_2()
+                        .p_4()
+                        .rounded(radius)
+                        .border_1()
+                        .border_color(border)
+                        // The title sits over the context line the shared
+                        // `cash_path` frame already pairs with the
+                        // Chart/Values toggle, so the card reads
+                        // title / context — toggle from its top edge.
+                        .child(div().w_full().text_sm().font_weight(FontWeight::MEDIUM).child(if showing_values { "Exact cash-path values" } else { "Conditional cash path" }))
+                        .child(cash_path)
+                        .child(div().w_full().text_xs().text_color(muted).child("The chart rounds to whole currency units and cannot show same-day order; the Values view lists every posting exactly.")),
                 )
-                .child(explain::render_preview(model.end.calc.node(), model.end.content(), cx)),
+                .child(breach_fact)
+                // The equation, not the chain as a table: fifteen rows of
+                // per-series terms cost this screen a third of its height and
+                // are what `Full calculation…` opens, listed exactly again in
+                // the Values view and the Basis tab.
+                .child(explain::render_equation("forecast-end-equation", model.end.calc.node(), model.end.content(), cx)),
         )
         .child(
             v_flex()
