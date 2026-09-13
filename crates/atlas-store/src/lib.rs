@@ -44,6 +44,8 @@ pub enum StoreError {
     Migration { version: String, message: String },
     #[error("legacy household upgrade failed; the recoverable backup is {backup}: {message}")]
     LegacyMigration { backup: PathBuf, message: String },
+    #[error("household upgrade failed; the recoverable backup is {backup}: {message}")]
+    Upgrade { backup: PathBuf, message: String },
     #[error(
         "household contains migrations newer than this application ({found}; latest supported: {supported})"
     )]
@@ -260,9 +262,12 @@ impl HouseholdFile {
         let plan = migrations::plan(&inspection).await?;
         inspection.close().await.map_err(StoreError::db)?;
         if !plan.pending.is_empty() {
-            self.backup_async().await?;
+            let backup = self.backup_async().await?;
             let database = connection::connect(&self.path, false).await?;
-            migrations::apply(&database).await?;
+            if let Err(error) = migrations::apply(&database).await {
+                let _ = database.close().await;
+                return Err(StoreError::Upgrade { backup, message: error.to_string() });
+            }
             database.close().await.map_err(StoreError::db)?;
         }
         let database = connection::connect_read_only(&self.path).await?;
@@ -362,7 +367,7 @@ impl HouseholdFile {
             .to_str()
             .ok_or_else(|| StoreError::Validation("backup path is not valid UTF-8".into()))?
             .replace('\'', "''");
-        let database = connection::connect(&self.path, false).await?;
+        let database = connection::connect_read_only(&self.path).await?;
         database
             .execute_unprepared(&format!("VACUUM INTO '{quoted}'"))
             .await
