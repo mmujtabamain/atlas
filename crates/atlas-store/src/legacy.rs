@@ -9,10 +9,15 @@ pub(crate) async fn is_legacy<C: ConnectionTrait>(db: &C) -> StoreResult<bool> {
         return Ok(false);
     }
     let columns = db
-        .query_all(Statement::from_string(DbBackend::Sqlite, "PRAGMA table_info('people')"))
+        .query_all(Statement::from_string(
+            DbBackend::Sqlite,
+            "PRAGMA table_info('people')",
+        ))
         .await
         .map_err(StoreError::db)?;
-    Ok(columns.iter().any(|row| row.try_get::<String>("", "name").ok().as_deref() == Some("json")))
+    Ok(columns
+        .iter()
+        .any(|row| row.try_get::<String>("", "name").ok().as_deref() == Some("json")))
 }
 
 pub(crate) async fn load<C: ConnectionTrait>(db: &C) -> StoreResult<Household> {
@@ -20,20 +25,27 @@ pub(crate) async fn load<C: ConnectionTrait>(db: &C) -> StoreResult<Household> {
         return Err(StoreError::NotAHousehold);
     }
     let version = required_meta(db, "schema_version").await?;
-    let parsed_version = version.parse::<u32>().map_err(|_| StoreError::Integrity("legacy schema version is invalid".into()))?;
+    let parsed_version = version
+        .parse::<u32>()
+        .map_err(|_| StoreError::Integrity("legacy schema version is invalid".into()))?;
     if parsed_version > SCHEMA_VERSION {
-        return Err(StoreError::SchemaVersion { found: parsed_version, supported: SCHEMA_VERSION });
+        return Err(StoreError::SchemaVersion {
+            found: parsed_version,
+            supported: SCHEMA_VERSION,
+        });
     }
     let name = required_meta(db, "name").await?;
     let currency_code = required_meta(db, "base_currency").await?;
-    let currency = atlas_core::Currency::from_code(&currency_code).ok_or_else(|| StoreError::Integrity("legacy household currency is invalid".into()))?;
+    let currency = atlas_core::Currency::from_code(&currency_code)
+        .ok_or_else(|| StoreError::Integrity("legacy household currency is invalid".into()))?;
     let as_of = required_meta(db, "as_of")
         .await?
         .parse()
         .map_err(|_| StoreError::Integrity("legacy reconciliation date is invalid".into()))?;
     let mut household = Household::empty(&name, currency, as_of);
     let tie_break = required_meta(db, "rule_tie_break").await?;
-    household.rule_tie_break = atlas_core::rules::TieBreak::from_slug(&tie_break).ok_or_else(|| StoreError::Integrity("legacy rule tie-break mode is invalid".into()))?;
+    household.rule_tie_break = atlas_core::rules::TieBreak::from_slug(&tie_break)
+        .ok_or_else(|| StoreError::Integrity("legacy rule tie-break mode is invalid".into()))?;
     household.people = load_required(db, "people").await?;
     household.companies = load_required(db, "companies").await?;
     household.accounts = load_required(db, "accounts").await?;
@@ -79,14 +91,22 @@ async fn required_meta<C: ConnectionTrait>(db: &C, key: &str) -> StoreResult<Str
     .ok_or_else(|| StoreError::Integrity(format!("legacy metadata key {key} is missing")))
 }
 
-async fn load_required<T: DeserializeOwned, C: ConnectionTrait>(db: &C, table: &str) -> StoreResult<Vec<T>> {
+async fn load_required<T: DeserializeOwned, C: ConnectionTrait>(
+    db: &C,
+    table: &str,
+) -> StoreResult<Vec<T>> {
     if !table_exists(db, table).await? {
-        return Err(StoreError::Integrity(format!("legacy table {table} is missing")));
+        return Err(StoreError::Integrity(format!(
+            "legacy table {table} is missing"
+        )));
     }
     load_rows(db, table).await
 }
 
-async fn load_optional<T: DeserializeOwned, C: ConnectionTrait>(db: &C, table: &str) -> StoreResult<Vec<T>> {
+async fn load_optional<T: DeserializeOwned, C: ConnectionTrait>(
+    db: &C,
+    table: &str,
+) -> StoreResult<Vec<T>> {
     if table_exists(db, table).await? {
         load_rows(db, table).await
     } else {
@@ -94,9 +114,15 @@ async fn load_optional<T: DeserializeOwned, C: ConnectionTrait>(db: &C, table: &
     }
 }
 
-async fn load_rows<T: DeserializeOwned, C: ConnectionTrait>(db: &C, table: &str) -> StoreResult<Vec<T>> {
+async fn load_rows<T: DeserializeOwned, C: ConnectionTrait>(
+    db: &C,
+    table: &str,
+) -> StoreResult<Vec<T>> {
     let rows = db
-        .query_all(Statement::from_string(DbBackend::Sqlite, format!("SELECT json FROM {table} ORDER BY seq")))
+        .query_all(Statement::from_string(
+            DbBackend::Sqlite,
+            format!("SELECT json FROM {table} ORDER BY seq"),
+        ))
         .await
         .map_err(StoreError::db)?;
     rows.into_iter()
