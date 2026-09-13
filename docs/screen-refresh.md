@@ -56,3 +56,35 @@ These came up on most screens and are now shared scaffolding rather than per-scr
 new column grid gives each cell a **definite** width (a fraction of a definite parent) and puts
 the gutter inside the cell as padding, because a `gap` on top of relative widths overflows the
 row and an auto-width cell is re-measured at every ancestor's sizing pass.
+
+## What the comparison found that was not a layout problem
+
+Reading every screen against a drawing of what it should be turned up five defects. They are the
+most valuable thing to come out of the exercise, and none of them is cosmetic.
+
+1. **The account register was clipping its figures' vocabulary.** A compact figure emitted its
+   terms unconditionally; the line is forty-six characters, no money lane is that wide, and
+   because the cell is right-aligned the overflow clipped the *front* of the string. Every row of
+   the register read `xact accounting calculation`, twice. Compact figures can now be asked for
+   value and icon alone (`Figure::terms`).
+2. **`DescriptionList` drops every row after the first once a value wraps.** Settings was losing
+   the log location and the frame-time readout entirely and cutting the failure-notification
+   sentence mid-word — all of them facts the contract requires. The component wraps itself and
+   each value cell in `overflow_hidden()`, and `.bordered(false)` does not change that. Settings
+   now lays its pairs out on the column grid. **Fourteen other files still use it**, several with
+   sentence-length values.
+3. **An equation would have claimed an arithmetic that never happened.** The first version of
+   `equation_text` joined a node's children with the signs of a sum, but the children of a median,
+   a min–max or a clamped difference are its *inputs*. A named formula now states its formula.
+   Five unit tests cover what the line may and may not claim.
+4. **Earmarks headlined the wrong figure for a person.** The leading slot was hardcoded to the
+   third figure, which under a person boundary is attributed *reserved* cash — a screen about
+   what is free led with what is reserved.
+5. **A grant on an object whose policy the viewer cannot see offered to open it.** The command was
+   gated on the object's kind rather than on the policy actually being visible.
+
+Two claims in `README.md` were also false and are corrected: details are not addressable by
+`--screen <slug>` (they carry their object's id, and `--screen person` silently falls back to
+Today, which is what one screenshot scenario had been photographing), and the status bar does not
+say `Alerts: log only` — `alerting::status_label` was written for a reading that was never wired
+up.
