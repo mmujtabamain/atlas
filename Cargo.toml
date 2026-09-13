@@ -1,0 +1,69 @@
+[workspace]
+resolver = "2"
+members = ["crates/atlas-core", "crates/atlas-store", "crates/atlas-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "UNLICENSED"
+
+[workspace.dependencies]
+# UI stack: gpui through gpui-kit only (never a direct gpui dependency).
+# `test-support` is enabled on the main dependency on purpose: it changes the
+# feature set of gpui itself, so keeping it in dev-dependencies would compile the
+# whole UI stack twice (once for `cargo build`, once for `cargo test`). On the
+# 2 GiB DevBench box that is ~8 extra minutes per cold build. Move it to
+# dev-dependencies once the build box has headroom.
+# `profiler` compiles gpui's frame profiler in: the in-scene frame-time overlay
+# (`Window::set_debug_frame_overlay_mode`) and the draw-duration histograms the
+# perf log quotes (`Window::frame_duration_snapshot`). See atlas-app `perf`.
+gpui-kit = { version = "0.6", features = ["test-support", "profiler"] }
+
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+# `rc`: provenance graphs are shared through `Arc` (see atlas-core `Calc`).
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+log = "0.4"
+# `RUST_LOG`-style filters for the two log sinks (stderr and logs.log) of
+# atlas-app's logger; the crate behind env_logger, so the syntax is identical.
+env_filter = { version = "2", default-features = false, features = ["std"] }
+# Blocking HTTP client for the production-failure alert hook (DevBench notify endpoint).
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+
+# From https://gpui-kit.com/docs/installation "Faster development builds":
+# optimise the UI stack even in debug builds so `cargo run` renders at a usable
+# speed while our own crates stay debuggable.
+[profile.dev]
+# Line tables are enough for backtraces and keep rustc memory/disk in check on
+# the 2 GiB build box.
+debug = "line-tables-only"
+
+# Measured on the Linux box, Household screen, per frame (docs/perf.md §3c):
+#   dev profile as shipped by gpui-kit's guide  43 ms
+#   + every dependency at opt-level 2           32 ms
+#   + atlas-app at opt-level 1                  26 ms   (release: 22 ms)
+# Either change alone does little: gpui's generic builder code (Styled,
+# IntoElement, element wrappers) is monomorphised half in our crate and half
+# in gpui-base/gpui-component, so both sides have to be optimised. atlas-core
+# and atlas-store stay at opt-level 0 — the engine is what gets debugged.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.atlas-app]
+opt-level = 1
+
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+gpui-kit = { opt-level = 3 }
+gpui-kit-assets = { opt-level = 3 }
+gpui-pre-macros = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+resvg = { opt-level = 3 }
+

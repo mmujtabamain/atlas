@@ -1,0 +1,10 @@
+[2026-09-12T13:06:12.968Z INFO  gpui_shot::xvfb] starting Xvfb (1600x1000x24)
+[2026-09-12T13:06:13.009Z INFO  gpui_shot::run] launching "/home/coder/project/atlas/target/debug/atlas" ["--theme", "light", "--size", "1600x1000", "--sample", "--viewer", "a", "--screen", "accounts"] on :0; app output -> shots/new-accounts.log
+[2026-09-12T13:06:13.311Z INFO  gpui_shot::x11] found window 0x400001 1600x1000 at (2,0) depth 32 title="Atlas Financer" after 301.911824ms
+[2026-09-12T13:06:13.312Z INFO  gpui_shot::run] waiting 1s before the first capture
+[2026-09-12T13:06:14.312Z INFO  gpui_shot::run] step 1/4: Click { x: 600, y: 420 }
+[2026-09-12T13:06:14.373Z INFO  gpui_shot::run] step 2/4: Wait { duration: 300ms }
+[2026-09-12T13:06:14.673Z INFO  gpui_shot::run] step 3/4: Click { x: 1460, y: 600 }
+[2026-09-12T13:06:14.735Z INFO  gpui_shot::run] step 4/4: Wait { duration: 500ms }
+[2026-09-12T13:06:16.462Z INFO  gpui_shot::run] wrote shots/new-accounts.png (1600x1000, 1000 distinct colours, settled=true, blank=false) after 3.494267157s
+shots/new-accounts.png 1600x1000 window=0x400001 settled=true blank=false

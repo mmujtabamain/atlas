@@ -1,0 +1,17 @@
+# Linux-only plumbing for a box without root access (see scripts/setup-linux-sysroot.sh).
+# LIBRARY_PATH lets `cc` resolve -lxkbcommon-x11 etc. from the vendored .sysroot,
+# PKG_CONFIG_PATH lets *-sys build scripts find fontconfig.pc & friends there, and
+# the rpath lets the produced binaries find libxkbcommon-x11.so.0 at run time
+# without an LD_LIBRARY_PATH. All of it is harmless on macOS/Windows (unused dir).
+[env]
+LIBRARY_PATH = { value = ".sysroot/lib", relative = true }
+PKG_CONFIG_PATH = { value = ".sysroot/lib/pkgconfig", relative = true }
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    # DT_RPATH (not RUNPATH) so the path also covers the vendored libs' own
+    # dependencies (libxkbcommon-x11 -> libxcb-xkb) without LD_LIBRARY_PATH.
+    "-C", "link-arg=-Wl,--disable-new-dtags",
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../.sysroot/lib",
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../../.sysroot/lib",
+]

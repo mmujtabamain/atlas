@@ -1,0 +1,24 @@
+[package]
+name = "atlas-app"
+description = "Atlas Financer desktop application (Rust + gpui via gpui-kit): the verbose, provenance-first UI over atlas-core."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+build = "build.rs"
+
+[[bin]]
+name = "atlas"
+path = "src/main.rs"
+
+[dependencies]
+atlas-core = { path = "../atlas-core" }
+atlas-store = { path = "../atlas-store" }
+gpui-kit.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_filter.workspace = true
+ureq.workspace = true

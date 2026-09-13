@@ -1,0 +1,6 @@
+[2026-09-12T12:59:11.651Z INFO  gpui_shot::xvfb] starting Xvfb (1600x1500x24)
+[2026-09-12T12:59:11.694Z INFO  gpui_shot::run] launching "/home/coder/project/atlas/target/debug/atlas" ["--theme", "light", "--size", "1600x1500", "--sample", "--viewer", "a"] on :0; app output -> shots/new-today.log
+[2026-09-12T12:59:11.996Z INFO  gpui_shot::x11] found window 0x400001 1600x1500 at (2,0) depth 32 title="Atlas Financer" after 302.04947ms
+[2026-09-12T12:59:11.996Z INFO  gpui_shot::run] waiting 1s before the first capture
+[2026-09-12T12:59:14.615Z INFO  gpui_shot::run] wrote shots/new-today.png (1600x1500, 1000 distinct colours, settled=true, blank=false) after 2.96471579s
+shots/new-today.png 1600x1500 window=0x400001 settled=true blank=false
