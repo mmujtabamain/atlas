@@ -215,9 +215,18 @@ pub fn equation_text(node: &ProvNode) -> String {
         } else if term.sign() == Sign::Minus {
             text.push_str("− ");
         }
-        text.push_str(&format!("{} {}", term.value().render(), label));
+        text.push_str(&format!("{} {}", term.value().render(), separate_qualifier(label)));
     }
-    format!("{text} = {} {result_label}", node.value().render())
+    format!("{text} = {} {}", node.value().render(), separate_qualifier(result_label))
+}
+
+/// A label may carry a qualifier after an em dash (`Conditional projected cash
+/// — expected case`). Beside a minus sign that dash reads as arithmetic, so in
+/// an equation the qualifier is separated with a middle dot instead. No word
+/// is dropped: the qualifier says which case the figure is, and losing it
+/// would make two different figures read alike.
+fn separate_qualifier(label: &str) -> String {
+    label.replace(" — ", " · ")
 }
 
 /// Drops the words every label in a chain begins with (`Household liquid
