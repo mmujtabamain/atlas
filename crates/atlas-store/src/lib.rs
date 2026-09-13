@@ -630,3 +630,6 @@ fn record_count(household: &Household) -> usize {
         + household.grants.len()
         + household.audit.len()
 }
+
+#[cfg(test)]
+mod tests;
