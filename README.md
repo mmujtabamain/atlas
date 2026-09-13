@@ -36,8 +36,10 @@ opens on **Welcome**: create a household, open a file, or explore the fictitious
 
 ## The screens
 
-Eight destinations in the sidebar, each with its own tabs; details are addressable routes of
-their own, so `--screen <slug>` reaches any of them.
+Eight destinations in the sidebar, each with its own tabs. Details are routes of their own, but
+they carry the object's id rather than a slug, so `--screen` reaches the destinations and tabs
+listed below and **not** a detail: `--screen person` is not a slug and falls back to Today. Reach
+a detail by opening its record (`scripts/shoot.sh` clicks through for the shots that need one).
 
 | Destination | Tabs | Details |
 |---|---|---|
@@ -236,5 +238,6 @@ household (`rules` table; the tie-break policy in `meta`).
 `DEVBENCH_NOTIFY_URL` and `DEVBENCH_NOTIFY_TOKEN` are set in the deployment environment,
 posts panics and calculation failures to DevBench's notify endpoint
 (`POST $DEVBENCH_NOTIFY_URL/api/notify/`, bearer token, `{"text","level","source":"atlas-app"}`).
-Without them it degrades to local logging and the status bar says "Alerts: log only".
+Without them it degrades to local logging. (`alerting::status_label` was written for a status-bar
+reading that was never wired up and has no caller; the status bar does not say this today.)
 The token is a server-side secret: it is read from the environment only and never logged.

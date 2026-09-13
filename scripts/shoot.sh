@@ -65,7 +65,9 @@ scenario explain-free-cash-dark 1000 --step click:560,200 --step wait:800 -- "$A
 # Person B: a private account is an authorized aggregate, a company is a
 # planning-safe summary, a private scenario is a count.
 scenario today-person-b-light 2000 -- "$APP" --theme light --size ${WIDTH}x2000 --sample --viewer b --screen today
-scenario company-person-b-light 900 -- "$APP" --theme light --size ${WIDTH}x900 --sample --viewer b --screen company
+# `company` is not a slug — a detail carries its object's id, so this clicks
+# the register's open chevron instead of landing on Today (README, The screens).
+scenario company-person-b-light 900 --step click:1541,262 --step wait:700 -- "$APP" --theme light --size ${WIDTH}x900 --sample --viewer b --screen companies
 scenario scenarios-person-b-light 1400 -- "$APP" --theme light --size ${WIDTH}x1400 --sample --viewer b --screen scenarios
 scenario policies-person-b-dark 1800 -- "$APP" --theme dark --size ${WIDTH}x1800 --sample --viewer b --screen policies
 
