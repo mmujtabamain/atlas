@@ -21,6 +21,8 @@ fn main() {
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     app.run(move |cx| {
         gpui_kit::init(cx);
+        #[cfg(target_os = "macos")]
+        atlas_app::macos::init(cx);
         launch.apply_theme(cx);
 
         let bounds = Bounds::centered(None, size(px(launch.width), px(launch.height)), cx);
