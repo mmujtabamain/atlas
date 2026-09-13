@@ -37,6 +37,9 @@ fi
 
 step "Step 1/3 — Check Atlas CLI"
 command -v atlas >/dev/null 2>&1 || { fail "Atlas CLI is required: https://atlasgo.io/getting-started#installation"; exit 1; }
+expected_atlas="$(sed -n 's/^atlas=//p' "$STORE_DIR/TOOL_VERSIONS")"
+actual_atlas="$(atlas version 2>/dev/null | sed -n 's/^atlas version v//p')"
+[[ "$actual_atlas" == "$expected_atlas" ]] || { fail "Atlas $expected_atlas is required; found ${actual_atlas:-unknown}."; exit 1; }
 run atlas version
 
 step "Step 2/3 — Generate migration from schema.hcl"

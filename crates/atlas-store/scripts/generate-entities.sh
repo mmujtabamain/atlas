@@ -42,6 +42,12 @@ trap cleanup EXIT
 step "Step 1/4 — Check development tools"
 command -v atlas >/dev/null 2>&1 || { fail "Atlas CLI is required: https://atlasgo.io/getting-started#installation"; exit 1; }
 command -v sea-orm-cli >/dev/null 2>&1 || { fail "sea-orm-cli 1.1.20 is required: cargo install sea-orm-cli --version 1.1.20 --locked"; exit 1; }
+expected_atlas="$(sed -n 's/^atlas=//p' "$STORE_DIR/TOOL_VERSIONS")"
+expected_sea_orm="$(sed -n 's/^sea-orm-cli=//p' "$STORE_DIR/TOOL_VERSIONS")"
+actual_atlas="$(atlas version 2>/dev/null | sed -n 's/^atlas version v//p')"
+actual_sea_orm="$(sea-orm-cli --version 2>/dev/null | sed -n 's/^sea-orm-cli //p')"
+[[ "$actual_atlas" == "$expected_atlas" ]] || { fail "Atlas $expected_atlas is required; found ${actual_atlas:-unknown}."; exit 1; }
+[[ "$actual_sea_orm" == "$expected_sea_orm" ]] || { fail "sea-orm-cli $expected_sea_orm is required; found ${actual_sea_orm:-unknown}."; exit 1; }
 run atlas version
 run sea-orm-cli --version
 
