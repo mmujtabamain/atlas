@@ -36,19 +36,39 @@ use crate::rule_builder::{ACTION_KINDS, CONDITION_KINDS, SCOPE_KINDS, STEPS, TRI
 use crate::widgets::grid;
 use crate::widgets::record::{self, Lane};
 use crate::widgets::scope;
-use crate::widgets::states::{count_line, empty_state, fact, lanes, note, section};
+use crate::widgets::states::{action_bar, columns, columns_leading, count_line, empty_state, fact, info_card, note, section};
 
 fn date(d: chrono::NaiveDate) -> String {
     d.format("%d %b %Y").to_string()
 }
 
+/// One control of a filter or scope row, its label beside the control rather
+/// than above it.
+///
+/// `widgets::scope::control` stacks the label over the control, which costs a
+/// whole line before the first rule and leaves ragged label/control pairs
+/// where one row reads as one setting. The bar is shared with every analysis
+/// screen, so the inline form is composed here (as `screens::accounts` and
+/// `screens::forecast` compose theirs).
+fn inline_control(label: &'static str, control: impl IntoElement, cx: &App) -> impl IntoElement {
+    h_flex()
+        .flex_shrink_0()
+        .gap_2()
+        .items_center()
+        .child(div().flex_shrink_0().text_xs().text_color(cx.theme().muted_foreground).child(label))
+        .child(control)
+}
+
+// The register's lanes. The trailing lane was an `On` / `Off` chip that said
+// exactly what the Enabled switch three lanes to its left already says; it is
+// now the row's `open` chevron, as on every other register.
 const LANES: [(&str, Lane); 6] = [
-    ("Rule", Lane::fixed(260.)),
-    ("Enabled", Lane::fixed(90.)),
-    ("Priority", Lane::fixed(120.)),
-    ("Version", Lane::fixed(80.)),
+    ("Rule", Lane::fixed(300.)),
+    ("Enabled", Lane::fixed(80.)),
+    ("Priority", Lane::fixed(110.)),
+    ("Version", Lane::fixed(70.)),
     ("What it does", Lane::flex()),
-    ("", Lane::fixed(60.)),
+    ("", Lane::fixed(32.)),
 ];
 
 // ----- Register ----------------------------------------------------------------
@@ -90,28 +110,44 @@ pub fn render_register(app: &AtlasApp, model: &RulesModel, household: &Household
                     ),
                     (LANES[3].1, record::muted(format!("v{}", rule.version), cx)),
                     (LANES[4].1, v_flex().min_w_0().child(div().text_sm().whitespace_normal().child(format!("When {} in {}: {}", rule.trigger.label(), rule.scope.describe(household), rule.action.describe(household)))).child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("Effective {} – {}", date(rule.effective_from), rule.effective_to.map(date).unwrap_or_else(|| "open".into())))).into_any_element()),
-                    (LANES[5].1, h_flex().justify_end().child(if enabled { Tag::secondary().xsmall().outline().child("On") } else { Tag::warning().xsmall().outline().child("Off") }).into_any_element()),
+                    (
+                        LANES[5].1,
+                        Button::new(SharedString::from(format!("rule-open-{}", id.raw())))
+                            .xsmall()
+                            .ghost()
+                            .compact()
+                            .icon(IconName::ChevronRight)
+                            .tooltip("Open rule")
+                            .on_click(cx.listener(move |this, _, _, cx| this.navigate(Route::Rule(id), cx)))
+                            .into_any_element(),
+                    ),
                 ],
                 move |_, _, cx| crate::app::with_app(cx, |app, cx| app.select_rule(id, cx)),
             )
         })
         .collect();
-    let theme = cx.theme();
+    let any = !model.rules.is_empty();
+    // The foot of the register: what is selected on the left, what can be done
+    // with it on the right, ruled off from the rows above.
     let footer = selected.and_then(|id| model.rules.iter().find(|r| r.id == id)).map(|rule| {
         let id = rule.id;
-        h_flex()
-            .w_full()
-            .justify_end()
-            .items_center()
-            .gap_2()
-            .child(div().flex_1().text_xs().text_color(theme.muted_foreground).child(format!("Selected: {}", rule.name)))
-            .child(Button::new("rule-open").small().outline().label("Open rule").on_click(cx.listener(move |this, _, _, cx| this.navigate(Route::Rule(id), cx))))
-            .child(Button::new("rule-simulate").small().ghost().label("Simulate").on_click(cx.listener(move |this, _, _, cx| this.open_rule_simulation(id, cx))))
-            .child(
-                DropdownButton::new("rule-more").small().button(Button::new("rule-more-button").small().ghost().label("More")).dropdown_menu(move |menu, _, _| {
-                    menu.item(PopupMenuItem::new("Delete rule…").on_click(move |_, window, cx| crate::app::with_app(cx, |app, cx| app.confirm_delete_rule(id, window, cx))))
-                }),
-            )
+        action_bar(
+            "rules-footer",
+            vec![note(format!("Selected: {}", rule.name), cx).into_any_element()],
+            vec![
+                Button::new("rule-open").small().outline().label("Open rule").on_click(cx.listener(move |this, _, _, cx| this.navigate(Route::Rule(id), cx))).into_any_element(),
+                Button::new("rule-simulate").small().ghost().label("Simulate").on_click(cx.listener(move |this, _, _, cx| this.open_rule_simulation(id, cx))).into_any_element(),
+                DropdownButton::new("rule-more")
+                    .small()
+                    .button(Button::new("rule-more-button").small().ghost().label("More"))
+                    .dropdown_menu(move |menu, _, _| {
+                        menu.item(PopupMenuItem::new("Delete rule…").on_click(move |_, window, cx| crate::app::with_app(cx, |app, cx| app.confirm_delete_rule(id, window, cx))))
+                    })
+                    .into_any_element(),
+            ],
+            cx,
+        )
+        .into_any_element()
     });
 
     v_flex()
@@ -120,20 +156,54 @@ pub fn render_register(app: &AtlasApp, model: &RulesModel, household: &Household
         .w_full()
         .gap_6()
         .child(header)
-        .child(scope::bar(
-            vec![
-                scope::select("Tie-break", &app.tie_break_choice, px(260.), cx).into_any_element(),
-                scope::select("Plan", &app.plan_choices.rules, px(200.), cx).into_any_element(),
-            ],
-            Some(format!("Resolution order: explicit priority, then scope specificity, then the tie-break ({}). Disabling or re-prioritising records a new version.", model.tie_break.label())),
-            cx,
-        ))
-        .child(count_line(model.rules.len(), model.rules.len(), "rules", cx))
-        .child(div().text_xs().text_color(theme.muted_foreground).child(format!("{enabled_count} enabled · {} disabled but kept with their history", model.rules.len() - enabled_count)))
-        .child(if model.rules.is_empty() {
-            empty_state("rules-empty", "No user rules yet", "A rule adds a fee, classifies a category, or steers which account funds a purchase. Without one, no fee is charged by this app — that is not a claim about your bank's charges.", Some(Button::new("rules-add-first").small().outline().icon(IconName::Plus).label("Create rule").on_click(cx.listener(|this, _, window, cx| this.start_rule_flow(window, cx))).into_any_element()), cx)
-        } else {
+        // One line: how many rules there are and how many are on, with the
+        // settings that govern the register at its trailing edge. The count
+        // was stated twice — `7 rules` and then `7 enabled · 0 disabled` on
+        // the line beneath — and the tie-break was a label-over-select at the
+        // leading edge with a paragraph under it, which pushed the first rule
+        // four lines down the screen.
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .gap_4()
+                .child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .items_center()
+                        .child(count_line(model.rules.len(), model.rules.len(), "rules", cx))
+                        .child(note(format!("· {enabled_count} enabled · {} disabled but kept with their history", model.rules.len() - enabled_count), cx)),
+                )
+                .child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .gap_5()
+                        .items_center()
+                        .child(inline_control("Plan", Select::new(&app.plan_choices.rules).small().w(px(180.)), cx))
+                        .child(inline_control("Tie-break policy", Select::new(&app.tie_break_choice).small().w(px(230.)), cx)),
+                ),
+        )
+        .child(if any {
             record::list("rules-list", record::header(&LANES, cx), rows).into_any_element()
+        } else {
+            empty_state("rules-empty", "No user rules yet", "A rule adds a fee, classifies a category, or steers which account funds a purchase. Without one, no fee is charged by this app — that is not a claim about your bank's charges.", Some(Button::new("rules-add-first").small().outline().icon(IconName::Plus).label("Create rule").on_click(cx.listener(|this, _, window, cx| this.start_rule_flow(window, cx))).into_any_element()), cx)
+        })
+        // How a decision is reached is a standing fact about the register, so
+        // it is a bordered card at its foot rather than a muted sentence above
+        // the rows that reads as an afterthought.
+        .when(any, |this| {
+            this.child(info_card(
+                "rules-precedence",
+                IconName::ListOrdered,
+                "Precedence is explicit",
+                format!(
+                    "Rules resolve by explicit priority, then scope specificity, then the tie-break policy ({}). Disabling a rule or changing its priority records a new version and keeps the old one.",
+                    model.tie_break.label()
+                ),
+                cx,
+            ))
         })
         .children(footer)
         .into_any_element()
@@ -146,12 +216,36 @@ pub fn render_detail(app: &AtlasApp, id: RuleId, model: &RulesModel, household: 
         return v_flex().id("screen-rule").test_support().gap_4().child(detail_header(Destination::RulesTaxes, Route::Rules, "Rules", "Unknown rule", None, vec![], cx)).child(note("This rule no longer exists.", cx)).into_any_element();
     };
     let enabled = rule.enabled;
+    let muted = cx.theme().muted_foreground;
+    let mono = cx.theme().mono_font_family.clone();
+    // One meta line of the facts that identify this version of the rule, with
+    // the two versioned mutations on it. They were crowded into the header's
+    // command group beside `More`, where a switch and a pair of chevrons read
+    // as commands of the screen rather than facts of the rule.
     let subtitle = h_flex()
-        .gap_2()
+        .w_full()
+        .gap_5()
         .items_center()
         .flex_wrap()
-        .child(div().text_sm().text_color(cx.theme().muted_foreground).child(format!("When {} in {}: {}", rule.trigger.label(), rule.scope.describe(household), rule.action.describe(household))))
-        .child(Tag::secondary().xsmall().outline().child(format!("v{}", rule.version)))
+        .child(div().flex_shrink_0().text_sm().text_color(muted).child(format!("Version {}", rule.version)))
+        .child(
+            h_flex()
+                .flex_shrink_0()
+                .gap_2()
+                .items_center()
+                .child(div().text_xs().text_color(muted).child("Enabled"))
+                .child(Switch::new("rule-detail-enabled").checked(enabled).on_click(cx.listener(move |this, _, window, cx| this.toggle_rule(id, window, cx)))),
+        )
+        .child(
+            h_flex()
+                .flex_shrink_0()
+                .gap_1()
+                .items_center()
+                .child(div().pr_1().text_xs().text_color(muted).child("Priority"))
+                .child(Button::new("rule-detail-lower").xsmall().ghost().compact().icon(IconName::ChevronDown).tooltip("Lower priority by one (new version)").on_click(cx.listener(move |this, _, window, cx| this.bump_rule_priority(id, -1, window, cx))))
+                .child(div().font_family(mono).text_sm().child(rule.priority.to_string()))
+                .child(Button::new("rule-detail-raise").xsmall().ghost().compact().icon(IconName::ChevronUp).tooltip("Raise priority by one (new version)").on_click(cx.listener(move |this, _, window, cx| this.bump_rule_priority(id, 1, window, cx)))),
+        )
         .when_some(rule.scenario.and_then(|s| household.scenario(s)).map(|s| s.name.clone()), |this, name| this.child(Tag::info().xsmall().outline().child(format!("Only under “{name}”"))))
         .into_any_element();
     let header = detail_header(
@@ -161,15 +255,6 @@ pub fn render_detail(app: &AtlasApp, id: RuleId, model: &RulesModel, household: 
         rule.name.clone(),
         Some(subtitle),
         vec![
-            h_flex()
-                .gap_2()
-                .items_center()
-                .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Enabled"))
-                .child(Switch::new("rule-detail-enabled").checked(enabled).on_click(cx.listener(move |this, _, window, cx| this.toggle_rule(id, window, cx))))
-                .child(Button::new("rule-detail-lower").xsmall().ghost().compact().icon(IconName::ChevronDown).tooltip("Lower priority by one").on_click(cx.listener(move |this, _, window, cx| this.bump_rule_priority(id, -1, window, cx))))
-                .child(div().font_family(cx.theme().mono_font_family.clone()).text_sm().child(rule.priority.to_string()))
-                .child(Button::new("rule-detail-raise").xsmall().ghost().compact().icon(IconName::ChevronUp).tooltip("Raise priority by one").on_click(cx.listener(move |this, _, window, cx| this.bump_rule_priority(id, 1, window, cx))))
-                .into_any_element(),
             DropdownButton::new("rule-detail-more")
                 .small()
                 .button(Button::new("rule-detail-more-button").small().ghost().label("More"))
@@ -178,6 +263,15 @@ pub fn render_detail(app: &AtlasApp, id: RuleId, model: &RulesModel, household: 
         ],
         cx,
     );
+    // What the rule does, in words, above the tabs: it is true on all four of
+    // them, and reading it should not depend on which one is open. The Details
+    // tab no longer repeats it.
+    let explanation = rule.explanation.trim().to_string();
+    let statement = v_flex()
+        .w_full()
+        .gap_1()
+        .child(div().w_full().text_base().child(format!("When {} in {}: {}", rule.trigger.label(), rule.scope.describe(household), rule.action.describe(household))))
+        .when(!explanation.is_empty(), |this| this.child(div().w_full().text_xs().text_color(muted).child(explanation)));
     let tab = app.rule_tab;
     let body: AnyElement = match tab {
         1 => render_decisions_for(app, rule, model, household, cx),
@@ -191,6 +285,7 @@ pub fn render_detail(app: &AtlasApp, id: RuleId, model: &RulesModel, household: 
         .w_full()
         .gap_6()
         .child(header)
+        .child(statement)
         .child(
             v_flex()
                 .w_full()
@@ -206,24 +301,39 @@ pub fn render_detail(app: &AtlasApp, id: RuleId, model: &RulesModel, household: 
                 )
                 .child(body),
         )
+        // The screen's own commands, ruled off at its foot: where this rule can
+        // take you on the left, what can be done with it on the right.
+        .child(action_bar(
+            "rule-commands",
+            vec![
+                Button::new("rule-activity-link").small().ghost().icon(IconName::ListTree).label("Rule activity").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::RuleActivity, cx))).into_any_element(),
+            ],
+            vec![Button::new("rule-simulate-command").small().outline().icon(IconName::Play).label("Simulate").on_click(cx.listener(move |this, _, _, cx| this.open_rule_simulation(id, cx))).into_any_element()],
+            cx,
+        ))
         .into_any_element()
 }
 
 fn render_rule_details(rule: &Rule, household: &Household, cx: &mut Context<AtlasApp>) -> AnyElement {
+    let _ = cx;
     let conditions: Vec<String> = rule.conditions.iter().map(|c| c.describe(household)).collect();
+    // The rule in words and its explanation are stated once, above the tabs;
+    // this tab is the field-by-field reading of the same version. The action
+    // and the scope's specificity are their own rows, as they are the two
+    // facts a reader comes here to check.
     section("rule-details", "What this rule does")
-        .child(div().text_sm().child(format!("When {} in {}: {}", rule.trigger.label(), rule.scope.describe(household), rule.action.describe(household))))
         .child(
             DescriptionList::new()
                 .columns(2)
+                .child(DescriptionItem::new("Action").value(rule.action.describe(household)))
                 .child(DescriptionItem::new("Trigger").value(rule.trigger.label()))
-                .child(DescriptionItem::new("Scope").value(format!("{} · specificity {}", rule.scope.describe(household), rule.scope.specificity())))
+                .child(DescriptionItem::new("Scope").value(rule.scope.describe(household)))
+                .child(DescriptionItem::new("Scope specificity").value(rule.scope.specificity().to_string()))
                 .child(DescriptionItem::new("Conditions").value(if conditions.is_empty() { "No additional conditions".to_string() } else { conditions.join(" and ") }))
                 .child(DescriptionItem::new("Effective").value(format!("{} – {}", date(rule.effective_from), rule.effective_to.map(date).unwrap_or_else(|| "open".into()))))
                 .child(DescriptionItem::new("Applies under").value(rule.scenario.and_then(|s| household.scenario(s)).map(|s| format!("Scenario “{}” only", s.name)).unwrap_or_else(|| "The baseline and every scenario".into())))
                 .child(DescriptionItem::new("Status").value(if rule.enabled { format!("Enabled, version {}", rule.version) } else { format!("Disabled, version {}", rule.version) })),
         )
-        .child(note(rule.explanation.clone(), cx))
         .into_any_element()
 }
 
@@ -354,7 +464,9 @@ fn render_simulation(app: &AtlasApp, rule: &Rule, model: &RulesModel, household:
                 .w_full()
                 .gap_3()
                 .child(record::list("simulation-list", record::header(&lanes_def, cx), list))
-                .child(lanes([
+                // The four qualifying facts as one even grid across the width,
+                // not four 16 rem cards wrapping at the left of the window.
+                .child(columns([
                     fact("Fee difference", sim.fee_delta.format_signed(), cx).into_any_element(),
                     fact("Rule's own status", if sim.currently_enabled { "Enabled in the household".to_string() } else { "Disabled in the household".to_string() }, cx).into_any_element(),
                     fact("Floor with the rule", sim.with_rule.breach.summary(), cx).into_any_element(),
@@ -374,9 +486,9 @@ fn render_simulation(app: &AtlasApp, rule: &Rule, model: &RulesModel, household:
         .description(format!("Household · Expected case · through {}. The rule is evaluated enabled and disabled; the household is untouched.", date(model.through)))
         .action(
             h_flex()
-                .gap_2()
+                .gap_3()
                 .items_center()
-                .child(scope::select("Plan", &app.plan_choices.rules, px(200.), cx))
+                .child(inline_control("Plan", Select::new(&app.plan_choices.rules).small().w(px(180.)), cx))
                 .child(Button::new("run-rule-simulation").small().primary().icon(IconName::Play).label("Run simulation").on_click(cx.listener(move |this, _, _, cx| this.simulate_rule(id, cx)))),
         )
         .child(body)
@@ -423,7 +535,10 @@ pub fn render_activity(app: &AtlasApp, model: &RulesModel, household: &Household
         .cloned()
         .collect();
     let expanded = app.rule_decision_expanded.and_then(|i| decisions.get(i)).map(|d| candidate_table(d, cx));
-    let theme = cx.theme();
+    // The colour is copied out rather than held as `&Theme`: the body below
+    // borrows `cx` mutably to build its rows, and the scope line after it
+    // needs the same colour.
+    let muted = cx.theme().muted_foreground;
     let body: AnyElement = if tab == 1 {
         v_flex()
             .w_full()
@@ -433,7 +548,7 @@ pub fn render_activity(app: &AtlasApp, model: &RulesModel, household: &Household
             } else {
                 grid::render("rule-fees-grid", &app.grids.rule_fees, cx).into_any_element()
             })
-            .child(div().text_xs().text_color(theme.muted_foreground).child(format!("Total fees {} · through {} · expected case", model.fee_total.format(), date(model.through))))
+            .child(div().text_xs().text_color(muted).child(format!("Total fees {} · through {} · expected case", model.fee_total.format(), date(model.through))))
             .into_any_element()
     } else {
         v_flex()
@@ -454,22 +569,49 @@ pub fn render_activity(app: &AtlasApp, model: &RulesModel, household: &Household
         .w_full()
         .gap_6()
         .child(header)
-        .child(scope::bar(
-            vec![scope::select("Plan", &app.plan_choices.rules, px(200.), cx).into_any_element(), scope::fixed("Case", "Expected", cx).into_any_element(), scope::fixed("Through", date(model.through), cx).into_any_element()],
-            Some("Scenario-scoped rules take part only under their own plan.".into()),
-            cx,
-        ))
-        .child(lanes([
-            fact("Decisions", model.evaluation.decisions.len().to_string(), cx).into_any_element(),
-            fact("With competing candidates", model.conflicts.len().to_string(), cx).into_any_element(),
-            fact("Fees added", model.fee_total.format(), cx).into_any_element(),
-        ]))
+        // The scope on one row — `Plan [Baseline]` — with the case and the
+        // horizon it cannot change at the trailing edge, rather than three
+        // label-over-control pairs and a sentence beneath them.
         .child(
             h_flex()
                 .w_full()
-                .gap_4()
+                .justify_between()
                 .items_center()
-                .flex_wrap()
+                .gap_4()
+                .child(inline_control("Plan", Select::new(&app.plan_choices.rules).small().w(px(180.)), cx))
+                .child(div().flex_shrink_0().text_xs().text_color(muted).child(format!("Expected · Through {}", date(model.through)))),
+        )
+        // What the evaluation found, as one even grid, with the fact that
+        // qualifies it beside the counts rather than buried in the scope line
+        // as a muted sentence. The three counts share 60 % of the width so the
+        // card beside them is wide enough to read in three lines, not six.
+        .child(columns_leading(
+            0.6,
+            [
+                columns([
+                    fact("Decisions", model.evaluation.decisions.len().to_string(), cx).into_any_element(),
+                    fact("With competing candidates", model.conflicts.len().to_string(), cx).into_any_element(),
+                    fact("Fees added", model.fee_total.format(), cx).into_any_element(),
+                ])
+                .into_any_element(),
+                info_card(
+                    "activity-scope-basis",
+                    IconName::GitBranch,
+                    "Scenario rules need their plan",
+                    "A rule scoped to a scenario takes part only under that scenario's plan. Under the baseline it is absent from this evaluation, not disabled.",
+                    cx,
+                ),
+            ],
+        ))
+        // The tabs at the leading edge with the filters that narrow them at the
+        // trailing edge: one row, so the register starts a line sooner and the
+        // filters read as belonging to the tab beside them.
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .gap_4()
                 .child(
                     TabBar::new("activity-tabs")
                         .selected_index(tab)
@@ -480,26 +622,36 @@ pub fn render_activity(app: &AtlasApp, model: &RulesModel, household: &Household
                         }))
                         .children([Tab::new().label("Decisions"), Tab::new().label("Fee postings")]),
                 )
-                .child(scope::select("Rule", &app.rule_filter_choice, px(240.), cx))
-                .child(Checkbox::new("conflicts-only").label("Competing candidates only").checked(conflicts_only).on_change(cx.listener(|this, v, _, cx| {
-                    this.rule_conflicts_only = *v;
-                    this.rule_decision_expanded = None;
-                    cx.notify();
-                })))
-                .child(Button::new("activity-clear").small().ghost().label("Clear").disabled(!conflicts_only && rule_filter.is_none()).on_click(cx.listener(|this, _, window, cx| {
-                    this.rule_conflicts_only = false;
-                    AtlasApp::set_choice(&this.rule_filter_choice, 0, window, cx);
-                    this.rule_decision_expanded = None;
-                    cx.notify();
-                }))),
+                .child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .gap_4()
+                        .items_center()
+                        .child(inline_control("Rule", Select::new(&app.rule_filter_choice).small().w(px(220.)), cx))
+                        .child(Checkbox::new("conflicts-only").label("Competing candidates only").checked(conflicts_only).on_change(cx.listener(|this, v, _, cx| {
+                            this.rule_conflicts_only = *v;
+                            this.rule_decision_expanded = None;
+                            cx.notify();
+                        })))
+                        .child(Button::new("activity-clear").small().ghost().label("Clear").disabled(!conflicts_only && rule_filter.is_none()).on_click(cx.listener(|this, _, window, cx| {
+                            this.rule_conflicts_only = false;
+                            AtlasApp::set_choice(&this.rule_filter_choice, 0, window, cx);
+                            this.rule_decision_expanded = None;
+                            cx.notify();
+                        }))),
+                ),
         )
         .child(body)
-        .child(
-            h_flex()
-                .gap_2()
-                .child(Button::new("activity-funding-order").small().ghost().icon(IconName::Landmark).label("Funding order").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Funding, cx))))
-                .child(Button::new("activity-expense-selection").small().ghost().label("Expense account selection").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Funding, cx)))),
-        )
+        // Where the two facts this report keeps pointing at actually live.
+        .child(action_bar(
+            "activity-footer",
+            vec![
+                Button::new("activity-funding-order").small().ghost().icon(IconName::Landmark).label("Funding order").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Funding, cx))).into_any_element(),
+                Button::new("activity-expense-selection").small().ghost().label("Expense account selection").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Funding, cx))).into_any_element(),
+            ],
+            Vec::new(),
+            cx,
+        ))
         .into_any_element()
 }
 
