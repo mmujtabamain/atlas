@@ -716,9 +716,11 @@ fn snake_tag<T: Serialize>(value: &T) -> StoreResult<String> {
     let value = serde_json::to_value(value)?;
     let tag = match value {
         serde_json::Value::String(tag) => tag,
-        serde_json::Value::Object(map) if map.len() == 1 => {
-            map.into_iter().next().map(|(key, _)| key).unwrap_or_default()
-        }
+        serde_json::Value::Object(map) if map.len() == 1 => map
+            .into_iter()
+            .next()
+            .map(|(key, _)| key)
+            .unwrap_or_default(),
         _ => {
             return Err(StoreError::Serialization(
                 "enum did not serialize to a stable tag".into(),
