@@ -6,6 +6,7 @@
 //! this crate boundary.
 
 mod connection;
+#[allow(dead_code, unused_imports)]
 mod entities;
 mod legacy;
 mod migrations;
