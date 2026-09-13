@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use atlas_core::model::{Household, SCHEMA_VERSION};
-use sea_orm::{ConnectionTrait, DbBackend, Statement, TryGetable};
+use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -144,7 +144,7 @@ impl HouseholdFile {
         }
         let lock = Lock {
             owner: owner.to_owned(),
-            since: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Minutes, true),
+            since: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             pid: std::process::id(),
         };
         let encoded = serde_json::to_vec(&lock)?;

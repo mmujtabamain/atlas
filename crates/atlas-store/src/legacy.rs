@@ -1,5 +1,5 @@
 use atlas_core::model::{Household, SCHEMA_VERSION};
-use sea_orm::{ConnectionTrait, DbBackend, Statement, TryGetable};
+use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde::de::DeserializeOwned;
 
 use crate::{HouseholdMeta, StoreError, StoreResult};

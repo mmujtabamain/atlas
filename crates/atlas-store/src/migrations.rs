@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use include_dir::{Dir, include_dir};
-use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionTrait, TryGetable};
+use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionTrait};
 use sha2::{Digest, Sha256};
 
 use crate::{StoreError, StoreResult, now_millis};

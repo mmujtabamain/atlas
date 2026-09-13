@@ -5,7 +5,7 @@ use atlas_core::model::{
 };
 use atlas_core::provenance::Disclosure;
 use atlas_core::timeline::Direction;
-use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionTrait, TryGetable, Value};
+use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionTrait, Value};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -717,7 +717,7 @@ fn snake_tag<T: Serialize>(value: &T) -> StoreResult<String> {
     let tag = match value {
         serde_json::Value::String(tag) => tag,
         serde_json::Value::Object(map) if map.len() == 1 => {
-            map.into_keys().next().unwrap_or_default()
+            map.into_iter().next().map(|(key, _)| key).unwrap_or_default()
         }
         _ => {
             return Err(StoreError::Serialization(
