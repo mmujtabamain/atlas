@@ -286,7 +286,7 @@ pub fn info_card(id: &'static str, icon: IconName, title: impl Into<SharedString
 
 /// The commands that belong to the whole screen, ruled off at its foot: what
 /// this screen can do on the right, where it can take you on the left.
-pub fn action_bar(id: &'static str, leading: Vec<AnyElement>, trailing: Vec<AnyElement>) -> impl IntoElement {
+pub fn action_bar(id: &'static str, leading: Vec<AnyElement>, trailing: Vec<AnyElement>, cx: &App) -> impl IntoElement {
     h_flex()
         .id(id)
         .test_support()
@@ -295,6 +295,8 @@ pub fn action_bar(id: &'static str, leading: Vec<AnyElement>, trailing: Vec<AnyE
         .items_center()
         .gap_4()
         .pt_3()
+        .border_t_1()
+        .border_color(cx.theme().border)
         .child(h_flex().gap_2().items_center().children(leading))
         .child(h_flex().gap_2().items_center().children(trailing))
 }
