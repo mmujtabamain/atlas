@@ -4,7 +4,7 @@
 
 CREATE TABLE households (
   singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
-  household_id TEXT NOT NULL UNIQUE,
+  household_id TEXT NOT NULL,
   name TEXT NOT NULL,
   base_currency TEXT NOT NULL CHECK (length(base_currency) = 3),
   as_of TEXT NOT NULL CHECK (length(as_of) = 10),
@@ -13,31 +13,34 @@ CREATE TABLE households (
   last_written_by_version TEXT NOT NULL,
   format_lineage TEXT NOT NULL
 );
+CREATE UNIQUE INDEX households_household_id ON households(household_id);
 
 CREATE TABLE people (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('owner', 'member', 'dependent', 'adviser', 'read_only')),
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX people_position ON people(position);
 
 CREATE TABLE companies (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   name TEXT NOT NULL,
   jurisdiction TEXT NOT NULL,
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX companies_position ON companies(position);
 
 CREATE TABLE company_owners (
   company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   position INTEGER NOT NULL CHECK (position >= 0),
   person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
   basis_points INTEGER NOT NULL CHECK (basis_points BETWEEN 0 AND 10000),
-  PRIMARY KEY (company_id, position),
-  UNIQUE (company_id, person_id)
+  PRIMARY KEY (company_id, position)
 );
+CREATE UNIQUE INDEX company_owners_company_id_person_id ON company_owners(company_id, person_id);
 CREATE INDEX idx_company_owners_person ON company_owners(person_id);
 
 CREATE TABLE company_roles (
@@ -45,9 +48,9 @@ CREATE TABLE company_roles (
   position INTEGER NOT NULL CHECK (position >= 0),
   person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
   role TEXT NOT NULL,
-  PRIMARY KEY (company_id, position),
-  UNIQUE (company_id, person_id, role)
+  PRIMARY KEY (company_id, position)
 );
+CREATE UNIQUE INDEX company_roles_company_id_person_id_role ON company_roles(company_id, person_id, role);
 CREATE INDEX idx_company_roles_person ON company_roles(person_id);
 
 CREATE TABLE company_employees (
@@ -73,7 +76,7 @@ CREATE TABLE company_constraints (
 
 CREATE TABLE accounts (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   name TEXT NOT NULL,
   institution TEXT NOT NULL,
   kind TEXT NOT NULL,
@@ -94,6 +97,7 @@ CREATE TABLE accounts (
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
   CHECK ((holder_kind = 'company' AND holder_company_id IS NOT NULL) OR (holder_kind = 'persons' AND holder_company_id IS NULL))
 );
+CREATE UNIQUE INDEX accounts_position ON accounts(position);
 CREATE INDEX idx_accounts_company ON accounts(holder_company_id);
 CREATE INDEX idx_accounts_kind ON accounts(kind);
 
@@ -102,9 +106,9 @@ CREATE TABLE account_owners (
   position INTEGER NOT NULL CHECK (position >= 0),
   person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
   basis_points INTEGER NOT NULL CHECK (basis_points BETWEEN 0 AND 10000),
-  PRIMARY KEY (account_id, position),
-  UNIQUE (account_id, person_id)
+  PRIMARY KEY (account_id, position)
 );
+CREATE UNIQUE INDEX account_owners_account_id_person_id ON account_owners(account_id, person_id);
 CREATE INDEX idx_account_owners_person ON account_owners(person_id);
 
 CREATE TABLE account_fees (
@@ -121,13 +125,13 @@ CREATE TABLE account_fund_categories (
   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   position INTEGER NOT NULL CHECK (position >= 0),
   category TEXT NOT NULL,
-  PRIMARY KEY (account_id, position),
-  UNIQUE (account_id, category)
+  PRIMARY KEY (account_id, position)
 );
+CREATE UNIQUE INDEX account_fund_categories_account_id_category ON account_fund_categories(account_id, category);
 
 CREATE TABLE reservations (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   name TEXT NOT NULL,
   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
   amount_minor INTEGER NOT NULL CHECK (amount_minor >= 0),
@@ -139,12 +143,13 @@ CREATE TABLE reservations (
   released_on TEXT CHECK (released_on IS NULL OR length(released_on) = 10),
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX reservations_position ON reservations(position);
 CREATE INDEX idx_reservations_account ON reservations(account_id, released_on);
 CREATE INDEX idx_reservations_nested ON reservations(nested_in_id);
 
 CREATE TABLE event_series (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   name TEXT NOT NULL,
   direction_json TEXT NOT NULL CHECK (json_valid(direction_json)),
   expected_minor INTEGER NOT NULL CHECK (expected_minor >= 0),
@@ -163,6 +168,7 @@ CREATE TABLE event_series (
   notes TEXT NOT NULL,
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX event_series_position ON event_series(position);
 CREATE INDEX idx_event_series_account ON event_series(account_id, position);
 CREATE INDEX idx_event_series_linked_account ON event_series(linked_account_id);
 CREATE INDEX idx_event_series_scenario ON event_series(scenario_id);
@@ -180,13 +186,13 @@ CREATE TABLE series_exceptions (
   position INTEGER NOT NULL CHECK (position >= 0),
   original_due TEXT NOT NULL CHECK (length(original_due) = 10),
   kind_json TEXT NOT NULL CHECK (json_valid(kind_json)),
-  PRIMARY KEY (series_id, position),
-  UNIQUE (series_id, original_due)
+  PRIMARY KEY (series_id, position)
 );
+CREATE UNIQUE INDEX series_exceptions_series_id_original_due ON series_exceptions(series_id, original_due);
 
 CREATE TABLE assumptions (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   text TEXT NOT NULL,
   certainty TEXT NOT NULL,
   source_json TEXT NOT NULL CHECK (json_valid(source_json)),
@@ -195,34 +201,36 @@ CREATE TABLE assumptions (
   private_to INTEGER REFERENCES people(id) ON DELETE RESTRICT,
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX assumptions_position ON assumptions(position);
 CREATE INDEX idx_assumptions_private_to ON assumptions(private_to);
 
 CREATE TABLE assumption_series (
   assumption_id INTEGER NOT NULL REFERENCES assumptions(id) ON DELETE CASCADE,
   position INTEGER NOT NULL CHECK (position >= 0),
   series_id INTEGER NOT NULL REFERENCES event_series(id) ON DELETE CASCADE,
-  PRIMARY KEY (assumption_id, position),
-  UNIQUE (assumption_id, series_id)
+  PRIMARY KEY (assumption_id, position)
 );
+CREATE UNIQUE INDEX assumption_series_assumption_id_series_id ON assumption_series(assumption_id, series_id);
 CREATE INDEX idx_assumption_series_series ON assumption_series(series_id);
 
 CREATE TABLE scenarios (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   name TEXT NOT NULL,
   description TEXT NOT NULL,
   private_to INTEGER REFERENCES people(id) ON DELETE RESTRICT,
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX scenarios_position ON scenarios(position);
 
 CREATE TABLE scenario_components (
   scenario_id INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
   position INTEGER NOT NULL CHECK (position >= 0),
   component_id INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE RESTRICT,
   PRIMARY KEY (scenario_id, position),
-  UNIQUE (scenario_id, component_id),
   CHECK (scenario_id <> component_id)
 );
+CREATE UNIQUE INDEX scenario_components_scenario_id_component_id ON scenario_components(scenario_id, component_id);
 
 CREATE TABLE scenario_changes (
   scenario_id INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
@@ -234,14 +242,15 @@ CREATE TABLE scenario_changes (
 
 CREATE TABLE tax_packs (
   id INTEGER NOT NULL PRIMARY KEY,
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   name TEXT NOT NULL,
   version TEXT NOT NULL,
   jurisdiction TEXT NOT NULL,
   verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
-  payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
-  UNIQUE (name, version, jurisdiction)
+  payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX tax_packs_position ON tax_packs(position);
+CREATE UNIQUE INDEX tax_packs_name_version_jurisdiction ON tax_packs(name, version, jurisdiction);
 
 CREATE TABLE tax_rules (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
@@ -255,22 +264,22 @@ CREATE TABLE tax_rules (
   effective_from TEXT NOT NULL CHECK (length(effective_from) = 10),
   effective_to TEXT CHECK (effective_to IS NULL OR length(effective_to) = 10),
   source TEXT NOT NULL,
-  explanation TEXT NOT NULL,
-  UNIQUE (pack_id, position)
+  explanation TEXT NOT NULL
 );
+CREATE UNIQUE INDEX tax_rules_pack_id_position ON tax_rules(pack_id, position);
 CREATE INDEX idx_tax_rules_pack ON tax_rules(pack_id, position);
 
 CREATE TABLE tax_rule_categories (
   tax_rule_id INTEGER NOT NULL REFERENCES tax_rules(id) ON DELETE CASCADE,
   position INTEGER NOT NULL CHECK (position >= 0),
   category TEXT NOT NULL,
-  PRIMARY KEY (tax_rule_id, position),
-  UNIQUE (tax_rule_id, category)
+  PRIMARY KEY (tax_rule_id, position)
 );
+CREATE UNIQUE INDEX tax_rule_categories_tax_rule_id_category ON tax_rule_categories(tax_rule_id, category);
 
 CREATE TABLE access_policies (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   object_json TEXT NOT NULL CHECK (json_valid(object_json)),
   calculation_access TEXT NOT NULL,
   restricted_disclosure TEXT NOT NULL,
@@ -280,27 +289,28 @@ CREATE TABLE access_policies (
   changed_at TEXT NOT NULL,
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX access_policies_position ON access_policies(position);
 CREATE INDEX idx_access_policies_changed_by ON access_policies(changed_by);
 
 CREATE TABLE policy_full_access (
   policy_id INTEGER NOT NULL REFERENCES access_policies(id) ON DELETE CASCADE,
   position INTEGER NOT NULL CHECK (position >= 0),
   person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
-  PRIMARY KEY (policy_id, position),
-  UNIQUE (policy_id, person_id)
+  PRIMARY KEY (policy_id, position)
 );
+CREATE UNIQUE INDEX policy_full_access_policy_id_person_id ON policy_full_access(policy_id, person_id);
 
 CREATE TABLE policy_purposes (
   policy_id INTEGER NOT NULL REFERENCES access_policies(id) ON DELETE CASCADE,
   position INTEGER NOT NULL CHECK (position >= 0),
   purpose TEXT NOT NULL,
-  PRIMARY KEY (policy_id, position),
-  UNIQUE (policy_id, purpose)
+  PRIMARY KEY (policy_id, position)
 );
+CREATE UNIQUE INDEX policy_purposes_policy_id_purpose ON policy_purposes(policy_id, purpose);
 
 CREATE TABLE actual_transactions (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   transaction_date TEXT NOT NULL CHECK (length(transaction_date) = 10),
   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
   amount_minor INTEGER NOT NULL,
@@ -308,6 +318,7 @@ CREATE TABLE actual_transactions (
   description TEXT NOT NULL,
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX actual_transactions_position ON actual_transactions(position);
 CREATE INDEX idx_actual_transactions_account_date ON actual_transactions(account_id, transaction_date);
 
 CREATE TABLE reconciliation_links (
@@ -317,9 +328,9 @@ CREATE TABLE reconciliation_links (
   transaction_id INTEGER NOT NULL REFERENCES actual_transactions(id) ON DELETE CASCADE,
   amount_minor INTEGER NOT NULL CHECK (amount_minor >= 0),
   currency TEXT NOT NULL CHECK (length(currency) = 3),
-  payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
-  UNIQUE (series_id, original_due, transaction_id)
+  payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX reconciliation_links_series_id_original_due_transaction_id ON reconciliation_links(series_id, original_due, transaction_id);
 CREATE INDEX idx_reconciliation_links_occurrence ON reconciliation_links(series_id, original_due);
 CREATE INDEX idx_reconciliation_links_transaction ON reconciliation_links(transaction_id);
 
@@ -335,7 +346,7 @@ CREATE INDEX idx_historical_payments_series_date ON historical_payments(series_i
 
 CREATE TABLE rules (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   name TEXT NOT NULL,
   scope_json TEXT NOT NULL CHECK (json_valid(scope_json)),
   trigger_json TEXT NOT NULL CHECK (json_valid(trigger_json)),
@@ -349,6 +360,7 @@ CREATE TABLE rules (
   version INTEGER NOT NULL CHECK (version > 0),
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX rules_position ON rules(position);
 CREATE INDEX idx_rules_enabled_dates ON rules(enabled, effective_from, effective_to);
 CREATE INDEX idx_rules_scenario ON rules(scenario_id);
 
@@ -365,13 +377,13 @@ CREATE TABLE rule_versions (
   version INTEGER NOT NULL CHECK (version > 0),
   changed_on TEXT NOT NULL CHECK (length(changed_on) = 10),
   summary TEXT NOT NULL,
-  PRIMARY KEY (rule_id, position),
-  UNIQUE (rule_id, version)
+  PRIMARY KEY (rule_id, position)
 );
+CREATE UNIQUE INDEX rule_versions_rule_id_version ON rule_versions(rule_id, version);
 
 CREATE TABLE goals (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   name TEXT NOT NULL,
   amount_minor INTEGER NOT NULL CHECK (amount_minor >= 0),
   currency TEXT NOT NULL CHECK (length(currency) = 3),
@@ -380,11 +392,12 @@ CREATE TABLE goals (
   private_to INTEGER REFERENCES people(id) ON DELETE RESTRICT,
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX goals_position ON goals(position);
 CREATE INDEX idx_goals_target_priority ON goals(target_on, priority);
 
 CREATE TABLE access_grants (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   object_json TEXT NOT NULL CHECK (json_valid(object_json)),
   grantee_json TEXT NOT NULL CHECK (json_valid(grantee_json)),
   purpose_json TEXT NOT NULL CHECK (json_valid(purpose_json)),
@@ -398,12 +411,13 @@ CREATE TABLE access_grants (
   note TEXT NOT NULL,
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX access_grants_position ON access_grants(position);
 CREATE INDEX idx_access_grants_granted_by ON access_grants(granted_by);
 CREATE INDEX idx_access_grants_dates ON access_grants(effective_from, effective_to, revoked_on);
 
 CREATE TABLE audit_events (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
-  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
   occurred_at TEXT NOT NULL,
   actor_id INTEGER NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
   object_json TEXT CHECK (object_json IS NULL OR json_valid(object_json)),
@@ -412,4 +426,5 @@ CREATE TABLE audit_events (
   policy_version INTEGER CHECK (policy_version IS NULL OR policy_version > 0),
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
+CREATE UNIQUE INDEX audit_events_position ON audit_events(position);
 CREATE INDEX idx_audit_events_actor_time ON audit_events(actor_id, occurred_at);
