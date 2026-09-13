@@ -393,3 +393,68 @@ fn note_row(note: &str, cx: &App) -> impl IntoElement {
         .child(div().w_4().flex_shrink_0())
         .child(div().flex_1().min_w_0().text_xs().text_color(cx.theme().muted_foreground).child(note.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    // Not `use super::*`: this module globs `gpui_kit::*`, whose own `test`
+    // attribute macro would shadow the one these tests need.
+    use super::equation_text;
+    use atlas_core::provenance::ProvNode;
+    use atlas_core::{Currency, Money};
+
+    fn money(units: i64) -> Money {
+        Money::from_major(units, Currency::PKR)
+    }
+
+    fn term(label: &str, units: i64) -> ProvNode {
+        ProvNode::input(label, money(units), "test")
+    }
+
+    #[test]
+    fn a_sum_reads_as_its_signed_terms_without_the_word_they_share() {
+        let node = ProvNode::sum(
+            "Household free current cash",
+            money(2_650_000),
+            vec![term("Household liquid cash", 4_400_000), term("Household reserved cash", 1_750_000).minus()],
+        );
+        assert_eq!(
+            equation_text(&node),
+            "4,400,000 liquid cash − 1,750,000 reserved cash = 2,650,000 free current cash",
+            "the word every term begins with is stated by the screen, not repeated in each term"
+        );
+    }
+
+    #[test]
+    fn a_named_formula_states_its_formula_and_never_a_sum_of_its_inputs() {
+        // The children of a median are the sample it was taken over, not
+        // addends: joining them with plus signs would claim 450,000.
+        let node = ProvNode::formula(
+            "Derived monthly salary",
+            money(75_000),
+            "median of the last 6 reconciled payments",
+            vec![term("March payment", 72_000), term("April payment", 78_000)],
+        );
+        let text = equation_text(&node);
+        assert_eq!(text, "median of the last 6 reconciled payments = 75,000 Derived monthly salary");
+        assert!(!text.contains('+'), "a median is not a sum: {text}");
+    }
+
+    #[test]
+    fn a_term_keeps_its_name_when_the_labels_share_no_word() {
+        let node = ProvNode::sum("Net worth", money(5_315_000), vec![term("Total assets", 5_400_000), term("Amount owed", 85_000).minus()]);
+        assert_eq!(equation_text(&node), "5,400,000 Total assets − 85,000 Amount owed = 5,315,000 Net worth");
+    }
+
+    #[test]
+    fn a_terms_own_metadata_is_left_to_the_calculation_sheet() {
+        // Twelve terms each carrying "(3 postings, contractual)" is what turns
+        // the line into a paragraph; the sheet and the Basis tab state it.
+        let node = ProvNode::sum("Projected cash — expected case", money(1_500_000), vec![term("Rent (4 postings, contractual)", 1_500_000)]);
+        assert_eq!(equation_text(&node), "1,500,000 Rent = 1,500,000 Projected cash · expected case");
+    }
+
+    #[test]
+    fn a_leaf_states_itself() {
+        assert_eq!(equation_text(&term("Reconciled starting cash", 4_400_000)), "Reconciled starting cash = 4,400,000");
+    }
+}
