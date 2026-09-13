@@ -268,7 +268,10 @@ impl HouseholdFile {
             let database = connection::connect(&self.path, false).await?;
             if let Err(error) = migrations::apply(&database).await {
                 let _ = database.close().await;
-                return Err(StoreError::Upgrade { backup, message: error.to_string() });
+                return Err(StoreError::Upgrade {
+                    backup,
+                    message: error.to_string(),
+                });
             }
             database.close().await.map_err(StoreError::db)?;
         }
