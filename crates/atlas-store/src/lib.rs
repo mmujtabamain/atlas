@@ -1,205 +1,236 @@
-//! Persistence for Atlas Financer (§23 "protection against data loss").
+//! Durable SQLite persistence for Atlas Financer household files.
 //!
-//! A household is one SQLite file (`<name>.atlas.sqlite`): a `meta` table
-//! (schema version, name, currency, reconciliation date, save time) and one
-//! table per entity type holding each object as JSON with its id, in the
-//! household's own order. Saving
-//! is a single transaction; the previous file is copied into `backups/`
-//! first (rolling, 20 kept). A sidecar `.lock` file names who has the
-//! household open so two people on the same Mac take turns (Mujtaba's
-//! choice: one editor at a time, no server).
-//!
-//! `atlas-core` stays I/O-free: this crate only serialises the model.
+//! Atlas CLI authors the checked-in schema migrations. The application embeds
+//! and applies those migrations through SeaORM/SQLx before repository access.
+//! `atlas-core` remains I/O-free and generated database entities never cross
+//! this crate boundary.
+
+mod connection;
+mod legacy;
+mod migrations;
+mod repository;
+
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use atlas_core::model::{Household, SCHEMA_VERSION};
-use rusqlite::{Connection, OptionalExtension, params};
+use sea_orm::{ConnectionTrait, DbBackend, Statement, TryGetable};
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::{Path, PathBuf};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-/// Why a store operation failed.
+pub const BACKUPS_KEPT: usize = 20;
+
 #[derive(Error, Debug)]
 pub enum StoreError {
-    #[error("database: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-    #[error("serialisation: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("file: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("{path} was written by schema version {found}; this build reads version {supported}")]
-    SchemaVersion { path: PathBuf, found: u32, supported: u32 },
-    #[error("{path} is open by {owner} since {since}; take it over only if they are done")]
-    Locked { path: PathBuf, owner: String, since: String },
-    #[error("{0} is not an Atlas household file (no meta table)")]
-    NotAHousehold(PathBuf),
+    #[error("database operation failed for household {path_id}: {message}")]
+    Database { path_id: String, message: String },
+    #[error("database operation failed: {0}")]
+    DatabaseInternal(String),
+    #[error("serialization failed: {0}")]
+    Serialization(String),
+    #[error("file operation failed: {0}")]
+    FileSystem(#[from] std::io::Error),
+    #[error("validation failed: {0}")]
+    Validation(String),
+    #[error(
+        "household file was written by schema version {found}; this build reads version {supported}"
+    )]
+    SchemaVersion { found: u32, supported: u32 },
+    #[error("household migration {version} failed: {message}")]
+    Migration { version: String, message: String },
+    #[error("legacy household upgrade failed; the recoverable backup is {backup}: {message}")]
+    LegacyMigration { backup: PathBuf, message: String },
+    #[error(
+        "household contains migrations newer than this application ({found}; latest supported: {supported})"
+    )]
+    IncompatibleVersion { found: String, supported: String },
+    #[error("household is open by {owner} since {since}; take it over only if they are done")]
+    Locked {
+        path: PathBuf,
+        owner: String,
+        since: String,
+    },
+    #[error("this process does not own the household lock")]
+    LockRequired,
+    #[error("the household changed on disk after it was opened")]
+    ChangedOnDisk,
+    #[error("the selected file is not an Atlas Financer household")]
+    NotAHousehold,
+    #[error("household integrity check failed: {0}")]
+    Integrity(String),
+    #[error("household file does not exist")]
+    NotFound,
+}
+
+impl StoreError {
+    pub(crate) fn database(path: &Path, error: impl std::fmt::Display) -> Self {
+        StoreError::Database {
+            path_id: path_identity(path),
+            message: error.to_string(),
+        }
+    }
+
+    pub(crate) fn db(error: impl std::fmt::Display) -> Self {
+        StoreError::DatabaseInternal(error.to_string())
+    }
+}
+
+impl From<serde_json::Error> for StoreError {
+    fn from(error: serde_json::Error) -> Self {
+        StoreError::Serialization(error.to_string())
+    }
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
 
-/// Entity tables, in save order.
-const TABLES: [&str; 16] = [
-    "people",
-    "companies",
-    "accounts",
-    "reservations",
-    "series",
-    "assumptions",
-    "scenarios",
-    "tax_packs",
-    "policies",
-    "actuals",
-    "links",
-    "history",
-    "rules",
-    "goals",
-    "grants",
-    "audit",
-];
-
-/// Rolling backups kept per household.
-pub const BACKUPS_KEPT: usize = 20;
-
-/// The sidecar lock's content.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Lock {
     pub owner: String,
     pub since: String,
     pub pid: u32,
 }
 
-/// Where a household lives on disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileStamp {
+    database: Option<(u64, u128)>,
+    wal: Option<(u64, u128)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct HouseholdFile {
     path: PathBuf,
+    observed: Arc<Mutex<Option<FileStamp>>>,
 }
 
 impl HouseholdFile {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        HouseholdFile { path: path.into() }
+        HouseholdFile {
+            path: path.into(),
+            observed: Arc::new(Mutex::new(None)),
+        }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    fn lock_path(&self) -> PathBuf {
-        let mut name = self.path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
-        name.push(".lock");
-        self.path.with_file_name(name)
+    pub fn identity(&self) -> String {
+        path_identity(&self.path)
     }
 
-    fn backups_dir(&self) -> PathBuf {
-        self.path.parent().map(|p| p.join("backups")).unwrap_or_else(|| PathBuf::from("backups"))
+    pub fn exists(&self) -> bool {
+        self.path.is_file()
     }
 
-    /// The current lock, if any.
     pub fn lock(&self) -> StoreResult<Option<Lock>> {
         match fs::read_to_string(self.lock_path()) {
-            Ok(text) => Ok(serde_json::from_str(&text).ok()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(err.into()),
+            Ok(contents) => serde_json::from_str(&contents)
+                .map(Some)
+                .map_err(|_| StoreError::Integrity("the household lock file is malformed".into())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
         }
     }
 
-    /// Takes the lock for `owner`; refuses when another owner holds it unless
-    /// `take_over` is set.
     pub fn acquire(&self, owner: &str, take_over: bool) -> StoreResult<Lock> {
-        if let Some(existing) = self.lock()?
-            && existing.owner != owner
-            && !take_over
-        {
-            return Err(StoreError::Locked { path: self.path.clone(), owner: existing.owner, since: existing.since });
-        }
-        let lock = Lock { owner: owner.to_string(), since: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(), pid: std::process::id() };
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(self.lock_path(), serde_json::to_string(&lock)?)?;
-        log::info!("locked {} for {owner}", self.path.display());
-        Ok(lock)
+        let lock = Lock {
+            owner: owner.to_owned(),
+            since: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Minutes, true),
+            pid: std::process::id(),
+        };
+        let encoded = serde_json::to_vec(&lock)?;
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(self.lock_path())
+        {
+            Ok(mut file) => {
+                file.write_all(&encoded)?;
+                file.sync_all()?;
+                Ok(lock)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing = self.lock()?.ok_or(StoreError::LockRequired)?;
+                if existing.owner == owner && existing.pid == std::process::id() {
+                    return Ok(existing);
+                }
+                if !take_over {
+                    return Err(StoreError::Locked {
+                        path: self.path.clone(),
+                        owner: existing.owner,
+                        since: existing.since,
+                    });
+                }
+                let replacement = self.temporary_sibling("lock");
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&replacement)?;
+                file.write_all(&encoded)?;
+                file.sync_all()?;
+                fs::rename(&replacement, self.lock_path())?;
+                Ok(lock)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
-    /// Releases the lock (only the owner's lock is removed).
     pub fn release(&self, owner: &str) -> StoreResult<()> {
         if let Some(existing) = self.lock()?
             && existing.owner == owner
+            && existing.pid == std::process::id()
         {
             fs::remove_file(self.lock_path())?;
-            log::info!("unlocked {}", self.path.display());
         }
         Ok(())
     }
 
-    pub fn exists(&self) -> bool {
-        self.path.exists()
+    pub fn save(&self, household: &Household) -> StoreResult<()> {
+        runtime().block_on(self.save_async(household))
     }
 
-    /// Saves the household: backup of the previous file, then one transaction
-    /// that rewrites every table.
-    pub fn save(&self, household: &Household) -> StoreResult<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if self.path.exists() {
-            self.backup()?;
-        }
-        let mut connection = Connection::open(&self.path)?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
-        let tx = connection.transaction()?;
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS people (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS companies (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS accounts (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS reservations (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS series (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS assumptions (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS scenarios (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS tax_packs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS policies (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS actuals (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS links (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS history (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS rules (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS goals (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS grants (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, id INTEGER NOT NULL, json TEXT NOT NULL);",
-        )?;
-        for table in TABLES {
-            tx.execute(&format!("DELETE FROM {table}"), [])?;
-        }
-        let mut meta = tx.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)")?;
-        meta.execute(params!["schema_version", SCHEMA_VERSION.to_string()])?;
-        meta.execute(params!["name", household.name.clone()])?;
-        meta.execute(params!["base_currency", household.base_currency.code().to_string()])?;
-        meta.execute(params!["as_of", household.as_of.to_string()])?;
-        meta.execute(params!["rule_tie_break", household.rule_tie_break.slug()])?;
-        meta.execute(params!["saved_at", chrono::Local::now().to_rfc3339()])?;
-        meta.execute(params!["app_version", env!("CARGO_PKG_VERSION")])?;
-        drop(meta);
+    pub fn save_owned(&self, household: &Household, owner: &str) -> StoreResult<()> {
+        runtime().block_on(self.save_owned_async(household, owner))
+    }
 
-        insert_all(&tx, "people", household.people.iter().map(|p| (p.id.raw() as i64, p)))?;
-        insert_all(&tx, "companies", household.companies.iter().map(|c| (c.id.raw() as i64, c)))?;
-        insert_all(&tx, "accounts", household.accounts.iter().map(|a| (a.id.raw() as i64, a)))?;
-        insert_all(&tx, "reservations", household.reservations.iter().map(|r| (r.id.raw() as i64, r)))?;
-        insert_all(&tx, "series", household.series.iter().map(|s| (s.id.raw() as i64, s)))?;
-        insert_all(&tx, "assumptions", household.assumptions.iter().map(|a| (a.id.raw() as i64, a)))?;
-        insert_all(&tx, "scenarios", household.scenarios.iter().map(|s| (s.id.raw() as i64, s)))?;
-        insert_all(&tx, "tax_packs", household.tax_packs.iter().enumerate().map(|(i, p)| (i as i64 + 1, p)))?;
-        insert_all(&tx, "policies", household.policies.iter().map(|p| (p.id.raw() as i64, p)))?;
-        insert_all(&tx, "actuals", household.actuals.iter().map(|t| (t.id.raw() as i64, t)))?;
-        insert_all(&tx, "links", household.links.iter().enumerate().map(|(i, l)| (i as i64 + 1, l)))?;
-        insert_all(&tx, "history", household.history.iter().enumerate().map(|(i, h)| (i as i64 + 1, h)))?;
-        insert_all(&tx, "rules", household.rules.iter().map(|r| (r.id.raw() as i64, r)))?;
-        insert_all(&tx, "goals", household.goals.iter().map(|g| (g.id.raw() as i64, g)))?;
-        insert_all(&tx, "grants", household.grants.iter().map(|g| (g.id.raw() as i64, g)))?;
-        insert_all(&tx, "audit", household.audit.iter().map(|a| (a.id.raw() as i64, a)))?;
-        tx.commit()?;
+    pub async fn save_async(&self, household: &Household) -> StoreResult<()> {
+        if self.exists() {
+            self.verify_process_lock(None)?;
+        }
+        self.persist(household).await
+    }
+
+    pub async fn save_owned_async(&self, household: &Household, owner: &str) -> StoreResult<()> {
+        self.verify_process_lock(Some(owner))?;
+        self.persist(household).await
+    }
+
+    async fn persist(&self, household: &Household) -> StoreResult<()> {
+        self.validate_creation_path()?;
+        if self.exists() {
+            self.ensure_unchanged()?;
+            self.backup_async().await?;
+        }
+        let database = connection::connect(&self.path, true).await?;
+        migrations::apply(&database).await?;
+        repository::save(&database, household).await?;
+        migrations::integrity_check(&database).await?;
+        database
+            .execute_unprepared("PRAGMA wal_checkpoint(PASSIVE)")
+            .await
+            .map_err(StoreError::db)?;
+        database.close().await.map_err(StoreError::db)?;
+        self.remember_stamp()?;
         log::info!(
-            "saved {} to {} ({} people, {} accounts, {} series, {} policies)",
-            household.name,
-            self.path.display(),
+            "household save succeeded path_id={} people={} accounts={} series={} policies={}",
+            self.identity(),
             household.people.len(),
             household.accounts.len(),
             household.series.len(),
@@ -208,83 +239,305 @@ impl HouseholdFile {
         Ok(())
     }
 
-    /// Loads the household; the schema version must match.
     pub fn load(&self) -> StoreResult<Household> {
-        let connection = Connection::open_with_flags(&self.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let has_meta: bool = connection
-            .query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'", [], |row| row.get::<_, i64>(0))
-            .map(|n| n > 0)?;
-        if !has_meta {
-            return Err(StoreError::NotAHousehold(self.path.clone()));
+        runtime().block_on(self.load_async())
+    }
+
+    pub async fn load_async(&self) -> StoreResult<Household> {
+        if !self.exists() {
+            return Err(StoreError::NotFound);
         }
-        let version: u32 = meta_value(&connection, "schema_version")?.and_then(|v| v.parse().ok()).unwrap_or(0);
-        if version != SCHEMA_VERSION {
-            return Err(StoreError::SchemaVersion { path: self.path.clone(), found: version, supported: SCHEMA_VERSION });
+        self.verify_process_lock(None)?;
+        let inspection = connection::connect_read_only(&self.path).await?;
+        if legacy::is_legacy(&inspection).await? {
+            let household = legacy::load(&inspection).await?;
+            inspection.close().await.map_err(StoreError::db)?;
+            return self.upgrade_legacy(household).await;
         }
-        let name = meta_value(&connection, "name")?.unwrap_or_else(|| "Household".into());
-        let currency = meta_value(&connection, "base_currency")?
-            .and_then(|c| atlas_core::Currency::from_code(&c))
-            .unwrap_or(atlas_core::Currency::USD);
-        let as_of = meta_value(&connection, "as_of")?
-            .and_then(|d| d.parse().ok())
-            .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid"));
-        let mut household = Household::empty(&name, currency, as_of);
-        household.rule_tie_break = meta_value(&connection, "rule_tie_break")?.and_then(|t| atlas_core::rules::TieBreak::from_slug(&t)).unwrap_or_default();
-        household.people = load_all(&connection, "people")?;
-        household.companies = load_all(&connection, "companies")?;
-        household.accounts = load_all(&connection, "accounts")?;
-        household.reservations = load_all(&connection, "reservations")?;
-        household.series = load_all(&connection, "series")?;
-        household.assumptions = load_all(&connection, "assumptions")?;
-        household.scenarios = load_all(&connection, "scenarios")?;
-        household.tax_packs = load_all(&connection, "tax_packs")?;
-        household.policies = load_all(&connection, "policies")?;
-        household.actuals = load_all(&connection, "actuals")?;
-        household.links = load_all(&connection, "links")?;
-        household.history = load_all(&connection, "history")?;
-        // Tables added after the first files were written are optional on read (M7 rules).
-        household.rules = load_optional(&connection, "rules")?;
-        household.goals = load_optional(&connection, "goals")?;
-        household.grants = load_optional(&connection, "grants")?;
-        household.audit = load_optional(&connection, "audit")?;
-        log::info!("loaded {} from {} ({} accounts, {} series)", household.name, self.path.display(), household.accounts.len(), household.series.len());
+        if !legacy::table_exists(&inspection, "atlas_schema_revisions").await? {
+            return Err(StoreError::NotAHousehold);
+        }
+        let plan = migrations::plan(&inspection).await?;
+        inspection.close().await.map_err(StoreError::db)?;
+        if !plan.pending.is_empty() {
+            self.backup_async().await?;
+            let database = connection::connect(&self.path, false).await?;
+            migrations::apply(&database).await?;
+            database.close().await.map_err(StoreError::db)?;
+        }
+        let database = connection::connect_read_only(&self.path).await?;
+        migrations::integrity_check(&database).await?;
+        let household = repository::load(&database).await?;
+        database.close().await.map_err(StoreError::db)?;
+        self.remember_stamp()?;
+        log::info!(
+            "household load succeeded path_id={} records={}",
+            self.identity(),
+            record_count(&household)
+        );
         Ok(household)
     }
 
-    /// Copies the current file into `backups/` and prunes to [`BACKUPS_KEPT`].
+    pub fn load_read_only(&self) -> StoreResult<Household> {
+        runtime().block_on(self.load_read_only_async())
+    }
+
+    pub async fn load_read_only_async(&self) -> StoreResult<Household> {
+        if !self.exists() {
+            return Err(StoreError::NotFound);
+        }
+        let database = connection::connect_read_only(&self.path).await?;
+        let household = if legacy::is_legacy(&database).await? {
+            legacy::load(&database).await?
+        } else {
+            migrations::plan(&database).await?;
+            migrations::integrity_check(&database).await?;
+            repository::load(&database).await?
+        };
+        database.close().await.map_err(StoreError::db)?;
+        self.remember_stamp()?;
+        Ok(household)
+    }
+
+    async fn upgrade_legacy(&self, household: Household) -> StoreResult<Household> {
+        let backup = self.backup_async().await?;
+        let temporary = self.temporary_sibling("upgrade.atlas.sqlite");
+        let result = async {
+            let database = connection::connect(&temporary, true).await?;
+            migrations::apply(&database).await?;
+            repository::save(&database, &household).await?;
+            migrations::integrity_check(&database).await?;
+            let reloaded = repository::load(&database).await?;
+            if reloaded != household {
+                return Err(StoreError::Integrity(
+                    "legacy conversion changed household values".into(),
+                ));
+            }
+            database
+                .execute_unprepared("PRAGMA wal_checkpoint(TRUNCATE)")
+                .await
+                .map_err(StoreError::db)?;
+            database.close().await.map_err(StoreError::db)?;
+            fs::rename(&temporary, &self.path)?;
+            remove_sqlite_sidecars(&self.path);
+            self.remember_stamp()?;
+            Ok(reloaded)
+        }
+        .await;
+        if let Err(error) = result {
+            remove_sqlite_files(&temporary);
+            return Err(StoreError::LegacyMigration {
+                backup,
+                message: error.to_string(),
+            });
+        }
+        log::info!(
+            "legacy household upgrade succeeded path_id={}",
+            self.identity()
+        );
+        result
+    }
+
     pub fn backup(&self) -> StoreResult<PathBuf> {
-        let dir = self.backups_dir();
-        fs::create_dir_all(&dir)?;
-        let stem = self.path.file_stem().and_then(|s| s.to_str()).unwrap_or("household");
-        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
-        let target = dir.join(format!("{stem}-{stamp}.sqlite"));
-        fs::copy(&self.path, &target)?;
-        let mut backups: Vec<PathBuf> = fs::read_dir(&dir)?
-            .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&format!("{stem}-")) && n.ends_with(".sqlite")))
+        runtime().block_on(self.backup_async())
+    }
+
+    pub async fn backup_async(&self) -> StoreResult<PathBuf> {
+        if !self.exists() {
+            return Err(StoreError::NotFound);
+        }
+        let directory = self.backups_dir();
+        fs::create_dir_all(&directory)?;
+        let stem = self
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("household");
+        let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.9fZ");
+        let target = directory.join(format!(
+            "{stem}-{timestamp}-{}.sqlite",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let quoted = target
+            .to_str()
+            .ok_or_else(|| StoreError::Validation("backup path is not valid UTF-8".into()))?
+            .replace('\'', "''");
+        let database = connection::connect(&self.path, false).await?;
+        database
+            .execute_unprepared(&format!("VACUUM INTO '{quoted}'"))
+            .await
+            .map_err(StoreError::db)?;
+        database.close().await.map_err(StoreError::db)?;
+        let backup = connection::connect_read_only(&target).await?;
+        migrations::integrity_check(&backup).await?;
+        backup.close().await.map_err(StoreError::db)?;
+        self.prune_backups(&target)?;
+        log::info!("household backup succeeded path_id={}", self.identity());
+        Ok(target)
+    }
+
+    pub fn restore_backup(&self, backup: &Path, owner: &str) -> StoreResult<()> {
+        runtime().block_on(self.restore_backup_async(backup, owner))
+    }
+
+    pub async fn restore_backup_async(&self, backup: &Path, owner: &str) -> StoreResult<()> {
+        self.verify_process_lock(Some(owner))?;
+        let source = connection::connect_read_only(backup).await?;
+        migrations::integrity_check(&source).await?;
+        source.close().await.map_err(StoreError::db)?;
+        if self.exists() {
+            self.backup_async().await?;
+        }
+        let replacement = self.temporary_sibling("restore.atlas.sqlite");
+        fs::copy(backup, &replacement)?;
+        fs::rename(&replacement, &self.path)?;
+        remove_sqlite_sidecars(&self.path);
+        self.remember_stamp()
+    }
+
+    pub fn peek(&self) -> StoreResult<HouseholdMeta> {
+        runtime().block_on(self.peek_async())
+    }
+
+    pub async fn peek_async(&self) -> StoreResult<HouseholdMeta> {
+        if !self.exists() {
+            return Err(StoreError::NotFound);
+        }
+        let database = connection::connect_read_only(&self.path).await?;
+        let metadata = if legacy::is_legacy(&database).await? {
+            legacy::peek(&database).await?
+        } else {
+            migrations::plan(&database).await?;
+            let row = database
+                .query_one(Statement::from_string(
+                    DbBackend::Sqlite,
+                    "SELECT name, base_currency, as_of, last_saved_at FROM households WHERE singleton = 1",
+                ))
+                .await
+                .map_err(StoreError::db)?
+                .ok_or(StoreError::NotAHousehold)?;
+            HouseholdMeta {
+                name: row.try_get("", "name").map_err(StoreError::db)?,
+                base_currency: row.try_get("", "base_currency").map_err(StoreError::db)?,
+                as_of: row.try_get("", "as_of").map_err(StoreError::db)?,
+                saved_at: row
+                    .try_get::<i64>("", "last_saved_at")
+                    .map_err(StoreError::db)?
+                    .to_string(),
+                schema_version: SCHEMA_VERSION,
+            }
+        };
+        database.close().await.map_err(StoreError::db)?;
+        Ok(metadata)
+    }
+
+    fn verify_process_lock(&self, owner: Option<&str>) -> StoreResult<()> {
+        let lock = self.lock()?.ok_or(StoreError::LockRequired)?;
+        if lock.pid != std::process::id() || owner.is_some_and(|expected| expected != lock.owner) {
+            return Err(StoreError::Locked {
+                path: self.path.clone(),
+                owner: lock.owner,
+                since: lock.since,
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_unchanged(&self) -> StoreResult<()> {
+        let observed = self
+            .observed
+            .lock()
+            .map_err(|_| StoreError::Integrity("file observation lock is poisoned".into()))?;
+        if let Some(expected) = observed.as_ref()
+            && *expected != file_stamp(&self.path)?
+        {
+            return Err(StoreError::ChangedOnDisk);
+        }
+        Ok(())
+    }
+
+    fn remember_stamp(&self) -> StoreResult<()> {
+        let mut observed = self
+            .observed
+            .lock()
+            .map_err(|_| StoreError::Integrity("file observation lock is poisoned".into()))?;
+        *observed = Some(file_stamp(&self.path)?);
+        Ok(())
+    }
+
+    fn validate_creation_path(&self) -> StoreResult<()> {
+        if self.path.file_name().is_none() {
+            return Err(StoreError::Validation(
+                "household path has no filename".into(),
+            ));
+        }
+        if self.path.exists() && !self.path.is_file() {
+            return Err(StoreError::Validation(
+                "household path is not a regular file".into(),
+            ));
+        }
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        Ok(())
+    }
+
+    fn lock_path(&self) -> PathBuf {
+        let mut name = self
+            .path
+            .file_name()
+            .map(|name| name.to_os_string())
+            .unwrap_or_default();
+        name.push(".lock");
+        self.path.with_file_name(name)
+    }
+
+    fn backups_dir(&self) -> PathBuf {
+        self.path
+            .parent()
+            .map(|parent| parent.join("backups"))
+            .unwrap_or_else(|| PathBuf::from("backups"))
+    }
+
+    fn temporary_sibling(&self, suffix: &str) -> PathBuf {
+        let mut name = self
+            .path
+            .file_name()
+            .map(|name| name.to_os_string())
+            .unwrap_or_else(|| "household".into());
+        name.push(format!(".{}.{}", uuid::Uuid::new_v4().simple(), suffix));
+        self.path.with_file_name(name)
+    }
+
+    fn prune_backups(&self, protected: &Path) -> StoreResult<()> {
+        let directory = self.backups_dir();
+        let stem = self
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("household");
+        let mut backups: Vec<PathBuf> = fs::read_dir(directory)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(&format!("{stem}-")) && name.ends_with(".sqlite")
+                    })
+            })
             .collect();
         backups.sort();
         while backups.len() > BACKUPS_KEPT {
             let oldest = backups.remove(0);
-            let _ = fs::remove_file(oldest);
+            if oldest != protected {
+                fs::remove_file(oldest)?;
+            }
         }
-        Ok(target)
-    }
-
-    /// Metadata without loading the whole household (for the Open dialog).
-    pub fn peek(&self) -> StoreResult<HouseholdMeta> {
-        let connection = Connection::open_with_flags(&self.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        Ok(HouseholdMeta {
-            name: meta_value(&connection, "name")?.unwrap_or_default(),
-            base_currency: meta_value(&connection, "base_currency")?.unwrap_or_default(),
-            as_of: meta_value(&connection, "as_of")?.unwrap_or_default(),
-            saved_at: meta_value(&connection, "saved_at")?.unwrap_or_default(),
-            schema_version: meta_value(&connection, "schema_version")?.and_then(|v| v.parse().ok()).unwrap_or(0),
-        })
+        Ok(())
     }
 }
 
-/// What `peek` returns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HouseholdMeta {
     pub name: String,
@@ -294,36 +547,6 @@ pub struct HouseholdMeta {
     pub schema_version: u32,
 }
 
-fn meta_value(connection: &Connection, key: &str) -> StoreResult<Option<String>> {
-    Ok(connection.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |row| row.get(0)).optional()?)
-}
-
-fn insert_all<'a, T: Serialize + 'a>(tx: &rusqlite::Transaction<'_>, table: &str, rows: impl Iterator<Item = (i64, &'a T)>) -> StoreResult<()> {
-    let mut statement = tx.prepare(&format!("INSERT INTO {table} (id, json) VALUES (?1, ?2)"))?;
-    for (id, row) in rows {
-        statement.execute(params![id, serde_json::to_string(row)?])?;
-    }
-    Ok(())
-}
-
-fn load_optional<T: for<'de> Deserialize<'de>>(connection: &Connection, table: &str) -> StoreResult<Vec<T>> {
-    let exists: bool = connection
-        .query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", params![table], |row| row.get::<_, i64>(0))
-        .map(|n| n > 0)?;
-    if exists { load_all(connection, table) } else { Ok(Vec::new()) }
-}
-
-fn load_all<T: for<'de> Deserialize<'de>>(connection: &Connection, table: &str) -> StoreResult<Vec<T>> {
-    let mut statement = connection.prepare(&format!("SELECT json FROM {table} ORDER BY seq"))?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-    let mut out = Vec::new();
-    for json in rows {
-        out.push(serde_json::from_str(&json?)?);
-    }
-    Ok(out)
-}
-
-/// The default folder for household files (`~/Documents/Atlas`).
 pub fn default_folder() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -332,81 +555,78 @@ pub fn default_folder() -> PathBuf {
         .join("Atlas")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use atlas_core::fixtures;
-    use atlas_core::forecast::{Case, ForecastOptions, forecast};
-    use atlas_core::liquidity::Boundary;
+pub fn path_identity(path: &Path) -> String {
+    let digest = Sha256::digest(path.to_string_lossy().as_bytes());
+    format!("sha256:{}", &hex::encode(digest)[..12])
+}
 
-    #[test]
-    fn round_trip_keeps_the_household_and_its_forecast_identical() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = HouseholdFile::new(dir.path().join("plan.atlas.sqlite"));
-        let household = fixtures::plan_household();
-        file.save(&household).unwrap();
-        let loaded = file.load().unwrap();
-        assert_eq!(loaded, household);
-        let options = ForecastOptions { through: fixtures::default_horizon(), scenario: None, case: Case::Expected };
-        let before = forecast(&household, Boundary::Household, options).unwrap();
-        let after = forecast(&loaded, Boundary::Household, options).unwrap();
-        assert_eq!(before.record.input_hash, after.record.input_hash, "the same inputs reproduce the same result");
-        assert_eq!(before.end.money(), after.end.money());
-        let meta = file.peek().unwrap();
-        assert_eq!(meta.name, household.name);
-        assert_eq!(meta.base_currency, "PKR");
-        assert_eq!(meta.schema_version, SCHEMA_VERSION);
-    }
+pub(crate) fn now_millis() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
 
-    #[test]
-    fn saving_twice_keeps_a_backup_and_prunes() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = HouseholdFile::new(dir.path().join("h.atlas.sqlite"));
-        let mut household = fixtures::plan_household();
-        file.save(&household).unwrap();
-        for i in 0..(BACKUPS_KEPT + 3) {
-            household.name = format!("version {i}");
-            file.save(&household).unwrap();
+fn runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("persistence runtime builds")
+    })
+}
+
+fn file_stamp(path: &Path) -> StoreResult<FileStamp> {
+    let mut wal = path.as_os_str().to_os_string();
+    wal.push("-wal");
+    Ok(FileStamp {
+        database: metadata_stamp(path)?,
+        wal: metadata_stamp(Path::new(&wal))?,
+    })
+}
+
+fn metadata_stamp(path: &Path) -> StoreResult<Option<(u64, u128)>> {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            let modified = metadata
+                .modified()
+                .unwrap_or(SystemTime::UNIX_EPOCH)
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            Ok(Some((metadata.len(), modified)))
         }
-        let backups = fs::read_dir(dir.path().join("backups")).unwrap().count();
-        assert_eq!(backups, BACKUPS_KEPT);
-        assert_eq!(file.load().unwrap().name, format!("version {}", BACKUPS_KEPT + 2));
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
     }
+}
 
-    #[test]
-    fn lock_refuses_a_second_owner_unless_taken_over() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = HouseholdFile::new(dir.path().join("h.atlas.sqlite"));
-        file.acquire("Person A", false).unwrap();
-        let err = file.acquire("Person B", false).unwrap_err();
-        assert!(matches!(err, StoreError::Locked { ref owner, .. } if owner == "Person A"));
-        file.acquire("Person A", false).unwrap();
-        let taken = file.acquire("Person B", true).unwrap();
-        assert_eq!(taken.owner, "Person B");
-        file.release("Person A").unwrap();
-        assert!(file.lock().unwrap().is_some(), "only the owner's lock is removed");
-        file.release("Person B").unwrap();
-        assert!(file.lock().unwrap().is_none());
+fn remove_sqlite_sidecars(path: &Path) {
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let _ = fs::remove_file(PathBuf::from(sidecar));
     }
+}
 
-    #[test]
-    fn foreign_files_and_schema_mismatches_are_named() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("other.sqlite");
-        Connection::open(&path).unwrap().execute_batch("CREATE TABLE x (a)").unwrap();
-        assert!(matches!(HouseholdFile::new(&path).load().unwrap_err(), StoreError::NotAHousehold(_)));
-        let file = HouseholdFile::new(dir.path().join("h.atlas.sqlite"));
-        file.save(&Household::default()).unwrap();
-        Connection::open(file.path()).unwrap().execute("UPDATE meta SET value = '99' WHERE key = 'schema_version'", []).unwrap();
-        assert!(matches!(file.load().unwrap_err(), StoreError::SchemaVersion { found: 99, .. }));
-    }
+fn remove_sqlite_files(path: &Path) {
+    let _ = fs::remove_file(path);
+    remove_sqlite_sidecars(path);
+}
 
-    #[test]
-    fn an_empty_household_round_trips_with_usd() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = HouseholdFile::new(dir.path().join("empty.atlas.sqlite"));
-        let household = Household::empty("Our household", atlas_core::Currency::USD, chrono::NaiveDate::from_ymd_opt(2026, 9, 11).unwrap());
-        file.save(&household).unwrap();
-        assert_eq!(file.load().unwrap(), household);
-    }
+fn record_count(household: &Household) -> usize {
+    household.people.len()
+        + household.companies.len()
+        + household.accounts.len()
+        + household.reservations.len()
+        + household.series.len()
+        + household.assumptions.len()
+        + household.scenarios.len()
+        + household.tax_packs.len()
+        + household.policies.len()
+        + household.actuals.len()
+        + household.links.len()
+        + household.history.len()
+        + household.rules.len()
+        + household.goals.len()
+        + household.grants.len()
+        + household.audit.len()
 }
