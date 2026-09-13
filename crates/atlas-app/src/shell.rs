@@ -81,7 +81,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_title_bar(&self, fullscreen: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let is_dark = cx.theme().is_dark();
         let app = self.app.read(cx);
         let opened = app.is_opened();
@@ -90,6 +90,7 @@ impl Shell {
         let menu = app.render_household_menu(self.app.downgrade());
         let picker = self.app.clone();
         TitleBar::new()
+            .when(fullscreen, |bar| bar.pl_0())
             .child(
                 h_flex()
                     .items_center()
@@ -203,7 +204,7 @@ impl Render for Shell {
             // frames that happened were driven by the mouse or by something else.
             .on_mouse_move(cx.listener(|this, _, _, cx| this.app.read(cx).perf().count_mouse_move()))
             .on_scroll_wheel(cx.listener(|this, _, _, cx| this.app.read(cx).perf().count_wheel()))
-            .child(self.render_title_bar(cx))
+            .child(self.render_title_bar(window.is_fullscreen(), cx))
             .child(
                 h_flex()
                     .items_stretch()

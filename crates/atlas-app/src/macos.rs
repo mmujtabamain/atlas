@@ -38,24 +38,36 @@ pub fn init(cx: &mut App) {
     ]);
 
     cx.on_action(|_: &ToggleFullscreen, cx| {
-        update_active_window(cx, |window| window.toggle_fullscreen());
+        cx.defer(|cx| update_active_window(cx, |window| window.toggle_fullscreen()));
     });
     cx.on_action(|_: &MinimizeWindow, cx| {
-        update_active_window(cx, |window| window.minimize_window());
+        cx.defer(|cx| update_active_window(cx, |window| window.minimize_window()));
     });
     cx.on_action(|_: &CloseWindow, cx| {
-        update_active_window(cx, Window::remove_window);
+        cx.defer(|cx| update_active_window(cx, Window::remove_window));
     });
     cx.on_action(|_: &CloseAllWindows, cx| {
-        for handle in cx.windows() {
-            let _ = handle.update(cx, |_, window, _| window.remove_window());
-        }
+        cx.defer(|cx| {
+            for handle in cx.windows() {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
+        });
     });
-    cx.on_action(|_: &QuitApplication, cx| cx.quit());
-    cx.on_action(|_: &HideApplication, cx| cx.hide());
-    cx.on_action(|_: &HideOtherApplications, cx| cx.hide_other_apps());
-    cx.on_action(|_: &NextWindow, cx| activate_window_at(cx, 1));
-    cx.on_action(|_: &PreviousWindow, cx| activate_last_window(cx));
+    cx.on_action(|_: &QuitApplication, cx| {
+        cx.defer(|cx| cx.quit());
+    });
+    cx.on_action(|_: &HideApplication, cx| {
+        cx.defer(|cx| cx.hide());
+    });
+    cx.on_action(|_: &HideOtherApplications, cx| {
+        cx.defer(|cx| cx.hide_other_apps());
+    });
+    cx.on_action(|_: &NextWindow, cx| {
+        cx.defer(|cx| activate_window_at(cx, 1));
+    });
+    cx.on_action(|_: &PreviousWindow, cx| {
+        cx.defer(activate_last_window);
+    });
     cx.on_action(|_: &OpenSettings, cx| {
         with_app(cx, |app, cx| app.navigate(Route::Settings, cx));
     });
@@ -85,7 +97,14 @@ pub fn init(cx: &mut App) {
 }
 
 fn update_active_window(cx: &mut App, update: impl FnOnce(&mut Window)) {
-    if let Some(handle) = cx.active_window() {
+    let handle = cx
+        .active_window()
+        .or_else(|| {
+            cx.window_stack()
+                .and_then(|windows| windows.first().copied())
+        })
+        .or_else(|| cx.windows().first().copied());
+    if let Some(handle) = handle {
         let _ = handle.update(cx, |_, window, _| update(window));
     }
 }
