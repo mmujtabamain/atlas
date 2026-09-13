@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-clear
-clear
-clear
+clear || true
+clear || true
+clear || true
 
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -27,7 +27,7 @@ run() {
 }
 
 STORE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CONFIG_PATH="$STORE_DIR/atlas.hcl"
+CONFIG_URI="file://$STORE_DIR/atlas.hcl"
 
 step "Step 1/3 — Check Atlas CLI"
 command -v atlas >/dev/null 2>&1 || { fail "Atlas CLI is required: https://atlasgo.io/getting-started#installation"; exit 1; }
@@ -35,8 +35,8 @@ run atlas version
 
 step "Step 2/3 — Validate migration checksums"
 cd "$STORE_DIR"
-run atlas migrate validate --env local --config "$CONFIG_PATH"
+run atlas migrate validate --env local --config "$CONFIG_URI"
 
 step "Step 3/3 — Lint the latest migration"
-run atlas migrate lint --env local --latest 1 --config "$CONFIG_PATH"
+run atlas migrate lint --env local --latest 1 --config "$CONFIG_URI"
 success "Migration checksums and lint passed."

@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-clear
-clear
-clear
+clear || true
+clear || true
+clear || true
 
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -27,7 +27,7 @@ run() {
 }
 
 STORE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CONFIG_PATH="$STORE_DIR/atlas.hcl"
+CONFIG_URI="file://$STORE_DIR/atlas.hcl"
 MIGRATIONS_DIR="$STORE_DIR/migrations"
 
 if [[ $# -ne 1 || ! "$1" =~ ^[a-z0-9]+(_[a-z0-9]+)*$ ]]; then
@@ -42,13 +42,13 @@ run atlas version
 step "Step 2/3 — Generate migration from schema.hcl"
 before="$(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.sql' -print | sort)"
 cd "$STORE_DIR"
-run atlas migrate diff "$1" --env local --config "$CONFIG_PATH"
+run atlas migrate diff "$1" --env local --config "$CONFIG_URI"
 after="$(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.sql' -print | sort)"
 [[ "$before" != "$after" ]] || { fail "Atlas produced no migration; update schema.hcl first."; exit 1; }
 new_file="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
 [[ -n "$new_file" && -s "$new_file" ]] || { fail "Generated migration is missing or empty."; exit 1; }
 
 step "Step 3/3 — Refresh and validate checksums"
-run atlas migrate hash --env local --config "$CONFIG_PATH"
-run atlas migrate validate --env local --config "$CONFIG_PATH"
+run atlas migrate hash --env local --config "$CONFIG_URI"
+run atlas migrate validate --env local --config "$CONFIG_URI"
 success "Generated $(basename "$new_file") and refreshed atlas.sum. Review the SQL before committing."

@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-clear
-clear
-clear
+clear || true
+clear || true
+clear || true
 
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -27,7 +27,7 @@ run() {
 }
 
 STORE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CONFIG_PATH="$STORE_DIR/atlas.hcl"
+CONFIG_URI="file://$STORE_DIR/atlas.hcl"
 ENTITIES_DIR="$STORE_DIR/src/entities"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/atlas-financer-entities.XXXXXX")"
 TEMP_DB="$TEMP_DIR/entities.sqlite"
@@ -47,7 +47,7 @@ run sea-orm-cli --version
 
 step "Step 2/4 — Build a temporary database at migration head"
 cd "$STORE_DIR"
-run atlas migrate apply --env local --config "$CONFIG_PATH" --url "sqlite://$TEMP_DB"
+run atlas migrate apply --env local --config "$CONFIG_URI" --url "sqlite://$TEMP_DB"
 
 step "Step 3/4 — Generate SeaORM entities"
 run sea-orm-cli generate entity \
