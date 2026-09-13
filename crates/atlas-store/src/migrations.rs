@@ -66,7 +66,7 @@ pub(crate) async fn plan<C: ConnectionTrait>(db: &C) -> StoreResult<MigrationPla
     let has_history = db
         .query_one(Statement::from_string(
             DbBackend::Sqlite,
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'atlas_schema_revisions') AS present",
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations') AS present",
         ))
         .await
         .map_err(StoreError::db)?
@@ -81,7 +81,7 @@ pub(crate) async fn plan<C: ConnectionTrait>(db: &C) -> StoreResult<MigrationPla
     for row in db
         .query_all(Statement::from_string(
             DbBackend::Sqlite,
-            "SELECT version, checksum FROM atlas_schema_revisions ORDER BY version",
+            "SELECT version, checksum FROM schema_migrations ORDER BY version",
         ))
         .await
         .map_err(StoreError::db)?
@@ -105,7 +105,7 @@ pub(crate) async fn plan<C: ConnectionTrait>(db: &C) -> StoreResult<MigrationPla
 
 pub(crate) async fn apply<C: ConnectionTrait + TransactionTrait>(db: &C) -> StoreResult<()> {
     db.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS atlas_schema_revisions (\
+        "CREATE TABLE IF NOT EXISTS schema_migrations (\
            version TEXT PRIMARY KEY,\
            applied_at INTEGER NOT NULL,\
            checksum TEXT NOT NULL\
@@ -123,7 +123,7 @@ pub(crate) async fn apply<C: ConnectionTrait + TransactionTrait>(db: &C) -> Stor
         transaction
             .execute(Statement::from_sql_and_values(
                 DbBackend::Sqlite,
-                "INSERT INTO atlas_schema_revisions (version, applied_at, checksum) VALUES (?, ?, ?)",
+                "INSERT INTO schema_migrations (version, applied_at, checksum) VALUES (?, ?, ?)",
                 [migration.version.into(), now_millis().into(), hex::encode(migration.checksum).into()],
             ))
             .await

@@ -5,7 +5,7 @@ use serde::de::DeserializeOwned;
 use crate::{HouseholdMeta, StoreError, StoreResult};
 
 pub(crate) async fn is_legacy<C: ConnectionTrait>(db: &C) -> StoreResult<bool> {
-    if !table_exists(db, "meta").await? || table_exists(db, "atlas_schema_revisions").await? {
+    if !table_exists(db, "meta").await? || table_exists(db, "schema_migrations").await? {
         return Ok(false);
     }
     let columns = db

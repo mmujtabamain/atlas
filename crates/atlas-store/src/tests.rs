@@ -45,7 +45,7 @@ fn repeated_open_is_idempotent_and_checksum_drift_is_rejected() {
             .await
             .expect("database opened");
         database
-            .execute_unprepared("UPDATE atlas_schema_revisions SET checksum = 'rewritten'")
+            .execute_unprepared("UPDATE schema_migrations SET checksum = 'rewritten'")
             .await
             .expect("checksum changed for test");
         database.close().await.expect("database closed");

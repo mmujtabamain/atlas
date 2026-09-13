@@ -254,7 +254,7 @@ impl HouseholdFile {
             inspection.close().await.map_err(StoreError::db)?;
             return self.upgrade_legacy(household).await;
         }
-        if !legacy::table_exists(&inspection, "atlas_schema_revisions").await? {
+        if !legacy::table_exists(&inspection, "schema_migrations").await? {
             return Err(StoreError::NotAHousehold);
         }
         let plan = migrations::plan(&inspection).await?;

@@ -10,7 +10,7 @@ continues to exchange only domain `Household` values with this crate.
 - Every read/write connection enables WAL, foreign keys, a five-second busy
   timeout, and `synchronous=FULL`.
 - `migrations/*.sql` is embedded in the binary and applied in filename order.
-- `atlas_schema_revisions` records the version, application time, and SHA-256
+- `schema_migrations` records the version, application time, and SHA-256
   content checksum atomically with each migration.
 - Opening a database with an unknown future migration or a changed checksum
   fails without writing it.
