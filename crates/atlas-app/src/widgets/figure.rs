@@ -155,12 +155,14 @@ impl RenderOnce for Figure {
         }
         let terms = metadata_terms(&self.id, node);
 
+        // Icon only, at the trailing edge of the cell: the label already names
+        // the figure, and a row of six figures has no room for six `Explain…`
+        // links. The tooltip and the id (tests click it) are unchanged.
         let explain = Button::new(explain_id)
             .xsmall()
             .ghost()
             .compact()
-            .icon(IconName::ListTree)
-            .label("Explain…")
+            .icon(IconName::Info)
             .tooltip("Show the calculation")
             .on_click(move |_, window, cx| explain::open_sheet(window, cx, content.clone()));
 
@@ -189,7 +191,9 @@ impl RenderOnce for Figure {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(value_color)
                     .map(|this| match self.variant {
-                        Variant::Leading => this.text_2xl(),
+                        // The one number a screen is about outweighs its
+                        // supporting figures at a glance, not on inspection.
+                        Variant::Leading => this.text_3xl(),
                         Variant::Standard | Variant::Compact => this.text_xl(),
                     })
                     .child(money.format()),

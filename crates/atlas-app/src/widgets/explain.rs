@@ -187,6 +187,89 @@ pub fn render_preview(node: &ProvNode, content: Arc<ExplainContent>, cx: &App) -
         .into_any_element()
 }
 
+/// The top of a chain as one sentence: `4,400,000 liquid cash − 1,750,000
+/// reserved cash = 2,650,000 free current cash`.
+///
+/// A screen states the equation behind its leading figure; the terms of the
+/// terms belong to the calculation sheet, which the line's own command opens.
+/// Reading a chain as a table costs a screen thirty lines and answers a
+/// question nobody asked yet.
+pub fn equation_text(node: &ProvNode) -> String {
+    // Excluded terms contribute nothing to the arithmetic; the sheet still
+    // lists them with the reason they were left out.
+    let terms: Vec<&ProvNode> = node.children().iter().filter(|c| !c.is_excluded()).collect();
+    if terms.is_empty() {
+        return format!("{} = {}", node.label(), node.value().render());
+    }
+    let mut labels: Vec<String> = terms.iter().map(|t| t.label().to_string()).collect();
+    labels.push(node.label().to_string());
+    let labels = strip_shared_prefix(labels);
+    let (result_label, term_labels) = labels.split_last().expect("pushed the result label");
+    let mut text = String::new();
+    for (index, (term, label)) in terms.iter().zip(term_labels).enumerate() {
+        if index > 0 {
+            text.push_str(match term.sign() {
+                Sign::Plus => " + ",
+                Sign::Minus => " − ",
+            });
+        } else if term.sign() == Sign::Minus {
+            text.push_str("− ");
+        }
+        text.push_str(&format!("{} {}", term.value().render(), label));
+    }
+    format!("{text} = {} {result_label}", node.value().render())
+}
+
+/// Drops the words every label in a chain begins with (`Household liquid
+/// cash`, `Household reserved cash` → `liquid cash`, `reserved cash`): the
+/// boundary is already stated by the screen, and repeating it in every term
+/// is what makes an equation too long to read.
+fn strip_shared_prefix(labels: Vec<String>) -> Vec<String> {
+    let mut words: Vec<Vec<&str>> = labels.iter().map(|l| l.split_whitespace().collect()).collect();
+    if words.len() < 2 {
+        return labels;
+    }
+    let mut shared = 0usize;
+    loop {
+        // Never strip a label down to nothing: every term keeps a name.
+        if words.iter().any(|w| w.len() <= shared + 1) {
+            break;
+        }
+        let first = words[0][shared];
+        if !words.iter().all(|w| w[shared].eq_ignore_ascii_case(first)) {
+            break;
+        }
+        shared += 1;
+    }
+    if shared == 0 {
+        return labels;
+    }
+    words.iter_mut().map(|w| w.split_off(shared).join(" ")).collect()
+}
+
+/// The equation behind a figure, with the command that opens the whole chain.
+pub fn render_equation(id: impl Into<ElementId>, node: &ProvNode, content: Arc<ExplainContent>, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    h_flex()
+        .w_full()
+        .items_start()
+        .justify_between()
+        .gap_4()
+        .child(div().flex_1().min_w_0().text_sm().text_color(theme.foreground).child(equation_text(node)))
+        .child(
+            div().flex_shrink_0().child(
+                Button::new(id)
+                    .xsmall()
+                    .ghost()
+                    .compact()
+                    .icon(IconName::ListTree)
+                    .label("Full calculation…")
+                    .on_click(move |_, window, cx| open_sheet(window, cx, content.clone())),
+            ),
+        )
+        .into_any_element()
+}
+
 /// Nested blocks deeper than this are left to the sheet's own scrolling.
 const MAX_NESTING: usize = 6;
 
