@@ -195,6 +195,13 @@ pub fn render_preview(node: &ProvNode, content: Arc<ExplainContent>, cx: &App) -
 /// Reading a chain as a table costs a screen thirty lines and answers a
 /// question nobody asked yet.
 pub fn equation_text(node: &ProvNode) -> String {
+    // Only a sum reads as a chain of signed terms. A named formula (a median,
+    // a min–max, a clamped difference) has children that are its *inputs*, not
+    // addends: joining them with plus signs would state an arithmetic that
+    // never happened. Such a node states its formula instead.
+    if let Operation::Formula { text } = node.operation() {
+        return format!("{text} = {} {}", node.value().render(), equation_label(node.label()));
+    }
     // Excluded terms contribute nothing to the arithmetic; the sheet still
     // lists them with the reason they were left out.
     let terms: Vec<&ProvNode> = node.children().iter().filter(|c| !c.is_excluded()).collect();
