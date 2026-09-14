@@ -8,13 +8,19 @@ license.workspace = true
 
 [dependencies]
 atlas-core = { path = "../atlas-core" }
+anyhow.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 log.workspace = true
-# Bundled SQLite: no system library needed on macOS or the Linux box.
-rusqlite = { version = "0.32", features = ["bundled"] }
+sea-orm = { version = "1.1.20", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio"] }
+include_dir = "0.7"
+sha2 = "0.10"
+hex = "0.4"
+tokio = { version = "1", features = ["rt", "sync"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

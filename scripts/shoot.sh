@@ -70,8 +70,8 @@ scenario scenarios-person-b-light 1400 -- "$APP" --theme light --size ${WIDTH}x1
 scenario policies-person-b-dark 1800 -- "$APP" --theme dark --size ${WIDTH}x1800 --sample --viewer b --screen policies
 
 # Details reached from a register: an account, a person, a company, a series, a rule.
-scenario account-detail-light 1500 --step click:420,700 --step wait:400 --step click:1420,884 --step wait:700 -- "$APP" --theme light --size ${WIDTH}x1500 --sample --viewer a --screen accounts
-scenario person-detail-light 1600 --step click:600,262 --step wait:400 --step click:1493,392 --step wait:700 -- "$APP" --theme light --size ${WIDTH}x1600 --sample --viewer a --screen people
+scenario account-detail-light 1500 -- "$APP" --theme light --size ${WIDTH}x1500 --sample --viewer a --screen account
+scenario person-detail-light 1600 -- "$APP" --theme light --size ${WIDTH}x1600 --sample --viewer a --screen person
 
 # The purchase builder's steps and its result.
 scenario purchase-step-2-light 1500 --step click:1546,807 --step wait:800 -- "$APP" --theme light --size ${WIDTH}x1500 --sample --viewer a --screen purchase

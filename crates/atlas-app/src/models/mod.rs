@@ -1,22 +1,21 @@
-//! One module per sidebar section. [`Section`] is the navigation model: the
-//! sidebar groups, labels, icons and the stable slugs used by `--screen`,
-//! element ids and tests.
+//! What a screen is shown, computed once: each module turns the household and
+//! the viewer into the figures, rows and chains its screen renders, so a
+//! screen file only lays out what it is given. Drawing lives in `screens`.
+//!
+//! [`Section`] is the navigation model: the sidebar groups, labels, icons and
+//! the stable slugs used by `--screen`, element ids and tests.
 
-pub mod accounts;
-pub mod assumptions;
-pub mod companies;
-pub mod decisions;
+pub(crate) mod assumptions;
+pub(crate) mod decisions;
 pub mod entities;
-pub mod household;
-pub mod liquidity;
-pub mod people;
-pub mod privacy;
-pub mod rules;
-pub mod scenarios;
-pub mod projections;
-pub mod settings;
-pub mod taxes;
-pub mod timeline;
+pub(crate) mod household;
+pub(crate) mod liquidity;
+pub(crate) mod privacy;
+pub(crate) mod rules;
+pub(crate) mod scenarios;
+pub(crate) mod projections;
+pub(crate) mod taxes;
+pub(crate) mod timeline;
 
 use atlas_core::authz::Viewer;
 use atlas_core::ids::{ObjectRef, ScenarioId};

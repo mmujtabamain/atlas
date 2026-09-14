@@ -52,12 +52,14 @@ pub struct Figure {
     variant: Variant,
     /// A qualifier or date shown after the metadata, when needed.
     qualifier: Option<SharedString>,
+    /// Whether the vocabulary terms are shown (`Compact` only).
+    terms: bool,
 }
 
 impl Figure {
     /// `id` must be stable and unique on the screen (`free-cash`, …).
     pub fn new(id: impl Into<SharedString>, label: impl Into<SharedString>, calc: &Calc<Money>, content: Arc<ExplainContent>) -> Self {
-        Figure { id: id.into(), label: label.into(), money: calc.money(), node: calc.shared_node(), content, variant: Variant::Standard, qualifier: None }
+        Figure { id: id.into(), label: label.into(), money: calc.money(), node: calc.shared_node(), content, variant: Variant::Standard, qualifier: None, terms: true }
     }
 
     pub fn variant(mut self, variant: Variant) -> Self {
@@ -72,6 +74,19 @@ impl Figure {
 
     pub fn qualifier(mut self, qualifier: impl Into<SharedString>) -> Self {
         self.qualifier = Some(qualifier.into());
+        self
+    }
+
+    /// Hides the vocabulary terms of a `Compact` figure.
+    ///
+    /// In a table every row of a column carries the same terms — `Reserved
+    /// current · Exact accounting calculation`, forty-six characters — and no
+    /// money lane is wide enough for them, so the right-aligned cell clips
+    /// their front and the column reads `xact accounting calculation` on every
+    /// row. The terms are one click away in the calculation sheet, which the
+    /// figure's own icon opens; the column header names the figure.
+    pub fn terms(mut self, terms: bool) -> Self {
+        self.terms = terms;
         self
     }
 }
@@ -123,6 +138,7 @@ impl RenderOnce for Figure {
             let first_term = node.money_class_label().map(Term::MoneyClass).unwrap_or(Term::Strength(node.result_strength()));
             let caution = node.money_class_label().is_some_and(|c| !c.is_current()) || matches!(node.operation(), Operation::Aggregate { .. });
             let terms_id = SharedString::from(format!("{}-terms", self.id));
+            let show_terms = self.terms;
             return v_flex()
                 .min_w_0()
                 .items_end()
@@ -141,26 +157,30 @@ impl RenderOnce for Figure {
                                 .on_click(move |_, window, cx| explain::open_sheet(window, cx, content.clone())),
                         ),
                 )
-                .child(
-                    Button::new(terms_id)
-                        .xsmall()
-                        .ghost()
-                        .compact()
-                        .label(terms.join(" · "))
-                        .when(caution, |b| b.warning().outline())
-                        .tooltip("What these labels mean")
-                        .on_click(move |_, window, cx| meanings::open_sheet(window, cx, Some(first_term))),
-                )
+                .when(show_terms, |this| {
+                    this.child(
+                        Button::new(terms_id)
+                            .xsmall()
+                            .ghost()
+                            .compact()
+                            .label(terms.join(" · "))
+                            .when(caution, |b| b.warning().outline())
+                            .tooltip("What these labels mean")
+                            .on_click(move |_, window, cx| meanings::open_sheet(window, cx, Some(first_term))),
+                    )
+                })
                 .into_any_element();
         }
         let terms = metadata_terms(&self.id, node);
 
+        // Icon only, at the trailing edge of the cell: the label already names
+        // the figure, and a row of six figures has no room for six `Explain…`
+        // links. The tooltip and the id (tests click it) are unchanged.
         let explain = Button::new(explain_id)
             .xsmall()
             .ghost()
             .compact()
-            .icon(IconName::ListTree)
-            .label("Explain…")
+            .icon(IconName::Info)
             .tooltip("Show the calculation")
             .on_click(move |_, window, cx| explain::open_sheet(window, cx, content.clone()));
 
@@ -189,7 +209,9 @@ impl RenderOnce for Figure {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(value_color)
                     .map(|this| match self.variant {
-                        Variant::Leading => this.text_2xl(),
+                        // The one number a screen is about outweighs its
+                        // supporting figures at a glance, not on inspection.
+                        Variant::Leading => this.text_3xl(),
                         Variant::Standard | Variant::Compact => this.text_xl(),
                     })
                     .child(money.format()),

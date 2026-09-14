@@ -36,8 +36,11 @@ opens on **Welcome**: create a household, open a file, or explore the fictitious
 
 ## The screens
 
-Eight destinations in the sidebar, each with its own tabs; details are addressable routes of
-their own, so `--screen <slug>` reaches any of them.
+Eight destinations in the sidebar, each with its own tabs. Details are routes of their own and
+carry the object's id, which a command line cannot name — so `--screen person`, `company`,
+`account`, `rule` and `series-detail` open the **first** record of that kind the chosen viewer
+may see, and the register instead when the household has none. A record hidden from the viewer
+is never opened this way: `--screen` is a convenience, not a way past a policy.
 
 | Destination | Tabs | Details |
 |---|---|---|
@@ -118,11 +121,12 @@ assumptions, scenarios, transactions with matching, rules, tax rules), and a det
 the commands that belong to it — **Reconcile…**, **Change series…**, one-occurrence changes,
 **Pay and release…**, **Delete …** with its consequence named.
 
-- **Household ▸ Save as…** writes one SQLite file, `<name>.atlas.sqlite`, wherever you choose
-  (default `~/Documents/Atlas/`). **Save** rewrites it in one transaction after copying the
-  previous version into `backups/` (20 kept). Open it again with **Household ▸ Open…** or
-  `atlas --household /path/to/ours.atlas.sqlite`.
-- **One editor at a time.** A sidecar `.lock` file names who has the household open; opening a
+- **Household ▸ Save as…** writes one portable SQLite file, `<name>.atlas.sqlite`, wherever
+  you choose (default `~/Documents/Atlas/`). **Save** commits the relational household in one
+  transaction after making a WAL-consistent snapshot in `backups/` (20 kept). Embedded,
+  checksum-protected migrations upgrade older files before data is loaded. Open it again with
+  **Household ▸ Open…** or `atlas --household /path/to/ours.atlas.sqlite`.
+- **One editor at a time.** An atomically-created sidecar `.lock` file names who has the household open; opening a
   file someone else holds says so, and `--take-over` (or the notification) lets you proceed
   when they are done. Two people on the same Mac take turns; nothing syncs.
 - **Who is looking?** The picker (title bar, or **Household ▸ Who is looking?…**) sets the
@@ -213,7 +217,7 @@ funding searches), typed conditions (amount above/below, category, account, fore
 currency, date), one action (a percentage or fixed fee event, a classification, a funding
 preference with a floor, a funding prohibition until a date, or bank selection with a
 fallback), a priority, an effective range and a version history. Rules are saved with the
-household (`rules` table; the tie-break policy in `meta`).
+household (`rules` table; the tie-break policy in `households`).
 
 - The **conflict-resolution inspector** lists every decision the rules took in the window:
   every candidate, the outcome for each loser (lower priority / less specific / tie-break),
@@ -236,5 +240,6 @@ household (`rules` table; the tie-break policy in `meta`).
 `DEVBENCH_NOTIFY_URL` and `DEVBENCH_NOTIFY_TOKEN` are set in the deployment environment,
 posts panics and calculation failures to DevBench's notify endpoint
 (`POST $DEVBENCH_NOTIFY_URL/api/notify/`, bearer token, `{"text","level","source":"atlas-app"}`).
-Without them it degrades to local logging and the status bar says "Alerts: log only".
+Without them it degrades to local logging. Settings states which of the two is in force, under
+Diagnostics.
 The token is a server-side secret: it is read from the environment only and never logged.

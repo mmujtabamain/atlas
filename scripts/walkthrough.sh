@@ -44,13 +44,13 @@ frame "2 · Who is looking? Every figure is projected for one person, chosen bef
 frame "3 · Today: what is free now, the hard floor and headroom, and the outlook through the forecast end" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen today
 frame "4 · Why is this number this number? Every derived figure opens its calculation, tagged with money class, certainty and result strength" --step click:560,200 --step wait:800 -- "$APP" --theme light --size $SIZE --sample --viewer a --screen today
 frame "5 · Accounts: find an account by name, holder or type; settled, reserved and free are three different numbers" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen accounts
-frame "6 · An account: its balances, the earmarks and planned movements behind them, and every property" --step click:420,700 --step wait:400 --step click:1420,884 --step wait:700 -- "$APP" --theme light --size $SIZE --sample --viewer a --screen accounts
+frame "6 · An account: its balances, the earmarks and planned movements behind them, and every property" --step click:1541,292 --step wait:700 -- "$APP" --theme light --size $SIZE --sample --viewer a --screen accounts
 frame "7 · Earmarks: money set aside without leaving the bank, the hard floor, and the runway against it" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen earmarks
 frame "8 · Funding: which accounts the rules allow a purchase to use, in what order, and which account pays each category" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen funding
 frame "9 · Upcoming: every planned movement with its four dates, certainty and status; one occurrence can be skipped, moved or re-priced" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen upcoming
 frame "10 · Actuals: recording a transaction does not move the statement balance; matching links it to a planned occurrence" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen actuals
-frame "11 · People: each person's attributed share, what they hold, earn and owe in tax through the forecast end" --step click:600,262 --step wait:400 --step click:1493,392 --step wait:700 -- "$APP" --theme light --size $SIZE --sample --viewer a --screen people
-frame "12 · A company: business cash, committed obligations and the ceiling before extraction costs — lawful extraction stays unresolved" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen company
+frame "11 · People: each person's attributed share, what they hold, earn and owe in tax through the forecast end" --step click:1541,249 --step wait:700 -- "$APP" --theme light --size $SIZE --sample --viewer a --screen people
+frame "12 · A company: business cash, committed obligations and the ceiling before extraction costs — lawful extraction stays unresolved" --step click:1541,262 --step wait:700 -- "$APP" --theme light --size $SIZE --sample --viewer a --screen companies
 frame "13 · Forecast: the conditional cash path against the hard floor, with its exact values and per-account paths" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen forecast
 frame "14 · Assumptions: what the forecast relies on, with acceptance and freshness; derivation reads a fixed sample of past payments" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen assumptions
 frame "15 · Sensitivity: how far one assumption can move before the floor breaks — separate limits, never a joint guarantee" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen sensitivity
@@ -63,7 +63,7 @@ frame "21 · Rule activity: every decision the rules took, how competing candida
 frame "22 · Taxes: effective-dated packs, tax events on their cash dates, and what falls due after the horizon as a reserve" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen taxes
 frame "23 · Sharing: versioned policies, the nine aspects they control, and the safe reason access is limited" -- "$APP" --theme light --size $SIZE --sample --viewer a --screen policies
 frame "24 · Viewing as Person B: a private account is an authorized aggregate, never a name or a balance" -- "$APP" --theme light --size $SIZE --sample --viewer b --screen today
-frame "25 · Person B's company view: identity and the planning-safe ceiling only; balances, payroll and taxes are not disclosed" -- "$APP" --theme light --size $SIZE --sample --viewer b --screen company
+frame "25 · Person B's company view: identity and the planning-safe ceiling only; balances, payroll and taxes are not disclosed" --step click:1541,262 --step wait:700 -- "$APP" --theme light --size $SIZE --sample --viewer b --screen companies
 # The concat demuxer needs the last file repeated without a duration.
 printf "file '%s'\n" "$FRAMES/frame-$(printf %02d $n).png" >> "$FRAMES/list.txt"
 ffmpeg -hide_banner -loglevel error -y -f concat -safe 0 -i "$FRAMES/list.txt" -vf "fps=25,format=yuv420p" -c:v libx264 -preset medium -crf 20 "$REPO/shots/walkthrough.mp4"

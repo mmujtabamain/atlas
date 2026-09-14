@@ -98,14 +98,9 @@ pub fn init() {
     }
 }
 
-/// Whether alerts reach DevBench (for the status bar).
+/// Whether alerts reach DevBench, which Settings states under Diagnostics.
 pub fn is_configured() -> bool {
     CONFIG.get().map(|c| c.is_some()).unwrap_or(false)
-}
-
-/// Short status text for the status bar.
-pub fn status_label() -> &'static str {
-    if is_configured() { "Alerts → DevBench" } else { "Alerts: log only" }
 }
 
 /// Logs the failure and, when configured, posts it to the team from a

@@ -1,5 +1,10 @@
 //! Welcome — no household is open — and the viewer gate that covers content
 //! until "Who is looking?" is answered.
+//!
+//! Both are whole-window surfaces with no sidebar, so they are laid out the
+//! same way: one centred block carrying the only decision there is to make,
+//! and one quiet line at the foot of the window saying what kind of program
+//! this is. The three ways in are the block; everything else supports them.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, alert::Alert, button::{Button, ButtonVariants as _}, h_flex, v_flex};
@@ -8,6 +13,19 @@ use gpui_kit::*;
 
 use crate::app::AtlasApp;
 
+/// What this program is, at the foot of the window: manual entry into one
+/// file, and nothing reaching outside it. It sits away from the commands so
+/// it reassures without competing with them.
+fn chrome_footer(cx: &App) -> impl IntoElement {
+    div()
+        .w_full()
+        .pt_6()
+        .text_center()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child("One household file, one editor at a time. Everything is entered by hand — no imports, no bank connections.")
+}
+
 pub fn render(app: &AtlasApp, cx: &mut Context<AtlasApp>) -> AnyElement {
     let theme = cx.theme();
     let notice = app.startup_notice().map(str::to_string);
@@ -15,46 +33,62 @@ pub fn render(app: &AtlasApp, cx: &mut Context<AtlasApp>) -> AnyElement {
         .id("screen-welcome")
         .test_support()
         .size_full()
-        .items_center()
-        .justify_center()
-        .gap_6()
         .child(
             v_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
                 .items_center()
-                .gap_2()
+                .justify_center()
+                .gap_8()
                 .child(
-                    div()
-                        .flex()
+                    v_flex()
                         .items_center()
-                        .justify_center()
-                        .size_12()
-                        .rounded(theme.radius)
-                        .bg(theme.sidebar_primary)
-                        .text_color(theme.sidebar_primary_foreground)
-                        .child(Icon::new(IconName::Wallet).large()),
-                )
-                .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child("Atlas Financer"))
-                .child(div().text_sm().text_color(theme.muted_foreground).child("See what is free now. Follow what is planned. Test a concrete purchase.")),
-        )
-        .child(
-            v_flex()
-                .w_80()
-                .gap_2()
-                .child(Button::new("welcome-create").w_full().primary().icon(IconName::Plus).label("Create household…").on_click(cx.listener(|this, _, window, cx| this.open_new_household(window, cx))))
-                .child(Button::new("welcome-open").w_full().outline().icon(IconName::FolderOpen).label("Open household…").on_click(cx.listener(|this, _, window, cx| this.open_open(window, cx))))
-                .child(Button::new("welcome-sample").w_full().outline().label("Explore sample").on_click(cx.listener(|this, _, window, cx| this.load_sample(window, cx))))
-                .child(div().text_xs().text_color(theme.muted_foreground).text_center().child("Fictitious household · PKR")),
-        )
-        .when_some(notice, |this, text| {
-            this.child(
-                v_flex().w_96().gap_2().child(Alert::warning("startup-notice", text).title("The file could not be opened")).child(
-                    h_flex()
                         .gap_2()
-                        .child(Button::new("welcome-try-another").small().outline().label("Try another file…").on_click(cx.listener(|this, _, window, cx| this.open_open(window, cx))))
-                        .child(Button::new("welcome-sample-after-failure").small().ghost().label("Explore sample").on_click(cx.listener(|this, _, window, cx| this.load_sample(window, cx)))),
-                ),
-            )
-        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size_12()
+                                .rounded(theme.radius)
+                                .bg(theme.sidebar_primary)
+                                .text_color(theme.sidebar_primary_foreground)
+                                .child(Icon::new(IconName::Wallet).large()),
+                        )
+                        .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child("Atlas Financer"))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child("See what is free now. Follow what is planned. Test a concrete purchase.")),
+                )
+                // The two ways into real data first and weighted against each
+                // other; the sample is the third way in, set apart because it
+                // is the one that opens somebody else's figures.
+                .child(
+                    v_flex()
+                        .w_96()
+                        .gap_2()
+                        .child(Button::new("welcome-create").w_full().primary().icon(IconName::Plus).label("Create household…").on_click(cx.listener(|this, _, window, cx| this.open_new_household(window, cx))))
+                        .child(Button::new("welcome-open").w_full().outline().icon(IconName::FolderOpen).label("Open household…").on_click(cx.listener(|this, _, window, cx| this.open_open(window, cx))))
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .pt_2()
+                                .gap_1()
+                                .child(Button::new("welcome-sample").w_full().ghost().icon(IconName::ArrowRight).label("Explore sample").on_click(cx.listener(|this, _, window, cx| this.load_sample(window, cx))))
+                                .child(div().text_xs().text_color(theme.muted_foreground).text_center().child("Fictitious household · PKR")),
+                        ),
+                )
+                .when_some(notice, |this, text| {
+                    this.child(
+                        v_flex().w_96().gap_2().child(Alert::warning("startup-notice", text).title("The file could not be opened")).child(
+                            h_flex()
+                                .gap_2()
+                                .child(Button::new("welcome-try-another").small().outline().label("Try another file…").on_click(cx.listener(|this, _, window, cx| this.open_open(window, cx))))
+                                .child(Button::new("welcome-sample-after-failure").small().ghost().label("Explore sample").on_click(cx.listener(|this, _, window, cx| this.load_sample(window, cx)))),
+                        ),
+                    )
+                }),
+        )
+        .child(chrome_footer(cx))
         .into_any_element()
 }
 
@@ -67,16 +101,28 @@ pub fn render_gate(app: &AtlasApp, cx: &mut Context<AtlasApp>) -> AnyElement {
         .id("screen-viewer-gate")
         .test_support()
         .size_full()
-        .items_center()
-        .justify_center()
-        .gap_4()
-        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(name))
-        .child(div().text_sm().text_color(theme.muted_foreground).child("Choose who is looking to continue. This changes what Atlas shows; it does not secure the household file."))
         .child(
-            h_flex()
-                .gap_2()
-                .child(Button::new("gate-choose").primary().icon(IconName::Eye).label("Who is looking…").on_click(cx.listener(|this, _, window, cx| this.open_viewer_picker(window, cx))))
-                .child(Button::new("gate-back").outline().label("Back to Welcome").on_click(cx.listener(|this, _, window, cx| this.close_household(window, cx)))),
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .items_center()
+                .justify_center()
+                .gap_6()
+                .child(
+                    v_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(name))
+                        .child(div().w_96().text_sm().text_center().text_color(theme.muted_foreground).child("Choose who is looking to continue. This changes what Atlas shows; it does not secure the household file.")),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(Button::new("gate-choose").primary().icon(IconName::Eye).label("Who is looking…").on_click(cx.listener(|this, _, window, cx| this.open_viewer_picker(window, cx))))
+                        .child(Button::new("gate-back").outline().label("Back to Welcome").on_click(cx.listener(|this, _, window, cx| this.close_household(window, cx)))),
+                ),
         )
+        .child(chrome_footer(cx))
         .into_any_element()
 }

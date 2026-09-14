@@ -2,7 +2,16 @@
 //! health, aspects and versions), the purpose-specific grants, and the
 //! immutable audit of access changes. Ownership, visibility, use in
 //! calculations and purpose stay four separate facts throughout.
+//!
+//! Policies are a master–detail (the same frame Scenarios uses): the objects
+//! on the left, the selected policy's nine aspects and its version history
+//! beside them. As a full-width list the sixteen policies of a small household
+//! already fill the window, and the matrix that says *what* the selected
+//! policy actually permits — the only thing this screen exists to answer — sat
+//! below the fold. Grants and Audit stay registers: a count line, full-width
+//! lanes, and the selection's commands ruled off at the foot.
 
+use atlas_core::authz::AccessPolicy;
 use atlas_core::ids::ObjectRef;
 use atlas_core::model::Household;
 use gpui_kit::assets::IconName;
@@ -11,8 +20,8 @@ use gpui_kit::component::{
     accordion::Accordion,
     alert::Alert,
     button::{Button, ButtonVariants as _},
-    description_list::{DescriptionItem, DescriptionList},
     h_flex,
+    list::ListItem,
     tag::Tag,
     v_flex,
 };
@@ -23,9 +32,11 @@ use super::common::workspace_header;
 use crate::app::AtlasApp;
 use crate::models::privacy::{AuditRow, GrantRow, PolicyRow, PrivacyModel};
 use crate::nav::{Destination, Route};
+use crate::widgets::facts::facts;
 use crate::widgets::labels;
+use crate::widgets::master::{master_detail, master_item};
 use crate::widgets::record::{self, Lane};
-use crate::widgets::states::{about_access_button, count_line, empty_state, fact, lanes, note, section};
+use crate::widgets::states::{about_access_button, action_bar, count_line, empty_state, info_card, note, section};
 
 fn date(d: chrono::NaiveDate) -> String {
     d.format("%d %b %Y").to_string()
@@ -35,9 +46,32 @@ fn stamp(at: chrono::NaiveDateTime) -> String {
     at.format("%d %b %Y %H:%M").to_string()
 }
 
+/// A row of lanes that is read, not selected (the version history).
+///
+/// `record::row` is a `ListItem` and therefore wants a click handler; a table
+/// of read-only facts must not pretend to be clickable. The geometry is the
+/// same so the rows line up under `record::header`.
+fn lane_row(cells: Vec<(Lane, AnyElement)>) -> AnyElement {
+    h_flex()
+        .w_full()
+        .gap_4()
+        .px_3()
+        .py_1()
+        .items_center()
+        .children(cells.into_iter().map(|(lane, content)| {
+            let cell = div().min_w_0().overflow_hidden().child(content);
+            match lane.width {
+                Some(w) => cell.w(px(w)).flex_shrink_0(),
+                None => cell.flex_1(),
+            }
+        }))
+        .into_any_element()
+}
+
 // ----- Policies ----------------------------------------------------------------
 
-const POLICY_LANES: [(&str, Lane); 3] = [("Object", Lane::flex()), ("Preset", Lane::fixed(200.)), ("Version", Lane::fixed(100.))];
+/// The version history's lanes (`Table`, per the contract's region 5).
+const VERSION_LANES: [(&str, Lane); 4] = [("Version", Lane::fixed(80.)), ("Preset", Lane::fixed(170.)), ("Effective", Lane::fixed(150.)), ("Changed", Lane::flex())];
 
 pub fn render_policies(app: &AtlasApp, model: &PrivacyModel, household: &Household, cx: &mut Context<AtlasApp>) -> AnyElement {
     let owns_something = model.viewer_is_owner_of > 0;
@@ -48,28 +82,40 @@ pub fn render_policies(app: &AtlasApp, model: &PrivacyModel, household: &Househo
         cx,
     );
     let selected = app.selected_policy.filter(|o| model.policies.iter().any(|p| p.policy.object == *o)).or_else(|| model.policies.first().map(|p| p.policy.object));
-    let rows: Vec<_> = model
+
+    // The master list: the object, what its policy is and which version — the
+    // three things that tell one row from another. Everything else about the
+    // selected policy is in the pane beside it.
+    let rows: Vec<ListItem> = model
         .policies
         .iter()
         .map(|row| {
             let object = row.policy.object;
-            record::row(
+            master_item(
                 SharedString::from(format!("policy-{}", row.policy.id.raw())),
+                row.object_name.clone(),
+                format!("{} · {}", preset_label(row), if row.owned { "You own this".to_string() } else { format!("Disclosure: {}", row.viewer_disclosure.label()) }),
+                format!("v{}", row.policy.version),
                 selected == Some(object),
-                vec![
-                    (POLICY_LANES[0].1, record::stack(row.object_name.clone(), if row.owned { "You own this".to_string() } else { format!("Your disclosure: {}", row.viewer_disclosure.label()) }, cx)),
-                    (POLICY_LANES[1].1, h_flex().child(Tag::secondary().xsmall().outline().child(preset_label(row))).into_any_element()),
-                    (POLICY_LANES[2].1, record::muted(format!("v{}", row.policy.version), cx)),
-                ],
-                move |_, _, cx| crate::app::with_app(cx, |app, cx| app.select_policy_row(object, cx)),
+                cx.listener(move |this, _, _, cx| this.select_policy_row(object, cx)),
+                cx,
             )
         })
         .collect();
     let detail = selected.and_then(|o| model.policies.iter().find(|p| p.policy.object == o)).map(|row| render_policy_detail(app, row, household, cx));
-    let theme = cx.theme();
+
+    // Health: an integrity problem is something wrong and keeps its alert; no
+    // problem is a standing fact about the authorized view, and a bordered
+    // card states it instead of a muted sentence that reads as an afterthought.
     let problems: AnyElement = if model.problems.is_empty() {
         if owns_something {
-            note("No policy problem: every object you administer has an effective policy, and no grant points at something that no longer exists.", cx).into_any_element()
+            info_card(
+                "policy-integrity",
+                IconName::ShieldCheck,
+                "No policy problem",
+                "Every object you administer has an effective policy, and no grant points at something that no longer exists.",
+                cx,
+            )
         } else {
             div().into_any_element()
         }
@@ -92,33 +138,44 @@ pub fn render_policies(app: &AtlasApp, model: &PrivacyModel, household: &Househo
             .into_any_element()
     };
 
+    let muted = cx.theme().muted_foreground;
     v_flex()
         .id("screen-policies")
         .test_support()
         .w_full()
         .gap_6()
         .child(header)
-        .child(lanes([
-            fact("Policies you may see", model.policies.len().to_string(), cx).into_any_element(),
-            fact("Objects you own", model.viewer_is_owner_of.to_string(), cx).into_any_element(),
-            fact("Not disclosed to you", model.hidden_policies.to_string(), cx).into_any_element(),
-        ]))
+        // Three integers do not need three figure-sized blocks: what is
+        // visible, what is yours and what is withheld is one sentence.
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .child(count_line(model.policies.len(), model.policies.len() + model.hidden_policies, "policies", cx))
+                .child(div().flex_shrink_0().text_xs().text_color(muted).child(format!("· {} owned by you", model.viewer_is_owner_of))),
+        )
         .child(problems)
-        .child(count_line(model.policies.len(), model.policies.len() + model.hidden_policies, "policies", cx))
         .child(if model.policies.is_empty() {
             empty_state("policies-empty", "No sharing policies you may see", "Every person, account, company and scenario gets its policy when it is created. Nothing here is disclosed to you yet.", None, cx)
         } else {
-            record::list("policies-list", record::header(&POLICY_LANES, cx), rows).into_any_element()
+            master_detail(
+                "policies-master-detail",
+                v_flex().id("policies-list").w_full().gap_0p5().children(rows),
+                detail.unwrap_or_else(|| div().into_any_element()),
+                cx,
+            )
+            .into_any_element()
         })
-        .children(detail)
         .child(
             section("policies-denial", "Why access is limited")
+                .divider(true)
                 .child(match &model.denial_example {
                     Some(example) => div().id("denial-example").test_support().text_sm().whitespace_normal().child(example.clone()).into_any_element(),
                     None => note("Nothing is withheld from you in this household.", cx).into_any_element(),
                 })
                 .child(h_flex().child(about_access_button("policies-about-access")))
-                .child(div().text_xs().text_color(theme.muted_foreground).child("An object's owner can change its policy or issue a purpose-specific grant. Hidden objects are never listed here.")),
+                .child(div().text_xs().text_color(muted).child("An object's owner can change its policy or issue a purpose-specific grant. Hidden objects are never listed here.")),
         )
         .into_any_element()
 }
@@ -141,6 +198,50 @@ fn preset_label(row: &PolicyRow) -> String {
     }
 }
 
+/// The nine aspects as a label/value matrix.
+///
+/// The engine states each aspect as `Existence: whole household`; split at the
+/// colon it becomes two columns, and the audience of each aspect can be read
+/// down a single column instead of out of nine sentences. The wording is the
+/// engine's, not the mockup's — the mockup writes every audience as "Everyone
+/// in the household", which would be a lie for `owners + Person B`.
+fn aspect_matrix(lines: &[String]) -> AnyElement {
+    // The accordion already frames this section, so the facts inside it carry
+    // no frame of their own. The lane is wide because these labels are whole
+    // aspects (`Restricted contributions`), not words.
+    let mut list = facts().lane(px(260.));
+    for line in lines {
+        let mut parts = line.splitn(2, ": ");
+        let label = parts.next().unwrap_or_default().to_string();
+        let value = parts.next().unwrap_or_default().to_string();
+        list = list.pair(label, value);
+    }
+    list.into_any_element()
+}
+
+/// Every version of the policy, oldest to current, read-only.
+fn version_history(policy: &AccessPolicy, household: &Household, cx: &App) -> AnyElement {
+    let mut versions: Vec<&AccessPolicy> = policy.previous_versions.iter().collect();
+    versions.push(policy);
+    versions.sort_by_key(|p| p.version);
+    let current = policy.version;
+    let muted = cx.theme().muted_foreground;
+    v_flex()
+        .w_full()
+        .gap_0p5()
+        .child(record::header(&VERSION_LANES, cx))
+        .children(versions.into_iter().map(|v| {
+            lane_row(vec![
+                (VERSION_LANES[0].1, div().text_sm().child(if v.version == current { format!("v{} · current", v.version) } else { format!("v{}", v.version) }).into_any_element()),
+                (VERSION_LANES[1].1, div().text_sm().child(v.preset_label()).into_any_element()),
+                (VERSION_LANES[2].1, record::muted(date(v.effective_from), cx)),
+                (VERSION_LANES[3].1, record::muted(format!("{} · {}", household.entity_name(atlas_core::ids::EntityRef::Person(v.changed_by)), stamp(v.changed_at)), cx)),
+            ])
+        }))
+        .child(div().w_full().pt_1().text_xs().text_color(muted).child("Oldest to current. History is read-only; changing access records a new version rather than editing this one."))
+        .into_any_element()
+}
+
 fn render_policy_detail(app: &AtlasApp, row: &PolicyRow, household: &Household, cx: &mut Context<AtlasApp>) -> AnyElement {
     let object = row.policy.object;
     let owned = row.owned;
@@ -148,8 +249,10 @@ fn render_policy_detail(app: &AtlasApp, row: &PolicyRow, household: &Household, 
     let owners: Vec<String> = row.policy.full_access.iter().map(|p| household.entity_name(atlas_core::ids::EntityRef::Person(*p))).collect();
     let open = app.policy_sections_open.clone();
     let aspects: Vec<String> = if may_read_aspects { row.lines.clone() } else { Vec::new() };
-    let versions = row.policy.previous_versions.clone();
-    let theme = cx.theme();
+    let history = version_history(&row.policy, household, cx);
+    let version_count = row.policy.previous_versions.len() + 1;
+    let muted = cx.theme().muted_foreground;
+
     let mut accordion = Accordion::new("policy-sections").bordered(true).multiple(true).on_toggle_click(cx.listener(|this, open: &[usize], _, cx| {
         this.policy_sections_open = open.to_vec();
         cx.notify();
@@ -159,45 +262,52 @@ fn render_policy_detail(app: &AtlasApp, row: &PolicyRow, household: &Household, 
         item.title("Who may see and use this").open(aspects_open).child(if aspects.is_empty() {
             div().text_xs().child("The aspects are shown to the object's owners and to a viewer with full disclosure.").into_any_element()
         } else {
-            v_flex().gap_1().text_sm().children(aspects.iter().map(|l| div().whitespace_normal().child(l.clone()))).into_any_element()
+            aspect_matrix(&aspects)
         })
     });
     let versions_open = open.contains(&1);
-    accordion = accordion.item(move |item| {
-        item.title(format!("Version history ({})", versions.len())).open(versions_open).child(if versions.is_empty() {
-            div().text_xs().child("This is the first version; nothing has changed it.").into_any_element()
-        } else {
-            v_flex()
-                .gap_1()
-                .text_sm()
-                .children(versions.iter().map(|v| div().child(format!("v{} effective {} · changed {}", v.version, date(v.effective_from), stamp(v.changed_at)))))
-                .into_any_element()
-        })
-    });
+    accordion = accordion.item(move |item| item.title(format!("Version history ({version_count})")).open(versions_open).child(history));
+
+    // Where it can take you on the left, what it can do on the right.
+    let leading: Vec<AnyElement> = vec![
+        Button::new("policy-view-object")
+            .small()
+            .ghost()
+            .label("View object")
+            .disabled(!object_is_navigable(object))
+            .tooltip(if object_is_navigable(object) { "Open this object's own screen" } else { "This kind of object has no screen of its own" })
+            .on_click(cx.listener(move |this, _, window, cx| this.open_policy_object(object, window, cx)))
+            .into_any_element(),
+    ];
+    let trailing: Vec<AnyElement> = if owned {
+        vec![
+            Button::new("policy-change").small().outline().label("Change policy…").on_click(cx.listener(move |this, _, window, cx| this.open_policy_editor_for(Some(object), window, cx))).into_any_element(),
+            Button::new("policy-grant").small().ghost().label("Grant access…").on_click(cx.listener(move |this, _, window, cx| this.open_grant_editor_for(Some(object), window, cx))).into_any_element(),
+        ]
+    } else {
+        Vec::new()
+    };
 
     section("policy-detail", row.object_name.clone())
-        .action(
-            h_flex()
-                .gap_2()
-                .child(Button::new("policy-view-object").small().ghost().label("View object").disabled(!object_is_navigable(object)).on_click(cx.listener(move |this, _, window, cx| this.open_policy_object(object, window, cx))))
-                .when(owned, |this| {
-                    this.child(Button::new("policy-change").small().outline().label("Change policy…").on_click(cx.listener(move |this, _, window, cx| this.open_policy_editor_for(Some(object), window, cx))))
-                        .child(Button::new("policy-grant").small().ghost().label("Grant access…").on_click(cx.listener(move |this, _, window, cx| this.open_grant_editor_for(Some(object), window, cx))))
-                }),
-        )
-        .child(
-            DescriptionList::new()
-                .columns(2)
-                .child(DescriptionItem::new("Preset").value(preset_label(row)))
-                .child(DescriptionItem::new("Version").value(format!("v{}", row.policy.version)))
-                .child(DescriptionItem::new("Owners").value(if owners.is_empty() { "None recorded".to_string() } else { owners.join(", ") }))
-                .child(DescriptionItem::new("Your access").value(if owned { "You own this object".to_string() } else { format!("Disclosure: {}", row.viewer_disclosure.label()) }))
-                .child(DescriptionItem::new("Effective from").value(date(row.policy.effective_from)))
-                .child(DescriptionItem::new("Changed").value(format!("{} by {}", stamp(row.policy.changed_at), household.entity_name(atlas_core::ids::EntityRef::Person(row.policy.changed_by)))))
-                .child(DescriptionItem::new("Previous").value(row.policy.previous.clone().unwrap_or_else(|| "No earlier preset recorded".into()))),
-        )
+        // The preset identifies the policy, so it sits beside the name rather
+        // than in a row of the facts below it.
+        .badge(preset_label(row))
+        .description(format!(
+            "{} · Version {} · Effective {}",
+            if owned { "You own this object".to_string() } else { format!("Your disclosure: {}", row.viewer_disclosure.label()) },
+            row.policy.version,
+            date(row.policy.effective_from)
+        ))
+        .child(div().w_full().text_xs().text_color(muted).child(format!(
+            "Owners: {} · Changed {} by {}{}",
+            if owners.is_empty() { "None recorded".to_string() } else { owners.join(", ") },
+            stamp(row.policy.changed_at),
+            household.entity_name(atlas_core::ids::EntityRef::Person(row.policy.changed_by)),
+            row.policy.previous.as_ref().map(|p| format!(" · Previous preset: {p}")).unwrap_or_default()
+        )))
         .child(accordion)
-        .child(div().text_xs().text_color(theme.muted_foreground).child("Ownership, visibility, use in calculations and purpose are separate: sharing a balance is not ownership, and an owner is not automatically every calculation's participant."))
+        .child(div().w_full().text_xs().text_color(muted).child("Ownership, visibility, use in calculations and purpose are separate: sharing a balance is not ownership, and an owner is not automatically every calculation's participant."))
+        .child(action_bar("policy-detail-actions", leading, trailing, cx))
         .into_any_element()
 }
 
@@ -237,14 +347,41 @@ pub fn render_grants(app: &AtlasApp, model: &PrivacyModel, household: &Household
             )
         })
         .collect();
-    let detail = selected.and_then(|id| model.grants.iter().find(|g| g.grant.id == id)).map(|row| render_grant_detail(row, household, cx));
+    let chosen = selected.and_then(|id| model.grants.iter().find(|g| g.grant.id == id));
+    let detail = chosen.map(|row| render_grant_detail(row, household, cx));
+
+    // The foot of the register: which grant is selected on the left, what can
+    // be done with it on the right.
+    let footer = chosen.map(|row| {
+        let id = row.grant.id;
+        let object = row.grant.object;
+        let revoked = row.grant.revoked_on.is_some();
+        // The policy is only reachable when this viewer may see it at all: a
+        // grant to a hidden object names no policy row to select.
+        let policy_visible = model.policies.iter().any(|p| p.policy.object == object);
+        let mut trailing: Vec<AnyElement> = vec![
+            Button::new("grant-view-policy")
+                .small()
+                .ghost()
+                .label("View policy")
+                .disabled(!policy_visible)
+                .tooltip(if policy_visible { "Select this object's policy" } else { "This object's policy is not disclosed to you" })
+                .on_click(cx.listener(move |this, _, _, cx| this.open_policy_for(object, cx)))
+                .into_any_element(),
+        ];
+        if row.owned && !revoked {
+            trailing.push(Button::new("grant-revoke").small().danger().outline().label("Revoke grant…").on_click(cx.listener(move |this, _, window, cx| this.confirm_revoke_grant(id, window, cx))).into_any_element());
+        }
+        action_bar("grants-footer", vec![note(format!("{} — {}", row.object_name, row.purpose), cx).into_any_element()], trailing, cx).into_any_element()
+    });
+
     v_flex()
         .id("screen-grants")
         .test_support()
         .w_full()
         .gap_6()
         .child(header)
-        .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("Status as of the reconciliation date, {}. A grant applies only to its stated purpose; the baseline and unrelated searches are unaffected.", date(household.as_of))))
+        .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("Status as of the reconciliation date, {}.", date(household.as_of))))
         .child(count_line(model.grants.len(), model.grants.len(), "grants", cx))
         .child(if model.grants.is_empty() {
             empty_state(
@@ -258,6 +395,16 @@ pub fn render_grants(app: &AtlasApp, model: &PrivacyModel, household: &Household
             record::list("grants-list", record::header(&GRANT_LANES, cx), rows).into_any_element()
         })
         .children(detail)
+        // The scope qualification, once, as a fact about the screen — not a
+        // sentence repeated under every row the way the mockup draws it.
+        .child(info_card(
+            "grants-scope",
+            IconName::ShieldCheck,
+            "Access is purpose-specific",
+            "A grant widens access only inside its stated purpose and only while it is in effect. The baseline, other scenarios and unrelated searches are unaffected, and it never widens what the object's owners can do.",
+            cx,
+        ))
+        .children(footer)
         .into_any_element()
 }
 
@@ -275,31 +422,24 @@ fn status_tag(row: &GrantRow, household: &Household) -> Tag {
 }
 
 fn render_grant_detail(row: &GrantRow, household: &Household, cx: &mut Context<AtlasApp>) -> AnyElement {
-    let id = row.grant.id;
-    let object = row.grant.object;
     let revoked = row.grant.revoked_on.is_some();
-    let can_revoke = row.owned && !revoked;
     section("grant-detail", format!("{} — {}", row.object_name, row.purpose))
-        .action(
-            h_flex()
-                .gap_2()
-                .child(Button::new("grant-view-policy").small().ghost().label("View policy").disabled(!object_is_navigable(object)).on_click(cx.listener(move |this, _, _, cx| this.open_policy_for(object, cx))))
-                .when(can_revoke, |this| this.child(Button::new("grant-revoke").small().danger().outline().label("Revoke grant…").on_click(cx.listener(move |this, _, window, cx| this.confirm_revoke_grant(id, window, cx))))),
-        )
         .child(
-            DescriptionList::new()
+            facts()
                 .columns(2)
-                .child(DescriptionItem::new("Grantee").value(row.grantee.clone()))
-                .child(DescriptionItem::new("Purpose").value(row.purpose.clone()))
-                .child(DescriptionItem::new("How the object may appear").value(row.grant.disclosure.label()))
-                .child(DescriptionItem::new("Use in calculations").value(row.grant.calculation.label()))
-                .child(DescriptionItem::new("From").value(date(row.grant.effective_from)))
-                .child(DescriptionItem::new("To").value(row.grant.effective_to.map(date).unwrap_or_else(|| "No end".into())))
-                .child(DescriptionItem::new("Revoked").value(row.grant.revoked_on.map(date).unwrap_or_else(|| "Not revoked".into())))
-                .child(DescriptionItem::new("Granted").value(format!("{} by {}", stamp(row.grant.granted_at), household.entity_name(atlas_core::ids::EntityRef::Person(row.grant.granted_by)))))
-                .child(DescriptionItem::new("Note").value(if row.grant.note.is_empty() { "No note".to_string() } else { row.grant.note.clone() })),
+                .pair("Grantee", row.grantee.clone())
+                .pair("Purpose", row.purpose.clone())
+                .pair("How the object may appear", row.grant.disclosure.label())
+                .pair("Use in calculations", row.grant.calculation.label())
+                .pair("From", date(row.grant.effective_from))
+                .pair("To", row.grant.effective_to.map(date).unwrap_or_else(|| "No end".into()))
+                .pair("Revoked", row.grant.revoked_on.map(date).unwrap_or_else(|| "Not revoked".into()))
+                .pair("Granted", format!("{} by {}", stamp(row.grant.granted_at), household.entity_name(atlas_core::ids::EntityRef::Person(row.grant.granted_by))))
+                .pair("Note", if row.grant.note.is_empty() { "No note".to_string() } else { row.grant.note.clone() }),
         )
-        .child(note(if revoked { "A revoked grant is kept with its date; calculations made while it applied keep their recorded context." } else { "The grant widens access only inside its purpose, and only while it is in effect." }, cx))
+        // Only the revocation needs saying here; the standing scope rule is
+        // the card at the foot of the screen and is not repeated.
+        .when(revoked, |this| this.child(note("A revoked grant is kept with its date; calculations made while it applied keep their recorded context.", cx)))
         .into_any_element()
 }
 
@@ -310,6 +450,7 @@ const AUDIT_LANES: [(&str, Lane); 5] = [("When", Lane::fixed(170.)), ("Who", Lan
 pub fn render_audit(app: &AtlasApp, model: &PrivacyModel, cx: &mut Context<AtlasApp>) -> AnyElement {
     let header = workspace_header(Destination::Sharing, Route::Audit, vec![], cx);
     let expanded = app.audit_expanded;
+    let muted = cx.theme().muted_foreground;
     let rows: Vec<AnyElement> = model
         .audit
         .iter()
@@ -323,7 +464,7 @@ pub fn render_audit(app: &AtlasApp, model: &PrivacyModel, cx: &mut Context<Atlas
                     (AUDIT_LANES[0].1, record::text(stamp(row.event.at))),
                     (AUDIT_LANES[1].1, record::muted(row.actor.clone(), cx)),
                     (AUDIT_LANES[2].1, h_flex().child(audit_tag(row)).into_any_element()),
-                    (AUDIT_LANES[3].1, record::stack(row.object_name.clone(), row.event.summary.clone(), cx)),
+                    (AUDIT_LANES[3].1, record::text(row.object_name.clone())),
                     (AUDIT_LANES[4].1, record::muted(row.event.policy_version.map(|v| format!("v{v}")).unwrap_or_else(|| "—".into()), cx)),
                 ],
                 move |_, _, cx| {
@@ -333,44 +474,72 @@ pub fn render_audit(app: &AtlasApp, model: &PrivacyModel, cx: &mut Context<Atlas
                     })
                 },
             );
+            // The safe summary is a sentence: it gets its own full-width line
+            // under the lanes rather than an ellipsis inside the object lane
+            // (and `docs/perf.md` §3.3 wants it out of a cell beside a tag).
+            let summary = (!row.event.summary.is_empty()).then(|| div().w_full().px_3().pb_1().text_xs().text_color(muted).whitespace_normal().child(row.event.summary.clone()));
             if !is_open {
-                return row_el.into_any_element();
+                return div().w_full().child(row_el).children(summary).into_any_element();
             }
             let versions = match row.event.kind {
                 atlas_core::authz::AuditKind::PolicyChanged { from_version, to_version } => Some(format!("v{from_version} → v{to_version}")),
                 _ => None,
             };
-            v_flex()
+            div()
                 .w_full()
                 .child(row_el)
+                .children(summary)
                 .child(
-                    v_flex().w_full().gap_2().px_3().py_2().child(
-                        DescriptionList::new()
-                            .columns(1)
-                            .child(DescriptionItem::new("When").value(stamp(row.event.at)))
-                            .child(DescriptionItem::new("Who").value(row.actor.clone()))
-                            .child(DescriptionItem::new("What").value(row.event.kind.label()))
-                            .child(DescriptionItem::new("Object").value(row.object_name.clone()))
-                            .child(DescriptionItem::new("Summary").value(row.event.summary.clone()))
-                            .child(DescriptionItem::new("Policy version").value(versions.or_else(|| row.event.policy_version.map(|v| format!("v{v}"))).unwrap_or_else(|| "Not applicable".into()))),
+                    div().w_full().px_3().pb_2().child(
+                        facts()
+                            .columns(2)
+                            .pair("When", stamp(row.event.at))
+                            .pair("Who", row.actor.clone())
+                            .pair("What", row.event.kind.label())
+                            .pair("Object", row.object_name.clone())
+                            .wide("Policy version", versions.or_else(|| row.event.policy_version.map(|v| format!("v{v}"))).unwrap_or_else(|| "Not applicable".into())),
                     ),
                 )
                 .into_any_element()
         })
         .collect();
+
+    // The foot: the selected event's authorized references, when this viewer
+    // may follow them at all. A redacted object never becomes a link.
+    let footer = expanded.and_then(|i| model.audit.get(i)).and_then(|row| {
+        let object = row.event.object?;
+        let visible = model.policies.iter().any(|p| p.policy.object == object);
+        if !visible {
+            return None;
+        }
+        let mut trailing: Vec<AnyElement> = vec![Button::new("audit-view-policy").small().ghost().label("View policy").on_click(cx.listener(move |this, _, _, cx| this.open_policy_for(object, cx))).into_any_element()];
+        if object_is_navigable(object) {
+            trailing.push(Button::new("audit-view-object").small().outline().label("View object").on_click(cx.listener(move |this, _, window, cx| this.open_policy_object(object, window, cx))).into_any_element());
+        }
+        Some(action_bar("audit-footer", vec![note(format!("{} · {}", stamp(row.event.at), row.event.kind.label()), cx).into_any_element()], trailing, cx).into_any_element())
+    });
+
     v_flex()
         .id("screen-audit")
         .test_support()
         .w_full()
         .gap_6()
         .child(header)
-        .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Newest first. Sharing activity cannot be edited, and a hidden object's name is redacted in both the reference and the summary."))
+        .child(div().text_xs().text_color(muted).child("Newest first. Events recorded at the same moment keep their stored order."))
         .child(count_line(model.audit.len(), model.audit.len(), "sharing events", cx))
         .child(if model.audit.is_empty() {
             empty_state("audit-empty", "No sharing activity yet", "Policy changes, grants, denials and viewer switches appear here as they happen.", None, cx)
         } else {
             v_flex().w_full().gap_0p5().child(record::header(&AUDIT_LANES, cx)).children(rows).into_any_element()
         })
+        .child(info_card(
+            "audit-immutable",
+            IconName::ShieldCheck,
+            "Sharing activity cannot be edited",
+            "Every event is kept as it was recorded. A hidden object's name is redacted in both the reference and the summary, and every historical detail is reprojected for whoever is looking.",
+            cx,
+        ))
+        .children(footer)
         .into_any_element()
 }
 

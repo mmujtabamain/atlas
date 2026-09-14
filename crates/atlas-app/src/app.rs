@@ -175,6 +175,8 @@ pub struct AtlasApp {
     pub(crate) tax_payable_choice: crate::widgets::scope::Choice,
     pub(crate) tax_event_expanded: Option<usize>,
     pub(crate) tax_pack_open: Vec<usize>,
+    /// Settings: whether the launch-options reference is expanded.
+    pub(crate) settings_launch_open: bool,
     /// Sharing: the selected grant, the expanded audit event and which
     /// sections of the policy detail are open.
     pub(crate) selected_grant: Option<atlas_core::ids::GrantId>,
@@ -269,7 +271,6 @@ pub struct Grids {
     pub timeline_actuals: grid::Grid,
     pub forecast_values: grid::Grid,
     pub decision_values: grid::Grid,
-    pub tax_events: grid::Grid,
     pub rule_fees: grid::Grid,
 }
 
@@ -280,7 +281,6 @@ impl Grids {
             timeline_actuals: grid::new_selectable_grid(models::timeline::ACTUAL_COLUMNS.to_vec(), window, cx),
             forecast_values: grid::new_selectable_grid(models::projections::PATH_COLUMNS.to_vec(), window, cx),
             decision_values: grid::new_selectable_grid(models::decisions::PATH_COLUMNS.to_vec(), window, cx),
-            tax_events: grid::new_grid(models::taxes::EVENT_COLUMNS.to_vec(), window, cx),
             rule_fees: grid::new_grid(models::rules::FEE_COLUMNS.to_vec(), window, cx),
         }
     }
@@ -497,7 +497,13 @@ impl AtlasApp {
             None => household.people.first().map(|p| p.id).unwrap_or(fixtures::ids::PERSON_A),
         });
         let viewer_pending = opened && !explicit_viewer && household.people.len() > 1;
-        let route = if opened { launch.route } else { Route::Welcome };
+        // `--screen person` names a kind of record, not one record; only here
+        // is there a household and a viewer to pick the first one they may see.
+        let route = match (opened, launch.detail) {
+            (false, _) => Route::Welcome,
+            (true, Some(detail)) => detail.resolve(&household, viewer),
+            (true, None) => launch.route,
+        };
         let horizon = household.as_of.checked_add_months(Months::new(12)).unwrap_or(fixtures::default_horizon()).max(fixtures::default_horizon().min(household.as_of.checked_add_months(Months::new(12)).unwrap_or(household.as_of)));
         let horizon = if launch.start == Start::Sample { fixtures::default_horizon() } else { horizon };
         for notice in &resolved.notices {
@@ -607,6 +613,7 @@ impl AtlasApp {
             tax_payable_choice: tax_filters.payable,
             tax_event_expanded: None,
             tax_pack_open: Vec::new(),
+            settings_launch_open: false,
             selected_grant: None,
             audit_expanded: None,
             policy_sections_open: Vec::new(),

@@ -18,9 +18,9 @@ use crate::entry::Entry;
 use crate::models::household::HouseholdOverview;
 use crate::nav::Route;
 use crate::widgets::explain;
-use crate::widgets::figure::card;
+use crate::widgets::figure::{ExplainedFigure, Figure};
 use crate::widgets::labels;
-use crate::widgets::states::{fact, lanes, note, page_header, section};
+use crate::widgets::states::{columns, columns_leading, hairline, info_card, note, page_header, section};
 
 /// One row of the setup checklist.
 struct Prerequisite {
@@ -116,6 +116,64 @@ fn checklist(app: &AtlasApp, cx: &mut Context<AtlasApp>) -> Option<AnyElement> {
     )
 }
 
+/// The same figure under a shorter label. Six columns of one grid have room
+/// for `Headroom`, not `Headroom over the floor`, and a label that wraps onto
+/// a second line pushes its value out of line with the rest of the row. The
+/// calculation sheet still opens under the figure's full name.
+fn relabel(figure: &ExplainedFigure, label: &'static str) -> Figure {
+    Figure::new(figure.id.clone(), label, &figure.calc, figure.content())
+}
+
+/// `Spendable now`: headroom clamped at zero, with the deficit stated when the
+/// floor is breached.
+///
+/// A raw restatement rather than a derived figure — it has no chain of its
+/// own, so it carries no `ⓘ`. The empty cell where the other five columns
+/// carry one keeps all six values on the same line.
+fn spendable_cell(overview: &HouseholdOverview, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let deficit = overview.deficit.is_positive();
+    v_flex()
+        .w_full()
+        .min_w_0()
+        .gap_1()
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_baseline()
+                .gap_2()
+                .child(div().flex_1().min_w_0().text_xs().text_color(theme.muted_foreground).child("Spendable now"))
+                .child(div().flex_shrink_0().size_5()),
+        )
+        .child(div().id("today-spendable").test_support().font_family(theme.mono_font_family.clone()).font_weight(FontWeight::SEMIBOLD).text_xl().child(overview.spendable.format()))
+        .child(div().w_full().text_xs().text_color(if deficit { theme.danger } else { theme.muted_foreground }).child(if deficit {
+            format!("Shown as 0: the floor is breached by {}", overview.deficit.format())
+        } else {
+            "No deficit against the hard floor".to_string()
+        }))
+        .into_any_element()
+}
+
+/// `2 people · 1 company · 7 accounts visible` — the membership band as the
+/// counts it can state on one line; the names are one click away in the
+/// summaries sheet beside it.
+fn membership_summary(overview: &HouseholdOverview) -> String {
+    fn count(n: usize, one: &str, many: &str) -> String {
+        if n == 1 { format!("1 {one}") } else { format!("{n} {many}") }
+    }
+    let mut text = format!(
+        "{} · {} · {} visible",
+        count(overview.people.len(), "person", "people"),
+        count(overview.companies.len(), "company", "companies"),
+        count(overview.accounts.len(), "account", "accounts")
+    );
+    if overview.hidden_accounts > 0 {
+        text.push_str(&format!(" · {} not disclosed", overview.hidden_accounts));
+    }
+    text
+}
+
 pub fn render(app: &AtlasApp, overview: &HouseholdOverview, household: &Household, cx: &mut Context<AtlasApp>) -> AnyElement {
     let setup = checklist(app, cx);
     let theme = cx.theme();
@@ -136,71 +194,70 @@ pub fn render(app: &AtlasApp, overview: &HouseholdOverview, household: &Househol
         .test_support()
         .w_full()
         .gap_8()
-        .child(page_header("Today", Some(format!("Balances as of {}", household.as_of.format("%d %b %Y")).into()), vec![], cx))
+        // Accounts and Earmarks are where this screen can take you, not
+        // commands of the current band: they belong in the page header.
+        .child(page_header(
+            "Today",
+            Some(format!("Household · Balances as of {}", household.as_of.format("%d %b %Y")).into()),
+            vec![
+                Button::new("today-accounts").small().ghost().label("Accounts").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Accounts, cx))).into_any_element(),
+                Button::new("today-earmarks").small().ghost().label("Earmarks").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Earmarks, cx))).into_any_element(),
+            ],
+            cx,
+        ))
         .children(setup)
+        // The current band carries no heading: free current cash is the
+        // heading, at three times the size of the two figures it is made of.
         .child(
-            section("today-current", "Free now")
-                .action(Button::new("today-accounts").small().ghost().label("Accounts").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Accounts, cx))))
-                .action(Button::new("today-earmarks").small().ghost().label("Earmarks").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Earmarks, cx))))
-                .child(
-                    h_flex()
-                        .w_full()
-                        .items_start()
-                        .gap_8()
-                        .child(div().w_80().flex_shrink_0().children(free.map(|f| f.leading())))
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_2()
-                                .child(lanes([liquid.map(|f| card(f.standard()).into_any_element()), reserved.map(|f| card(f.standard()).into_any_element())].into_iter().flatten()))
-                                .children(free.map(|f| explain::render_preview(f.calc.node(), f.content(), cx))),
-                        ),
-                )
+            v_flex()
+                .id("today-current")
+                .test_support()
+                .w_full()
+                .gap_6()
+                .child(columns_leading(
+                    0.42,
+                    [free.map(|f| f.leading().into_any_element()), liquid.map(|f| f.standard().into_any_element()), reserved.map(|f| f.standard().into_any_element())].into_iter().flatten(),
+                ))
                 .when(company_only, |this| this.child(Alert::info("today-company-only", "Business cash is separate from household cash. Add a personal account to see household money here.")))
-                .child(lanes([
-                    card(overview.hard_floor.standard()).into_any_element(),
-                    card(overview.headroom.standard()).into_any_element(),
-                    card(
-                        v_flex()
-                            .gap_1()
-                            .child(div().text_xs().text_color(theme.muted_foreground).child("Spendable now"))
-                            .child(div().id("today-spendable").test_support().text_xl().font_weight(FontWeight::SEMIBOLD).font_family(theme.mono_font_family.clone()).child(overview.spendable.format()))
-                            .child(div().text_xs().text_color(if overview.deficit.is_positive() { theme.danger } else { theme.muted_foreground }).child(if overview.deficit.is_positive() {
-                                format!("Shown as 0: the floor is breached by {}", overview.deficit.format())
-                            } else {
-                                "No deficit against the hard floor".to_string()
-                            })),
-                    )
-                    .into_any_element(),
-                ]))
-                .child(lanes([assets.map(|f| card(f.standard()).into_any_element()), liabilities.map(|f| card(f.compact_labelled("Amount owed").variant(crate::widgets::figure::Variant::Standard)).into_any_element()), net_worth.map(|f| card(f.standard()).into_any_element())].into_iter().flatten())),
+                .child(hairline(cx))
+                // The equation, not the chain as a table: the terms of the
+                // terms are what `Full calculation…` opens.
+                .children(free.map(|f| explain::render_equation("today-free-equation", f.calc.node(), f.content(), cx)))
+                // Six supporting figures as one grid across the full width.
+                .child(columns(
+                    [
+                        Some(overview.hard_floor.standard().into_any_element()),
+                        Some(relabel(&overview.headroom, "Headroom").into_any_element()),
+                        Some(spendable_cell(overview, cx)),
+                        assets.map(|f| relabel(f, "Assets").into_any_element()),
+                        liabilities.map(|f| relabel(f, "Amount owed").into_any_element()),
+                        net_worth.map(|f| f.standard().into_any_element()),
+                    ]
+                    .into_iter()
+                    .flatten(),
+                )),
         )
         .child(
             section("today-outlook", format!("Outlook through {}", overview.horizon.format("%d %b %Y")))
-                .description(format!("Expected case · Baseline · {} planned postings, taxes and fees included once", overview.occurrence_count))
+                .divider(true)
+                .badge("Expected · Baseline")
+                .description(format!("{} planned postings, taxes and fees included once", overview.occurrence_count))
                 .action(Button::new("today-view-forecast").small().outline().icon(IconName::ChartLine).label("View forecast").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::ForecastPath, cx))))
-                .child(
-                    h_flex()
-                        .w_full()
-                        .items_start()
-                        .gap_8()
-                        .child(v_flex().w_80().flex_shrink_0().gap_6().child(overview.conditional.leading()).child(overview.unreserved.standard()))
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_2()
-                                .child(note("Projected cash less today's reserves = projected unreserved cash. Only the starting cash is money already received; everything after it depends on the assumptions below.", cx))
-                                .child(explain::render_preview(overview.unreserved.calc.node(), overview.unreserved.content(), cx)),
-                        ),
-                )
-                .child(if breach {
-                    Alert::warning("today-runway", overview.runway.summary()).title("The expected path breaches the hard floor").into_any_element()
-                } else {
-                    div().id("today-runway").test_support().text_sm().child(overview.runway.summary()).into_any_element()
-                })
-                .when(breach, |this| this.child(lanes([card(overview.injection.standard()).into_any_element()]))),
+                .child(columns([
+                    relabel(&overview.conditional, "Projected cash").into_any_element(),
+                    relabel(&overview.unreserved, "Less today's reserves").into_any_element(),
+                    // The runway is a fact about this outlook, so it is a card
+                    // and not a muted afterthought — until the floor is
+                    // actually breached, which is an alert across the band and
+                    // puts the injection figure in this column instead.
+                    if breach {
+                        relabel(&overview.injection, "Extra needed at the start").into_any_element()
+                    } else {
+                        info_card("today-runway", IconName::ChartLine, "No hard-floor breach", overview.runway.summary(), cx)
+                    },
+                ]))
+                .when(breach, |this| this.child(Alert::warning("today-runway", overview.runway.summary()).title("The expected path breaches the hard floor")))
+                .child(explain::render_equation("today-unreserved-equation", overview.unreserved.calc.node(), overview.unreserved.content(), cx)),
         )
         .child(
             section("today-assumptions", "Assumptions this outlook depends on")
@@ -210,54 +267,61 @@ pub fn render(app: &AtlasApp, overview: &HouseholdOverview, household: &Househol
                 } else {
                     v_flex()
                         .w_full()
-                        .gap_2()
+                        .child(hairline(cx))
+                        // Text, certainty, acceptance, freshness in columns:
+                        // every cell has a definite width, which is what keeps
+                        // a sentence beside a tag out of taffy's re-measuring
+                        // (`docs/perf.md` §3.3). The source describes the text,
+                        // so it sits under it rather than in a narrow column of
+                        // its own where it would wrap to five lines.
                         .children(assumption_rows.iter().enumerate().map(|(index, assumption)| {
                             let freshness = assumption.freshness(household.as_of);
-                            v_flex()
-                                .w_full()
-                                .gap_1()
-                                .child(div().w_full().text_sm().child(format!("{}. {}", index + 1, assumption.text)))
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_center()
-                                        .child(labels::certainty_tag(assumption.certainty))
-                                        .child(labels::freshness_tag(freshness))
-                                        .child(div().text_xs().text_color(theme.muted_foreground).child(match assumption.accepted_on {
-                                            Some(date) => format!("{} · accepted {}", assumption.source.describe(), date.format("%d %b %Y")),
-                                            None => format!("{} · not accepted", assumption.source.describe()),
-                                        })),
-                                )
+                            div().w_full().py_3().border_b_1().border_color(theme.border).child(columns_leading(
+                                0.47,
+                                [
+                                    v_flex()
+                                        .w_full()
+                                        .gap_1()
+                                        .child(div().w_full().text_sm().child(format!("{}. {}", index + 1, assumption.text)))
+                                        .child(div().w_full().text_xs().text_color(theme.muted_foreground).child(assumption.source.describe()))
+                                        .into_any_element(),
+                                    h_flex().w_full().items_center().child(labels::certainty_tag(assumption.certainty)).into_any_element(),
+                                    div()
+                                        .w_full()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(match assumption.accepted_on {
+                                            Some(date) => format!("Accepted {}", date.format("%d %b %Y")),
+                                            None => "Not accepted".to_string(),
+                                        })
+                                        .into_any_element(),
+                                    h_flex().w_full().items_center().justify_end().child(labels::freshness_tag(freshness)).into_any_element(),
+                                ],
+                            ))
                         }))
                         .when(visible_assumptions > 4, |this| {
-                            this.child(Button::new("today-show-all-assumptions").xsmall().ghost().label(if show_all { "Show fewer".to_string() } else { format!("Show all {visible_assumptions}") }).on_click(cx.listener(|this, _, _, cx| {
-                                this.today_show_all_assumptions = !this.today_show_all_assumptions;
-                                cx.notify();
-                            })))
+                            this.child(
+                                h_flex().w_full().pt_2().child(
+                                    Button::new("today-show-all-assumptions").xsmall().ghost().label(if show_all { "Show fewer".to_string() } else { format!("Show all {visible_assumptions}") }).on_click(cx.listener(|this, _, _, cx| {
+                                        this.today_show_all_assumptions = !this.today_show_all_assumptions;
+                                        cx.notify();
+                                    })),
+                                ),
+                            )
                         })
                         .into_any_element()
                 }),
         )
+        // One row: what the household is made of, and the sheet that reads it
+        // out in full. The three registers stay reachable from here because
+        // they are this band's own commands, not the sidebar's.
         .child(
             section("today-members", "Household members and accounts")
-                .action(Button::new("today-all-summaries").small().ghost().label("All summaries…").on_click(cx.listener(|this, _, window, cx| this.open_household_summaries(window, cx))))
-                .child(lanes([
-                    fact("People", overview.people.iter().map(|p| format!("{} — {}", p.name, p.role)).collect::<Vec<_>>().join(" · "), cx).into_any_element(),
-                    fact("Companies", if overview.companies.is_empty() { "None".to_string() } else { overview.companies.iter().map(|c| c.name.to_string()).collect::<Vec<_>>().join(" · ") }, cx).into_any_element(),
-                    fact(
-                        "Accounts",
-                        if overview.hidden_accounts == 0 { format!("{} accounts", overview.accounts.len()) } else { format!("{} of {} accounts · {} not disclosed", overview.accounts.len(), household.accounts.len(), overview.hidden_accounts) },
-                        cx,
-                    )
-                    .into_any_element(),
-                ]))
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(Button::new("today-people").xsmall().ghost().label("People").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::People, cx))))
-                        .child(Button::new("today-companies").xsmall().ghost().label("Companies").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Companies, cx))))
-                        .child(Button::new("today-accounts-2").xsmall().ghost().label("Accounts").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Accounts, cx)))),
-                ),
+                .badge(membership_summary(overview))
+                .action(Button::new("today-people").xsmall().ghost().label("People").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::People, cx))))
+                .action(Button::new("today-companies").xsmall().ghost().label("Companies").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Companies, cx))))
+                .action(Button::new("today-accounts-2").xsmall().ghost().label("Accounts").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Accounts, cx))))
+                .action(Button::new("today-all-summaries").small().ghost().label("All summaries…").on_click(cx.listener(|this, _, window, cx| this.open_household_summaries(window, cx)))),
         )
         .into_any_element()
 }
