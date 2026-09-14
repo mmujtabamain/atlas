@@ -103,6 +103,42 @@ fn lock_creation_is_atomic_and_release_checks_process_ownership() {
     assert_eq!(file.lock().expect("lock readable"), None);
 }
 
+#[test]
+fn restore_validates_backup_before_replacing_household() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let file = HouseholdFile::new(directory.path().join("plan.atlas.sqlite"));
+    file.acquire(OWNER, false).expect("lock acquired");
+    let original = fixtures::plan_household();
+    file.save_owned(&original, OWNER).expect("household saved");
+    let backup = file.backup().expect("backup created");
+
+    let mut updated = original.clone();
+    updated.name = "Updated household".into();
+    file.save_owned(&updated, OWNER)
+        .expect("updated household saved");
+    file.restore_backup(&backup, OWNER)
+        .expect("backup restored");
+    assert_eq!(file.load().expect("restored household loaded"), original);
+
+    let invalid = directory.path().join("unrelated.sqlite");
+    runtime().block_on(async {
+        let database = connection::connect(&invalid, true)
+            .await
+            .expect("unrelated database opened");
+        database
+            .execute_unprepared("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+            .await
+            .expect("unrelated schema created");
+        database.close().await.expect("unrelated database closed");
+    });
+    assert!(matches!(
+        file.restore_backup(&invalid, OWNER),
+        Err(StoreError::NotAHousehold)
+    ));
+    assert_eq!(file.load().expect("household remains intact"), original);
+    file.release(OWNER).expect("lock released");
+}
+
 fn write_legacy_fixture(file: &HouseholdFile, household: &Household) {
     runtime().block_on(async {
         let database = connection::connect(file.path(), true).await.expect("legacy database opened");
