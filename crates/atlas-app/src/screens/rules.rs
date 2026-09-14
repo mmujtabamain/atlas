@@ -12,7 +12,6 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _, DropdownButton},
     checkbox::Checkbox,
     date_picker::DatePicker,
-    description_list::{DescriptionItem, DescriptionList},
     form::{Field, Form},
     h_flex,
     input::Input,
@@ -33,6 +32,7 @@ use crate::app::AtlasApp;
 use crate::models::rules::RulesModel;
 use crate::nav::{Destination, Route};
 use crate::rule_builder::{ACTION_KINDS, CONDITION_KINDS, SCOPE_KINDS, STEPS, TRIGGERS};
+use crate::widgets::facts::facts;
 use crate::widgets::grid;
 use crate::widgets::record::{self, Lane};
 use crate::widgets::scope;
@@ -323,16 +323,16 @@ fn render_rule_details(rule: &Rule, household: &Household, cx: &mut Context<Atla
     // facts a reader comes here to check.
     section("rule-details", "What this rule does")
         .child(
-            DescriptionList::new()
+            facts()
                 .columns(2)
-                .child(DescriptionItem::new("Action").value(rule.action.describe(household)))
-                .child(DescriptionItem::new("Trigger").value(rule.trigger.label()))
-                .child(DescriptionItem::new("Scope").value(rule.scope.describe(household)))
-                .child(DescriptionItem::new("Scope specificity").value(rule.scope.specificity().to_string()))
-                .child(DescriptionItem::new("Conditions").value(if conditions.is_empty() { "No additional conditions".to_string() } else { conditions.join(" and ") }))
-                .child(DescriptionItem::new("Effective").value(format!("{} – {}", date(rule.effective_from), rule.effective_to.map(date).unwrap_or_else(|| "open".into()))))
-                .child(DescriptionItem::new("Applies under").value(rule.scenario.and_then(|s| household.scenario(s)).map(|s| format!("Scenario “{}” only", s.name)).unwrap_or_else(|| "The baseline and every scenario".into())))
-                .child(DescriptionItem::new("Status").value(if rule.enabled { format!("Enabled, version {}", rule.version) } else { format!("Disabled, version {}", rule.version) })),
+                .pair("Action", rule.action.describe(household))
+                .pair("Trigger", rule.trigger.label())
+                .pair("Scope", rule.scope.describe(household))
+                .pair("Scope specificity", rule.scope.specificity().to_string())
+                .pair("Conditions", if conditions.is_empty() { "No additional conditions".to_string() } else { conditions.join(" and ") })
+                .pair("Effective", format!("{} – {}", date(rule.effective_from), rule.effective_to.map(date).unwrap_or_else(|| "open".into())))
+                .pair("Applies under", rule.scenario.and_then(|s| household.scenario(s)).map(|s| format!("Scenario “{}” only", s.name)).unwrap_or_else(|| "The baseline and every scenario".into()))
+                .pair("Status", if rule.enabled { format!("Enabled, version {}", rule.version) } else { format!("Disabled, version {}", rule.version) }),
         )
         .into_any_element()
 }
@@ -783,13 +783,12 @@ pub fn render_create(app: &AtlasApp, household: &Household, cx: &mut Context<Atl
                     .child(Field::new().label("Explanation").child(Input::new(&b.explanation).id("rule-explanation"))),
             )
             .child(
-                DescriptionList::new()
-                    .columns(1)
-                    .child(DescriptionItem::new("Name").value(b.name.read(cx).value().to_string()))
-                    .child(DescriptionItem::new("Priority").value(b.priority.read(cx).value().to_string()))
-                    .child(DescriptionItem::new("Rule").value(preview.clone()))
-                    .child(DescriptionItem::new("Conditions").value(if b.condition_texts(household, cx).is_empty() { "No additional conditions".to_string() } else { b.condition_texts(household, cx).join(" and ") }))
-                    .child(DescriptionItem::new("Applies under").value(if b.scope_kind == 6 { "That scenario's plan only".to_string() } else { "The baseline and every scenario".to_string() })),
+                facts()
+                    .pair("Name", b.name.read(cx).value().to_string())
+                    .pair("Priority", b.priority.read(cx).value().to_string())
+                    .pair("Rule", preview.clone())
+                    .pair("Conditions", if b.condition_texts(household, cx).is_empty() { "No additional conditions".to_string() } else { b.condition_texts(household, cx).join(" and ") })
+                    .pair("Applies under", if b.scope_kind == 6 { "That scenario's plan only".to_string() } else { "The baseline and every scenario".to_string() }),
             )
             .into_any_element(),
     };

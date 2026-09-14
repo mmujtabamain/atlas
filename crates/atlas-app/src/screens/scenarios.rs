@@ -21,7 +21,6 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _, DropdownButton},
     chart::AreaChart,
     checkbox::Checkbox,
-    description_list::{DescriptionItem, DescriptionList},
     h_flex,
     list::ListItem,
     menu::PopupMenuItem,
@@ -37,6 +36,7 @@ use crate::app::AtlasApp;
 use crate::entry::Entry;
 use crate::models::scenarios::{ComparisonPoint, ScenariosModel};
 use crate::nav::{Destination, Route};
+use crate::widgets::facts::facts;
 use crate::widgets::chart::{self, Legend, PathCommand};
 use crate::widgets::copy::copy_button;
 use crate::widgets::explain::{self, ExplainContent};
@@ -621,7 +621,7 @@ fn render_comparison_basis(app: &AtlasApp, model: &ScenariosModel, household: &H
             v_flex().w_full().gap_3().child(div().w_full().text_xs().text_color(theme.muted_foreground).child("Changes these scenarios make")).children(overlays).into_any_element(),
             v_flex().w_full().gap_1().child(div().w_full().text_xs().text_color(theme.muted_foreground).child("Assumptions behind both paths")).children(assumptions).into_any_element(),
         ]))
-        .child(DescriptionList::new().columns(1).child(DescriptionItem::new("Tax packs").value(packs.join(" · "))).child(DescriptionItem::new("Case").value(format!("{} — {}", model.case.label(), model.case.description()))).child(DescriptionItem::new("Window").value(format!("{} through {}", date(household.as_of), date(model.through)))))
+        .child(facts().pair("Tax packs", packs.join(" · ")).pair("Case", format!("{} — {}", model.case.label(), model.case.description())).pair("Window", format!("{} through {}", date(household.as_of), date(model.through))))
         .into_any_element()
 }
 

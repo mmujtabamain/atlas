@@ -9,7 +9,6 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
-    description_list::{DescriptionItem, DescriptionList},
     h_flex,
     input::Input,
     menu::PopupMenuItem,
@@ -26,6 +25,7 @@ use crate::app::AtlasApp;
 use crate::entry::Entry;
 use crate::models::entities::{AccountModel, EntityModels, Touch};
 use crate::nav::{Destination, Route};
+use crate::widgets::facts::facts;
 use crate::widgets::figure::Figure;
 use crate::widgets::labels;
 use crate::widgets::record::{self, Lane};
@@ -577,36 +577,36 @@ fn render_properties(account: &Account, household: &Household, _cx: &mut Context
         .gap_6()
         .child(
             section("account-identity", "Identity and ownership").child(
-                DescriptionList::new()
+                facts()
                     .columns(2)
-                    .child(DescriptionItem::new("Institution").value(account.institution.clone()))
-                    .child(DescriptionItem::new("Type").value(account.kind.label()))
-                    .child(DescriptionItem::new("Economic owners and shares").value(household.holder_description(account)))
-                    .child(DescriptionItem::new("Currency").value(account.currency.code().to_string()))
-                    .child(DescriptionItem::new("Included in household calculations").value(yes_no(account.include_in_household)))
-                    .child(DescriptionItem::new("Source of balances").value(source))
-                    .child(DescriptionItem::new("Last reconciliation").value(account.last_reconciled.map(|d| d.format("%d %b %Y").to_string()).unwrap_or_else(|| "Never".into()))),
+                    .pair("Institution", account.institution.clone())
+                    .pair("Type", account.kind.label())
+                    .pair("Economic owners and shares", household.holder_description(account))
+                    .pair("Currency", account.currency.code().to_string())
+                    .pair("Included in household calculations", yes_no(account.include_in_household))
+                    .pair("Source of balances", source)
+                    .pair("Last reconciliation", account.last_reconciled.map(|d| d.format("%d %b %Y").to_string()).unwrap_or_else(|| "Never".into())),
             ),
         )
         .child(
             section("account-availability", "Availability and constraints").child(
-                DescriptionList::new()
+                facts()
                     .columns(2)
-                    .child(DescriptionItem::new("Liquidity").value(account.liquidity.describe()))
-                    .child(DescriptionItem::new("Bank minimum balance").value(account.minimum_balance.map(|m| m.format()).unwrap_or_else(|| "None".into())))
-                    .child(DescriptionItem::new("Transfer delay").value(format!("{} day(s)", account.transfer_delay_days)))
-                    .child(DescriptionItem::new("Fees").value(fees))
-                    .child(DescriptionItem::new("Withdrawals permitted").value(yes_no(account.withdrawals_permitted)))
-                    .child(DescriptionItem::new("Can fund").value(if account.funds_categories.is_empty() { "Any expense category".to_string() } else { account.funds_categories.join(", ") }))
-                    .child(DescriptionItem::new("Tax treatment").value(if account.tax_treatment.is_empty() { "—".to_string() } else { account.tax_treatment.clone() })),
+                    .pair("Liquidity", account.liquidity.describe())
+                    .pair("Bank minimum balance", account.minimum_balance.map(|m| m.format()).unwrap_or_else(|| "None".into()))
+                    .pair("Transfer delay", format!("{} day(s)", account.transfer_delay_days))
+                    .pair("Fees", fees)
+                    .pair("Withdrawals permitted", yes_no(account.withdrawals_permitted))
+                    .pair("Can fund", if account.funds_categories.is_empty() { "Any expense category".to_string() } else { account.funds_categories.join(", ") })
+                    .pair("Tax treatment", if account.tax_treatment.is_empty() { "—".to_string() } else { account.tax_treatment.clone() }),
             ),
         )
         .child(
             section("account-sharing", "Sharing").child(
-                DescriptionList::new()
+                facts()
                     .columns(2)
-                    .child(DescriptionItem::new("Visibility policy").value(policy.map(|p| format!("{} (version {}, effective {})", p.preset_label(), p.version, p.effective_from.format("%d %b %Y"))).unwrap_or_else(|| "None — excluded until an owner sets one".into())))
-                    .child(DescriptionItem::new("Use in calculations").value(policy.map(|p| p.calculation_access.label().to_string()).unwrap_or_else(|| "Excluded (no policy)".into()))),
+                    .pair("Visibility policy", policy.map(|p| format!("{} (version {}, effective {})", p.preset_label(), p.version, p.effective_from.format("%d %b %Y"))).unwrap_or_else(|| "None — excluded until an owner sets one".into()))
+                    .pair("Use in calculations", policy.map(|p| p.calculation_access.label().to_string()).unwrap_or_else(|| "Excluded (no policy)".into())),
             ),
         )
         .into_any_element()

@@ -8,7 +8,6 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
-    description_list::{DescriptionItem, DescriptionList},
     form::{Field, Form},
     h_flex,
     input::Input,
@@ -23,6 +22,7 @@ use super::common::workspace_header;
 use crate::app::AtlasApp;
 use crate::models::taxes::{E05Schedule, TaxModel};
 use crate::nav::{Destination, Route};
+use crate::widgets::facts::facts;
 use crate::widgets::explain;
 use crate::widgets::record::{self, Lane};
 use crate::widgets::states::{action_bar, columns, hairline, info_card, note, section};
@@ -72,10 +72,9 @@ fn fixed_assumptions(cx: &mut Context<AtlasApp>) -> AnyElement {
         .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Fixed assumptions"))
         .child(div().text_xs().text_color(theme.muted_foreground).child("The calculator holds these. They are not read from the household and no step changes them."))
         .child(
-            DescriptionList::new()
-                .columns(1)
-                .child(DescriptionItem::new("Years").value("Year 1 and year 2 of the illustration"))
-                .child(DescriptionItem::new("Baseline income · each year").value("60,000 taxable")),
+            facts()
+                .pair("Years", "Year 1 and year 2 of the illustration")
+                .pair("Baseline income · each year", "60,000 taxable"),
         )
         .child(hairline(cx))
         .child(div().text_xs().text_color(theme.muted_foreground).child("Taxes only: no company cash, reserve cover or permission to withdraw is tested here."))

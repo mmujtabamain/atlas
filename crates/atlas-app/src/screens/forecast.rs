@@ -12,7 +12,6 @@ use gpui_kit::component::{
     alert::Alert,
     button::{Button, ButtonVariants as _},
     chart::AreaChart,
-    description_list::{DescriptionItem, DescriptionList},
     h_flex,
     select::Select,
     tab::{Tab, TabBar},
@@ -26,6 +25,7 @@ use super::common::workspace_header;
 use crate::app::AtlasApp;
 use crate::models::projections::{ChartPoint, ProjectionModel};
 use crate::nav::{Destination, Route};
+use crate::widgets::facts::facts;
 use crate::widgets::chart::{self, Legend, PathCommand};
 use crate::widgets::copy::copy_button;
 use crate::widgets::explain;
@@ -524,7 +524,7 @@ impl AtlasApp {
                     v_flex()
                         .gap_4()
                         .child(div().text_xs().text_color(muted).child("Enough to reproduce this run for the viewer who is looking. Read-only; the record is not permission to see values that are not disclosed."))
-                        .child(DescriptionList::new().columns(1).children(identity.iter().map(|(k, v)| DescriptionItem::new(k.clone()).value(v.clone()))))
+                        .child(facts().pairs(identity.iter().map(|(k, v)| (k.clone(), v.clone()))))
                         .child(accordion),
                 )
                 .footer(

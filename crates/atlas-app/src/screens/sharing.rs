@@ -20,7 +20,6 @@ use gpui_kit::component::{
     accordion::Accordion,
     alert::Alert,
     button::{Button, ButtonVariants as _},
-    description_list::{DescriptionItem, DescriptionList},
     h_flex,
     list::ListItem,
     tag::Tag,
@@ -33,6 +32,7 @@ use super::common::workspace_header;
 use crate::app::AtlasApp;
 use crate::models::privacy::{AuditRow, GrantRow, PolicyRow, PrivacyModel};
 use crate::nav::{Destination, Route};
+use crate::widgets::facts::facts;
 use crate::widgets::labels;
 use crate::widgets::master::{master_detail, master_item};
 use crate::widgets::record::{self, Lane};
@@ -206,14 +206,15 @@ fn preset_label(row: &PolicyRow) -> String {
 /// engine's, not the mockup's — the mockup writes every audience as "Everyone
 /// in the household", which would be a lie for `owners + Person B`.
 fn aspect_matrix(lines: &[String]) -> AnyElement {
-    // Unbordered: the accordion already frames this section, and a bordered
-    // list inside a bordered accordion is a box in a box.
-    let mut list = DescriptionList::new().columns(1).bordered(false).label_width(px(260.));
+    // The accordion already frames this section, so the facts inside it carry
+    // no frame of their own. The lane is wide because these labels are whole
+    // aspects (`Restricted contributions`), not words.
+    let mut list = facts().lane(px(260.));
     for line in lines {
         let mut parts = line.splitn(2, ": ");
         let label = parts.next().unwrap_or_default().to_string();
         let value = parts.next().unwrap_or_default().to_string();
-        list = list.child(DescriptionItem::new(label).value(value));
+        list = list.pair(label, value);
     }
     list.into_any_element()
 }
@@ -424,17 +425,17 @@ fn render_grant_detail(row: &GrantRow, household: &Household, cx: &mut Context<A
     let revoked = row.grant.revoked_on.is_some();
     section("grant-detail", format!("{} — {}", row.object_name, row.purpose))
         .child(
-            DescriptionList::new()
+            facts()
                 .columns(2)
-                .child(DescriptionItem::new("Grantee").value(row.grantee.clone()))
-                .child(DescriptionItem::new("Purpose").value(row.purpose.clone()))
-                .child(DescriptionItem::new("How the object may appear").value(row.grant.disclosure.label()))
-                .child(DescriptionItem::new("Use in calculations").value(row.grant.calculation.label()))
-                .child(DescriptionItem::new("From").value(date(row.grant.effective_from)))
-                .child(DescriptionItem::new("To").value(row.grant.effective_to.map(date).unwrap_or_else(|| "No end".into())))
-                .child(DescriptionItem::new("Revoked").value(row.grant.revoked_on.map(date).unwrap_or_else(|| "Not revoked".into())))
-                .child(DescriptionItem::new("Granted").value(format!("{} by {}", stamp(row.grant.granted_at), household.entity_name(atlas_core::ids::EntityRef::Person(row.grant.granted_by)))))
-                .child(DescriptionItem::new("Note").value(if row.grant.note.is_empty() { "No note".to_string() } else { row.grant.note.clone() })),
+                .pair("Grantee", row.grantee.clone())
+                .pair("Purpose", row.purpose.clone())
+                .pair("How the object may appear", row.grant.disclosure.label())
+                .pair("Use in calculations", row.grant.calculation.label())
+                .pair("From", date(row.grant.effective_from))
+                .pair("To", row.grant.effective_to.map(date).unwrap_or_else(|| "No end".into()))
+                .pair("Revoked", row.grant.revoked_on.map(date).unwrap_or_else(|| "Not revoked".into()))
+                .pair("Granted", format!("{} by {}", stamp(row.grant.granted_at), household.entity_name(atlas_core::ids::EntityRef::Person(row.grant.granted_by))))
+                .pair("Note", if row.grant.note.is_empty() { "No note".to_string() } else { row.grant.note.clone() }),
         )
         // Only the revocation needs saying here; the standing scope rule is
         // the card at the foot of the screen and is not repeated.
@@ -490,13 +491,13 @@ pub fn render_audit(app: &AtlasApp, model: &PrivacyModel, cx: &mut Context<Atlas
                 .children(summary)
                 .child(
                     div().w_full().px_3().pb_2().child(
-                        DescriptionList::new()
+                        facts()
                             .columns(2)
-                            .child(DescriptionItem::new("When").value(stamp(row.event.at)))
-                            .child(DescriptionItem::new("Who").value(row.actor.clone()))
-                            .child(DescriptionItem::new("What").value(row.event.kind.label()))
-                            .child(DescriptionItem::new("Object").value(row.object_name.clone()))
-                            .child(DescriptionItem::new("Policy version").value(versions.or_else(|| row.event.policy_version.map(|v| format!("v{v}"))).unwrap_or_else(|| "Not applicable".into())).span(2)),
+                            .pair("When", stamp(row.event.at))
+                            .pair("Who", row.actor.clone())
+                            .pair("What", row.event.kind.label())
+                            .pair("Object", row.object_name.clone())
+                            .wide("Policy version", versions.or_else(|| row.event.policy_version.map(|v| format!("v{v}"))).unwrap_or_else(|| "Not applicable".into())),
                     ),
                 )
                 .into_any_element()

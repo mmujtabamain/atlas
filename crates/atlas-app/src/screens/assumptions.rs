@@ -12,7 +12,6 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
     alert::Alert,
     button::{Button, ButtonVariants as _},
-    description_list::{DescriptionItem, DescriptionList},
     h_flex,
     radio::RadioGroup,
     select::Select,
@@ -27,6 +26,7 @@ use crate::app::AtlasApp;
 use crate::entry::Entry;
 use crate::models::assumptions::AssumptionsModel;
 use crate::nav::{Destination, Route};
+use crate::widgets::facts::facts;
 use crate::widgets::copy::copy_button;
 use crate::widgets::explain;
 use crate::widgets::labels;
@@ -217,19 +217,19 @@ pub fn render_register(app: &AtlasApp, _model: &AssumptionsModel, household: &Ho
                     .w_full()
                     .gap_2()
                     .child(
-                        DescriptionList::new()
+                        facts()
                             .columns(2)
-                            .child(DescriptionItem::new("Source").value(a.source.describe()))
-                            .child(DescriptionItem::new("Certainty").value(a.certainty.label()))
-                            .child(DescriptionItem::new("Accepted").value(a.accepted_on.map(date).unwrap_or_else(|| "Not accepted".into())))
-                            .child(DescriptionItem::new("Expires").value(a.expires_on.map(date).unwrap_or_else(|| "Never".into())))
-                            .child(DescriptionItem::new("Freshness").value(match freshness {
+                            .pair("Source", a.source.describe())
+                            .pair("Certainty", a.certainty.label())
+                            .pair("Accepted", a.accepted_on.map(date).unwrap_or_else(|| "Not accepted".into()))
+                            .pair("Expires", a.expires_on.map(date).unwrap_or_else(|| "Never".into()))
+                            .pair("Freshness", match freshness {
                                 Freshness::Fresh => "Accepted within the last ninety days".to_string(),
                                 Freshness::Stale => "Accepted more than ninety days ago and not reviewed since".to_string(),
                                 Freshness::NotAccepted => "Nobody has accepted it yet".to_string(),
                                 Freshness::Expired => "Past its expiry; accepting it again does not move the expiry".to_string(),
-                            }))
-                            .child(DescriptionItem::new("Visibility").value(if a.private_to.is_some() { "Private to you".to_string() } else { "Household".to_string() })),
+                            })
+                            .pair("Visibility", if a.private_to.is_some() { "Private to you".to_string() } else { "Household".to_string() }),
                     )
                     .when(!series_links.is_empty(), |this| this.child(h_flex().w_full().gap_1().items_center().child(div().text_xs().text_color(muted).child("Applies to")).children(series_links))),
             )
@@ -371,11 +371,10 @@ pub fn render_derive(app: &AtlasApp, model: &AssumptionsModel, household: &House
             let id = t.id;
             let can_apply = model.derived.is_ok();
             (
-                DescriptionList::new()
-                    .columns(1)
-                    .child(DescriptionItem::new("Target assumption").value(t.text.clone()))
-                    .child(DescriptionItem::new("Currently").value(format!("{} · {}", t.certainty.label(), t.source.describe())))
-                    .child(DescriptionItem::new("After applying").value(model.derived.as_ref().map(|d| format!("{} · derived from history · acceptance cleared until reviewed", d.amount.describe())).unwrap_or_else(|_| "Nothing to apply yet".into())))
+                facts()
+                    .pair("Target assumption", t.text.clone())
+                    .pair("Currently", format!("{} · {}", t.certainty.label(), t.source.describe()))
+                    .pair("After applying", model.derived.as_ref().map(|d| format!("{} · derived from history · acceptance cleared until reviewed", d.amount.describe())).unwrap_or_else(|_| "Nothing to apply yet".into()))
                     .into_any_element(),
                 Some(Button::new("apply-derivation").small().primary().label("Apply derivation…").disabled(!can_apply).on_click(cx.listener(move |this, _, window, cx| this.confirm_apply_derivation(id, window, cx))).into_any_element()),
             )

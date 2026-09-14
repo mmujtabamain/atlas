@@ -24,6 +24,7 @@ use gpui_kit::*;
 use crate::alerting;
 use crate::app::AtlasApp;
 use crate::nav::Route;
+use crate::widgets::facts::facts;
 use crate::widgets::states::{action_bar, columns, note, page_header, section};
 
 /// The label lane of a full-width or half-width pair.
@@ -32,40 +33,6 @@ const LANE: Pixels = px(150.);
 const LANE_TIGHT: Pixels = px(120.);
 /// The label lane of the launch-options list, whose labels are whole flags.
 const LANE_FLAG: Pixels = px(280.);
-
-/// One fact: the label in a fixed lane, the value beside it. The lane is what
-/// aligns a column of facts, so no cell needs a border to be legible.
-fn pair(lane: Pixels, label: impl Into<SharedString>, value: impl Into<SharedString>, cx: &App) -> AnyElement {
-    let theme = cx.theme();
-    h_flex()
-        .w_full()
-        .items_start()
-        .gap_4()
-        .child(div().w(lane).flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(label.into()))
-        .child(div().flex_1().min_w_0().text_sm().child(value.into()))
-        .into_any_element()
-}
-
-/// A band of facts, `per_row` to a row. Each cell is a definite fraction of a
-/// definite row (`widgets::states::columns`, `docs/perf.md` §3), so a row of
-/// four counts reads as one grid instead of a ragged wrap.
-fn grid(per_row: usize, items: Vec<AnyElement>) -> AnyElement {
-    let mut rows: Vec<AnyElement> = Vec::new();
-    let mut row: Vec<AnyElement> = Vec::new();
-    for item in items {
-        row.push(item);
-        if row.len() == per_row {
-            rows.push(columns(std::mem::take(&mut row)).into_any_element());
-        }
-    }
-    if !row.is_empty() {
-        while row.len() < per_row {
-            row.push(div().into_any_element());
-        }
-        rows.push(columns(row).into_any_element());
-    }
-    v_flex().w_full().gap_3().children(rows).into_any_element()
-}
 
 pub fn render(app: &AtlasApp, cx: &mut Context<AtlasApp>) -> AnyElement {
     let theme = cx.theme();
@@ -96,24 +63,8 @@ pub fn render(app: &AtlasApp, cx: &mut Context<AtlasApp>) -> AnyElement {
         })
         .child(
             section("settings-household", "Household")
-                .child(grid(
-                    2,
-                    vec![
-                        pair(LANE, "Name", household.name.clone(), cx),
-                        pair(LANE, "Base currency", format!("{} — one currency per household; no conversion", household.base_currency.code()), cx),
-                        pair(LANE, "Balances as of", household.as_of.format("%d %b %Y").to_string(), cx),
-                        pair(LANE, "Forecast through", app.horizon().format("%d %b %Y").to_string(), cx),
-                    ],
-                ))
-                .child(grid(
-                    4,
-                    vec![
-                        pair(LANE_TIGHT, "Accounts", counts.accounts, cx),
-                        pair(LANE_TIGHT, "Planned series", counts.series, cx),
-                        pair(LANE_TIGHT, "Earmarks", counts.reservations, cx),
-                        pair(LANE_TIGHT, "Policies", counts.policies, cx),
-                    ],
-                )),
+                .child(facts().id("settings-household-facts").lane(LANE).columns(2).pair("Name", household.name.clone()).pair("Base currency", format!("{} — one currency per household; no conversion", household.base_currency.code())).pair("Balances as of", household.as_of.format("%d %b %Y").to_string()).pair("Forecast through", app.horizon().format("%d %b %Y").to_string()))
+                .child(facts().id("settings-count-facts").lane(LANE_TIGHT).columns(4).pair("Accounts", counts.accounts).pair("Planned series", counts.series).pair("Earmarks", counts.reservations).pair("Policies", counts.policies)),
         )
         .child(
             section("settings-session", "This session")
@@ -138,11 +89,10 @@ pub fn render(app: &AtlasApp, cx: &mut Context<AtlasApp>) -> AnyElement {
                                 }),
                         )
                         .into_any_element(),
-                    v_flex()
-                        .w_full()
-                        .gap_3()
-                        .child(pair(LANE, "Who is looking", app.viewer_display_name_with_role(), cx))
-                        .child(pair(LANE, "Rule tie-break", household.rule_tie_break.label().to_string(), cx))
+                    facts()
+                        .lane(LANE)
+                        .pair("Who is looking", app.viewer_display_name_with_role())
+                        .pair("Rule tie-break", household.rule_tie_break.label().to_string())
                         .into_any_element(),
                 ])),
         )
@@ -164,15 +114,7 @@ pub fn render(app: &AtlasApp, cx: &mut Context<AtlasApp>) -> AnyElement {
                 // One column: every value here is a path or a state sentence
                 // that carries one, and a path is the last thing to squeeze
                 // into half a row.
-                .child(grid(
-                    1,
-                    vec![
-                        pair(LANE, "File", path.clone().unwrap_or_else(|| "Not saved to a file yet".into()), cx),
-                        pair(LANE, "State", file_state, cx),
-                        pair(LANE, "Lock", lock, cx),
-                        pair(LANE, "Default folder", atlas_store::default_folder().display().to_string(), cx),
-                    ],
-                ))
+                .child(facts().id("settings-file-facts").lane(LANE).pair("File", path.clone().unwrap_or_else(|| "Not saved to a file yet".into())).pair("State", file_state).pair("Lock", lock).pair("Default folder", atlas_store::default_folder().display().to_string()))
                 .child(note(format!("A copy of the previous file is kept in a backups folder next to it on every save; up to {} kept.", atlas_store::BACKUPS_KEPT), cx)),
         )
         .child(
@@ -183,35 +125,10 @@ pub fn render(app: &AtlasApp, cx: &mut Context<AtlasApp>) -> AnyElement {
                     cx.write_to_clipboard(ClipboardItem::new_string(log_path_copy.clone()));
                     window.push_notification("Log path copied.", cx);
                 }))
-                .child(grid(
-                    2,
-                    vec![
-                        pair(LANE, "Version", format!("Atlas Financer {}", env!("CARGO_PKG_VERSION")), cx),
-                        pair(LANE, "Frame-time readout", if app.perf_overlay() { "Overlay on; gpui's reading is in the status bar" } else { "Overlay off; gpui's reading is in the status bar" }, cx),
-                    ],
-                ))
-                .child(grid(
-                    1,
-                    vec![
-                        pair(LANE, "Log", log_path, cx),
-                        pair(LANE, "Failures", if alerting::is_configured() { "Posted to the team chat".to_string() } else { "Written to logs only — set DEVBENCH_NOTIFY_URL and DEVBENCH_NOTIFY_TOKEN in the launch environment to post them".to_string() }, cx),
-                    ],
-                ))
+                .child(facts().id("settings-version-facts").lane(LANE).columns(2).pair("Version", format!("Atlas Financer {}", env!("CARGO_PKG_VERSION"))).pair("Frame-time readout", if app.perf_overlay() { "Overlay on; gpui's reading is in the status bar" } else { "Overlay off; gpui's reading is in the status bar" }))
+                .child(facts().id("settings-log-facts").lane(LANE).pair("Log", log_path).pair("Failures", if alerting::is_configured() { "Posted to the team chat".to_string() } else { "Written to logs only — set DEVBENCH_NOTIFY_URL and DEVBENCH_NOTIFY_TOKEN in the launch environment to post them".to_string() }))
                 .child(Accordion::new("settings-launch").bordered(true).item(|item| {
-                    item.title("Launch options").child(grid(
-                        1,
-                        vec![
-                            pair(LANE_FLAG, "--theme light|dark", "Initial theme; the toggle above changes this session only.", cx),
-                            pair(LANE_FLAG, "--size WxH", "Initial window size; default 1600×1000, centred.", cx),
-                            pair(LANE_FLAG, "--screen <area>", format!("Start surface; the original area names still work. Known: {}.", Route::slugs().join(", ")), cx),
-                            pair(LANE_FLAG, "--viewer a|b|<person id>", "Who is looking, chosen before anything renders; otherwise the chooser opens.", cx),
-                            pair(LANE_FLAG, "--household FILE | --new | --sample", "Open a file, start an empty household, or load the fictitious sample; with none, Welcome.", cx),
-                            pair(LANE_FLAG, "--as-of YYYY-MM-DD", "Reconciliation date of a new household.", cx),
-                            pair(LANE_FLAG, "--owner NAME", "The name written into the file lock; distinct from the viewer.", cx),
-                            pair(LANE_FLAG, "--take-over", "Take over another owner's lock at launch; there is no in-app force unlock.", cx),
-                            pair(LANE_FLAG, "--perf-overlay", "gpui's frame-time overlay (ATLAS_PERF_OVERLAY=1); the status bar keeps its reading either way.", cx),
-                        ],
-                    ))
+                    item.title("Launch options").child(facts().id("settings-launch-facts").lane(LANE_FLAG).pair("--theme light|dark", "Initial theme; the toggle above changes this session only.").pair("--size WxH", "Initial window size; default 1600×1000, centred.").pair("--screen <area>", format!("Start surface; the original area names still work. Known: {}.", Route::slugs().join(", "))).pair("--viewer a|b|<person id>", "Who is looking, chosen before anything renders; otherwise the chooser opens.").pair("--household FILE | --new | --sample", "Open a file, start an empty household, or load the fictitious sample; with none, Welcome.").pair("--as-of YYYY-MM-DD", "Reconciliation date of a new household.").pair("--owner NAME", "The name written into the file lock; distinct from the viewer.").pair("--take-over", "Take over another owner's lock at launch; there is no in-app force unlock.").pair("--perf-overlay", "gpui's frame-time overlay (ATLAS_PERF_OVERLAY=1); the status bar keeps its reading either way."))
                 })),
         )
         .child(action_bar(

@@ -15,7 +15,6 @@ use gpui_kit::component::{
     chart::AreaChart,
     checkbox::Checkbox,
     date_picker::DatePicker,
-    description_list::{DescriptionItem, DescriptionList},
     form::{Field, Form},
     h_flex,
     input::Input,
@@ -35,6 +34,7 @@ use crate::decision_entry::DecisionForm;
 use crate::entry::Entry;
 use crate::models::decisions::DecisionPoint;
 use crate::nav::{Destination, Route};
+use crate::widgets::facts::facts;
 use crate::widgets::chart::{self, Legend, PathCommand};
 use crate::widgets::copy::copy_button;
 use crate::widgets::explain;
@@ -177,7 +177,7 @@ fn render_summary(app: &AtlasApp, household: &Household, cx: &mut Context<AtlasA
         .child(if items.is_empty() {
             div().text_xs().text_color(theme.muted_foreground).child("Nothing entered yet.").into_any_element()
         } else {
-            DescriptionList::new().columns(1).children(items.into_iter().map(|(k, v)| DescriptionItem::new(k).value(v))).into_any_element()
+            facts().pairs(items).into_any_element()
         })
         // The scope of the draft is a different kind of statement from the
         // values above it, so it is ruled off rather than run on.
@@ -1336,14 +1336,13 @@ impl AtlasApp {
             sheet
                 .title(format!("Goal: {}", g.name))
                 .child(
-                    DescriptionList::new()
-                        .columns(1)
-                        .child(DescriptionItem::new("Amount").value(g.amount.format()))
-                        .child(DescriptionItem::new("Target date").value(date(g.target_on)))
-                        .child(DescriptionItem::new("Reached on the baseline").value(fmt(g.baseline_reached)))
-                        .child(DescriptionItem::new(format!("Reached with “{plan_name}”")).value(fmt(g.decision_reached)))
-                        .child(DescriptionItem::new("Delay").value(g.delay_days.map(|d| format!("{d} days")).unwrap_or_else(|| "None".into())))
-                        .child(DescriptionItem::new("Effect").value(g.text.clone())),
+                    facts()
+                        .pair("Amount", g.amount.format())
+                        .pair("Target date", date(g.target_on))
+                        .pair("Reached on the baseline", fmt(g.baseline_reached))
+                        .pair(format!("Reached with “{plan_name}”"), fmt(g.decision_reached))
+                        .pair("Delay", g.delay_days.map(|d| format!("{d} days")).unwrap_or_else(|| "None".into()))
+                        .pair("Effect", g.text.clone()),
                 )
                 .footer(h_flex().w_full().justify_end().child(Button::new("close-goal").outline().small().label("Close").on_click(|_, window, cx| window.close_sheet(cx))))
         });

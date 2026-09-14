@@ -1381,3 +1381,47 @@ fn long_registers_scroll_without_losing_the_header(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+// ----- Fact lists ----------------------------------------------------------------
+
+/// Settings renders every fact it states, including the ones underneath a
+/// value long enough to wrap.
+///
+/// This is the regression that shipped: Settings stated its facts with
+/// gpui-kit's `DescriptionList`, which wraps itself and each value cell in an
+/// unconditional `overflow_hidden()`. The list is sized from a measuring pass
+/// that does not see the wrap, so the height is short by however many lines
+/// the value actually took — the sentence is cut mid-word and every row below
+/// it is clipped out of the screen entirely. Settings was losing the log
+/// location and the frame-time readout, and the nine launch options rendered
+/// as an empty box. All of them are facts the screen is required to state.
+#[gpui_kit::test]
+fn settings_states_the_facts_below_a_wrapping_value(cx: &mut TestAppContext) {
+    let (handle, _app) = open_app(cx, sample(Route::Settings));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        // The failure-notification sentence is the long one; `Log` and
+        // `Frame-time readout` are what used to disappear beneath it.
+        for id in ["settings-version-facts-row-0", "settings-log-facts-row-0", "settings-log-facts-row-1"] {
+            assert!(present(window, id), "{id} renders");
+        }
+
+        // Each row sits below the previous one rather than on top of it,
+        // which is what a clipped list looks like when it does render.
+        let log = window.find("settings-log-facts-row-0").bounds();
+        let failures = window.find("settings-log-facts-row-1").bounds();
+        assert!(
+            failures.origin.y >= log.origin.y + log.size.height,
+            "the row after the log path is below it, not clipped into it"
+        );
+
+        // The launch options are a fact list inside an accordion, which is
+        // where the loss was total: the box drew with nothing in it.
+        for index in 0..9 {
+            let id: &'static str = &*Box::leak(format!("settings-launch-facts-row-{index}").into_boxed_str());
+            assert!(present(window, id), "launch option {index} renders");
+        }
+    })
+    .unwrap();
+}

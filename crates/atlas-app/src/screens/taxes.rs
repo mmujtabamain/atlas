@@ -9,7 +9,6 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
     accordion::Accordion,
     button::{Button, ButtonVariants as _},
-    description_list::{DescriptionItem, DescriptionList},
     h_flex,
     select::Select,
     tag::Tag,
@@ -22,6 +21,7 @@ use super::common::workspace_header;
 use crate::app::AtlasApp;
 use crate::models::taxes::{TaxModel, verification_tag};
 use crate::nav::{Destination, Route};
+use crate::widgets::facts::facts;
 use crate::widgets::grid;
 use crate::widgets::record::{self, Lane};
 use crate::widgets::scope;
@@ -108,14 +108,14 @@ pub fn render_taxes(app: &AtlasApp, model: &TaxModel, household: &Household, cx:
                         .px_3()
                         .py_2()
                         .child(
-                            DescriptionList::new()
+                            facts()
                                 .columns(2)
-                                .child(DescriptionItem::new("Accrued").value(date(e.accrual_date)))
-                                .child(DescriptionItem::new("Cash moves").value(format!("{}{}", date(e.cash_date), if after { " — after the horizon, so it is a reserve requirement, not a posting in this window" } else { "" })))
-                                .child(DescriptionItem::new("Rule").value(format!("{} ({})", e.rule_name, e.pack)))
-                                .child(DescriptionItem::new("Base").value(format!("{} — {}", e.base_label, e.base_amount.format())))
-                                .child(DescriptionItem::new("Tax").value(e.amount.format()))
-                                .child(DescriptionItem::new("Kind").value(e.kind.label())),
+                                .pair("Accrued", date(e.accrual_date))
+                                .pair("Cash moves", format!("{}{}", date(e.cash_date), if after { " — after the horizon, so it is a reserve requirement, not a posting in this window" } else { "" }))
+                                .pair("Rule", format!("{} ({})", e.rule_name, e.pack))
+                                .pair("Base", format!("{} — {}", e.base_label, e.base_amount.format()))
+                                .pair("Tax", e.amount.format())
+                                .pair("Kind", e.kind.label()),
                         )
                         .child(crate::widgets::explain::render_top_block(&e.chain, cx)),
                 )
@@ -301,16 +301,16 @@ pub fn render_packs(app: &AtlasApp, model: &TaxModel, cx: &mut Context<AtlasApp>
                     .when(index > 0, |this| this.border_t_1().border_color(theme.border).pt_4())
                     .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(rule.name.clone()))
                     .child(
-                        DescriptionList::new()
+                        facts()
                             .columns(2)
-                            .child(DescriptionItem::new("Tax type").value(rule.tax_type.clone()))
-                            .child(DescriptionItem::new("Categories").value(if rule.categories.is_empty() { "Every category".to_string() } else { rule.categories.join(", ") }))
-                            .child(DescriptionItem::new("Charged").value(rule.describe_kind()))
-                            .child(DescriptionItem::new("Timing").value(rule.timing.label()))
-                            .child(DescriptionItem::new("Effective").value(format!("{} – {}", date(rule.effective_from), rule.effective_to.map(date).unwrap_or_else(|| "open".into()))))
-                            .child(DescriptionItem::new("Scope").value(rule.scope.clone()))
-                            .child(DescriptionItem::new("Source").value(rule.source.clone()))
-                            .child(DescriptionItem::new("Explanation").value(rule.explanation.clone())),
+                            .pair("Tax type", rule.tax_type.clone())
+                            .pair("Categories", if rule.categories.is_empty() { "Every category".to_string() } else { rule.categories.join(", ") })
+                            .pair("Charged", rule.describe_kind())
+                            .pair("Timing", rule.timing.label())
+                            .pair("Effective", format!("{} – {}", date(rule.effective_from), rule.effective_to.map(date).unwrap_or_else(|| "open".into())))
+                            .pair("Scope", rule.scope.clone())
+                            .pair("Source", rule.source.clone())
+                            .pair("Explanation", rule.explanation.clone()),
                     )
                     .children(brackets)
                     .into_any_element()
