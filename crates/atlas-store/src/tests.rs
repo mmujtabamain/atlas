@@ -27,6 +27,14 @@ fn normalized_round_trip_preserves_household_and_forecast() {
     let after = forecast(&loaded, Boundary::Household, options).expect("forecast after load");
     assert_eq!(before.record.input_hash, after.record.input_hash);
     assert_eq!(before.end.money(), after.end.money());
+
+    let mut updated = loaded;
+    updated.people.swap(0, 1);
+    updated.companies[0].employees.reverse();
+    updated.audit.pop();
+    file.save_owned(&updated, OWNER)
+        .expect("updated household saved");
+    assert_eq!(file.load().expect("updated household loaded"), updated);
     file.release(OWNER).expect("lock released");
 }
 
