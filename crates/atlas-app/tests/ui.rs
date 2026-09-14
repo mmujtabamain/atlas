@@ -1425,3 +1425,85 @@ fn settings_states_the_facts_below_a_wrapping_value(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// An accordion header opens the section under it.
+///
+/// gpui-kit's accordion is fully controlled: each item's open state is a prop
+/// and `on_toggle_click` reports what the new set should be. A screen that
+/// sets the prop and never wires the callback gets headers that look
+/// interactive and do nothing, because the next render puts the old state
+/// straight back. Settings' launch options and all four families of the
+/// figure-meanings sheet shipped that way.
+#[gpui_kit::test]
+fn an_accordion_header_opens_its_section(cx: &mut TestAppContext) {
+    // The trigger's `expanded` is the controlled state itself. The panel's
+    // height cannot be used instead: it is driven by a spring against the
+    // background executor's clock, which a test window never advances, so a
+    // panel that is open still measures zero here.
+    let (handle, _app) = open_app(cx, sample(Route::Settings));
+    let window = handle.into();
+    let expanded = |window: &mut gpui_kit::Window| window.within("settings-launch").find(("trigger", 0usize)).expanded();
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window), Some(false), "launch options start closed");
+        window.within("settings-launch").click(("trigger", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window), Some(true), "the header expanded the section");
+        window.within("settings-launch").click(("trigger", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window), Some(false), "and closes it again — the state follows the reader");
+    })
+    .unwrap();
+}
+
+/// Every family of the figure-meanings sheet opens on click.
+///
+/// The sheet sets each item's open state from the term it was opened on and
+/// never wired `on_toggle_click`, so all four accordions were inert: the
+/// header toggled the component's own idea of the state and the next render
+/// put it straight back.
+#[gpui_kit::test]
+fn the_figure_meanings_sheet_opens_its_sections(cx: &mut TestAppContext) {
+    let (handle, app) = open_app(cx, sample(Route::Today));
+    let window = handle.into();
+    cx.update_window(window, |_, window, cx| {
+        app.update(cx, |app, cx| app.open_figure_meanings(None, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+
+    let expanded = |window: &mut gpui_kit::Window, index: usize| {
+        window.within("meanings-money-classes").find(("trigger", index)).expanded()
+    };
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window, 1), Some(false), "nothing is open when the sheet is opened on no term");
+        window.within("meanings-money-classes").click(("trigger", 1usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window, 1), Some(true), "the header opened its term");
+        // `multiple` is on, so a second term opens beside the first.
+        window.within("meanings-money-classes").click(("trigger", 3usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window, 1), Some(true), "the first stays open");
+        assert_eq!(expanded(window, 3), Some(true), "and the second opens too");
+    })
+    .unwrap();
+}

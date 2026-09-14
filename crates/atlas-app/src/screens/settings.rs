@@ -45,6 +45,7 @@ pub fn render(app: &AtlasApp, cx: &mut Context<AtlasApp>) -> AnyElement {
     let held = app.lock_holder.clone();
     let log_path = crate::logging::file_path_from_env().unwrap_or_else(|| std::path::PathBuf::from(crate::logging::DEFAULT_FILE)).display().to_string();
     let log_path_copy = log_path.clone();
+    let launch_open = app.settings_launch_open;
     let path_copy = path.clone();
     v_flex()
         .id("screen-settings")
@@ -127,8 +128,14 @@ pub fn render(app: &AtlasApp, cx: &mut Context<AtlasApp>) -> AnyElement {
                 }))
                 .child(facts().id("settings-version-facts").lane(LANE).columns(2).pair("Version", format!("Atlas Financer {}", env!("CARGO_PKG_VERSION"))).pair("Frame-time readout", if app.perf_overlay() { "Overlay on; gpui's reading is in the status bar" } else { "Overlay off; gpui's reading is in the status bar" }))
                 .child(facts().id("settings-log-facts").lane(LANE).pair("Log", log_path).pair("Failures", if alerting::is_configured() { "Posted to the team chat".to_string() } else { "Written to logs only — set DEVBENCH_NOTIFY_URL and DEVBENCH_NOTIFY_TOKEN in the launch environment to post them".to_string() }))
-                .child(Accordion::new("settings-launch").bordered(true).item(|item| {
-                    item.title("Launch options").child(facts().id("settings-launch-facts").lane(LANE_FLAG).pair("--theme light|dark", "Initial theme; the toggle above changes this session only.").pair("--size WxH", "Initial window size; default 1600×1000, centred.").pair("--screen <area>", format!("Start surface; the original area names still work. Known: {}.", Route::slugs().join(", "))).pair("--viewer a|b|<person id>", "Who is looking, chosen before anything renders; otherwise the chooser opens.").pair("--household FILE | --new | --sample", "Open a file, start an empty household, or load the fictitious sample; with none, Welcome.").pair("--as-of YYYY-MM-DD", "Reconciliation date of a new household.").pair("--owner NAME", "The name written into the file lock; distinct from the viewer.").pair("--take-over", "Take over another owner's lock at launch; there is no in-app force unlock.").pair("--perf-overlay", "gpui's frame-time overlay (ATLAS_PERF_OVERLAY=1); the status bar keeps its reading either way."))
+                // The accordion is controlled: without `on_toggle_click` the
+                // header is inert, because the next render puts every item's
+                // open state back the way this screen declared it.
+                .child(Accordion::new("settings-launch").bordered(true).on_toggle_click(cx.listener(|this, open: &[usize], _, cx| {
+                    this.settings_launch_open = open.contains(&0);
+                    cx.notify();
+                })).item(move |item| {
+                    item.title("Launch options").open(launch_open).child(facts().id("settings-launch-facts").lane(LANE_FLAG).pair("--theme light|dark", "Initial theme; the toggle above changes this session only.").pair("--size WxH", "Initial window size; default 1600×1000, centred.").pair("--screen <area>", format!("Start surface; the original area names still work. Known: {}.", Route::slugs().join(", "))).pair("--viewer a|b|<person id>", "Who is looking, chosen before anything renders; otherwise the chooser opens.").pair("--household FILE | --new | --sample", "Open a file, start an empty household, or load the fictitious sample; with none, Welcome.").pair("--as-of YYYY-MM-DD", "Reconciliation date of a new household.").pair("--owner NAME", "The name written into the file lock; distinct from the viewer.").pair("--take-over", "Take over another owner's lock at launch; there is no in-app force unlock.").pair("--perf-overlay", "gpui's frame-time overlay (ATLAS_PERF_OVERLAY=1); the status bar keeps its reading either way."))
                 })),
         )
         .child(action_bar(

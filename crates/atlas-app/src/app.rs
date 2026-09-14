@@ -175,6 +175,8 @@ pub struct AtlasApp {
     pub(crate) tax_payable_choice: crate::widgets::scope::Choice,
     pub(crate) tax_event_expanded: Option<usize>,
     pub(crate) tax_pack_open: Vec<usize>,
+    /// Settings: whether the launch-options reference is expanded.
+    pub(crate) settings_launch_open: bool,
     /// Sharing: the selected grant, the expanded audit event and which
     /// sections of the policy detail are open.
     pub(crate) selected_grant: Option<atlas_core::ids::GrantId>,
@@ -607,6 +609,7 @@ impl AtlasApp {
             tax_payable_choice: tax_filters.payable,
             tax_event_expanded: None,
             tax_pack_open: Vec::new(),
+            settings_launch_open: false,
             selected_grant: None,
             audit_expanded: None,
             policy_sections_open: Vec::new(),
