@@ -31,6 +31,7 @@ fn normalized_round_trip_preserves_household_and_forecast() {
     let mut updated = loaded;
     updated.people.swap(0, 1);
     updated.companies[0].employees.reverse();
+    updated.series[0].scenario = Some(updated.scenarios[0].id);
     updated.audit.pop();
     file.save_owned(&updated, OWNER)
         .expect("updated household saved");
