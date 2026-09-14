@@ -8,12 +8,11 @@
 //! fold as soon as the household has a handful of scenarios, and reads as two
 //! unrelated bands rather than as one thing and its contents.
 
-use std::sync::Arc;
 
 use atlas_core::forecast::Case;
 use atlas_core::ids::{EntityRef, ObjectRef, ScenarioId};
 use atlas_core::model::Household;
-use atlas_core::{Calc, Disclosure, Money};
+use atlas_core::Money;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
@@ -39,8 +38,7 @@ use crate::nav::{Destination, Route};
 use crate::widgets::facts::facts;
 use crate::widgets::chart::{self, Legend, PathCommand};
 use crate::widgets::copy::copy_button;
-use crate::widgets::explain::{self, ExplainContent};
-use crate::widgets::figure::Figure;
+use crate::widgets::explain::{self};
 use crate::widgets::master::master_detail;
 use crate::widgets::record::{self, Lane};
 use crate::widgets::scope;
@@ -307,13 +305,6 @@ fn render_detail(app: &AtlasApp, card: &crate::models::scenarios::ScenarioCard, 
         .into_any_element()
 }
 
-/// A figure of the comparison, with its `ⓘ` and its vocabulary terms.
-fn comparison_figure(id: &'static str, label: &'static str, calc: &Calc<Money>, viewer_name: &str, cx: &App) -> AnyElement {
-    let _ = cx;
-    let content = Arc::new(ExplainContent::new(label, calc.money(), calc.shared_node(), viewer_name, Disclosure::Full));
-    Figure::new(id, label, calc, content).into_any_element()
-}
-
 /// The end difference. The engine gives a subtraction of two figures, not a
 /// chain of its own, so this is not a [`Figure`] and does not pretend to be
 /// one: it says where it comes from instead of offering a calculation there
@@ -352,7 +343,11 @@ pub fn render_comparison(app: &AtlasApp, model: &ScenariosModel, household: &Hou
         ],
         cx,
     );
-    let Some(comparison) = &model.comparison else {
+    // Both come from the model together, so a comparison always has its
+    // figures and the screen never rebuilds a chain per frame.
+    // The figures are built with the comparison, so they arrive together or
+    // not at all; the zip states that rather than unwrapping twice.
+    let Some((comparison, figures)) = model.comparison.as_ref().zip(model.figures.as_ref()) else {
         return v_flex()
             .id("screen-compare")
             .test_support()
@@ -448,7 +443,7 @@ pub fn render_comparison(app: &AtlasApp, model: &ScenariosModel, household: &Hou
     } else {
         Alert::warning("attribution-discrepancy", format!("The attribution sums to {} but the end difference is {}. The comparison figures above stand; the breakdown does not.", comparison.attribution_total.format_signed(), comparison.end_delta.format_signed())).title("Difference check failed").into_any_element()
     };
-    let viewer_name = household.entity_name(EntityRef::Person(app.viewer().person));
+    let _viewer_name = household.entity_name(EntityRef::Person(app.viewer().person));
 
     v_flex()
         .id("screen-compare")
@@ -469,22 +464,19 @@ pub fn render_comparison(app: &AtlasApp, model: &ScenariosModel, household: &Hou
                 // Five figures as one even grid across the width: they are five
                 // readings of one comparison, not one answer and four supports.
                 .child(columns([
-                    comparison_figure("comparison-baseline-end", "Baseline at the end", &comparison.baseline.end, &viewer_name, cx),
-                    comparison_figure("comparison-overlaid-end", "With the scenarios", &comparison.overlaid.end, &viewer_name, cx),
+                    figures.baseline_end.standard().into_any_element(),
+                    figures.overlaid_end.standard().into_any_element(),
                     difference_cell(comparison.end_delta, cx),
-                    comparison_figure("comparison-baseline-lowest", "Lowest baseline", &comparison.baseline.lowest, &viewer_name, cx),
-                    comparison_figure("comparison-overlaid-lowest", "Lowest with the scenarios", &comparison.overlaid.lowest, &viewer_name, cx),
+                    figures.baseline_lowest.standard().into_any_element(),
+                    figures.overlaid_lowest.standard().into_any_element(),
                 ]))
                 .child(hairline(cx))
                 // The one-line equation behind the overlaid end, not the whole
                 // chain as an inline table: the terms of the terms are what
                 // `Full calculation…` opens.
-                .child(explain::render_equation(
-                    "comparison-end-equation",
-                    comparison.overlaid.end.node(),
-                    Arc::new(ExplainContent::new("Cash at the end with the scenarios", comparison.overlaid.end.money(), comparison.overlaid.end.shared_node(), viewer_name.clone(), Disclosure::Full)),
-                    cx,
-                )),
+                // The projected chain, and the sheet the figure above opens:
+                // the equation and the `ⓘ` beside it must be the same reading.
+                .child(explain::render_equation("comparison-end-equation", figures.overlaid_end.calc.node(), figures.overlaid_end.content(), cx)),
         )
         .child(section("comparison-chart", "Cash paths").divider(true).child(chart::cash_path("comparison-path", &app.comparison_path_state, format!("Household · {} case · through {}", model.case.label(), date(model.through)), chart_el, values, legend, commands, readout, cx)))
         .child(
