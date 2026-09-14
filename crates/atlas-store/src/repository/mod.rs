@@ -269,7 +269,12 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
             &transaction,
             "INSERT INTO event_series (id, position, name, direction_json, expected_minor, currency, recurrence_json, settlement_lag_days, \
              availability_lag_days, intraday_order, account_id, linked_account_id, entity_json, certainty, category, tax_treatment, scenario_id, notes, payload_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, name=excluded.name, direction_json=excluded.direction_json, \
+             expected_minor=excluded.expected_minor, currency=excluded.currency, recurrence_json=excluded.recurrence_json, \
+             settlement_lag_days=excluded.settlement_lag_days, availability_lag_days=excluded.availability_lag_days, intraday_order=excluded.intraday_order, \
+             account_id=excluded.account_id, linked_account_id=excluded.linked_account_id, entity_json=excluded.entity_json, certainty=excluded.certainty, \
+             category=excluded.category, tax_treatment=excluded.tax_treatment, scenario_id=excluded.scenario_id, notes=excluded.notes, payload_json=excluded.payload_json",
             vec![
                 i64::from(series.id.raw()).into(),
                 position_value(position)?,
@@ -324,7 +329,9 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
     for (position, assumption) in household.assumptions.iter().enumerate() {
         execute(
             &transaction,
-            "INSERT INTO assumptions (id, position, text, certainty, source_json, accepted_on, expires_on, private_to, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO assumptions (id, position, text, certainty, source_json, accepted_on, expires_on, private_to, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, text=excluded.text, certainty=excluded.certainty, source_json=excluded.source_json, \
+             accepted_on=excluded.accepted_on, expires_on=excluded.expires_on, private_to=excluded.private_to, payload_json=excluded.payload_json",
             vec![
                 i64::from(assumption.id.raw()).into(),
                 position_value(position)?,
@@ -351,7 +358,9 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
     for (position, scenario) in household.scenarios.iter().enumerate() {
         execute(
             &transaction,
-            "INSERT INTO scenarios (id, position, name, description, private_to, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO scenarios (id, position, name, description, private_to, payload_json) VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, name=excluded.name, description=excluded.description, \
+             private_to=excluded.private_to, payload_json=excluded.payload_json",
             vec![
                 i64::from(scenario.id.raw()).into(),
                 position_value(position)?,
@@ -426,7 +435,10 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
         execute(
             &transaction,
             "INSERT INTO access_policies (id, position, object_json, calculation_access, restricted_disclosure, effective_from, version, changed_by, changed_at, payload_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, object_json=excluded.object_json, calculation_access=excluded.calculation_access, \
+             restricted_disclosure=excluded.restricted_disclosure, effective_from=excluded.effective_from, version=excluded.version, \
+             changed_by=excluded.changed_by, changed_at=excluded.changed_at, payload_json=excluded.payload_json",
             vec![
                 i64::from(policy.id.raw()).into(),
                 position_value(position)?,
