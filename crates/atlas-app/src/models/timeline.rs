@@ -7,12 +7,14 @@ use atlas_core::authz::Viewer;
 use atlas_core::ids::{AccountId, EntityRef, ObjectRef, ScenarioId, SeriesId};
 use atlas_core::model::Household;
 use atlas_core::timeline::{Direction, Occurrence, OccurrenceStatus};
-use atlas_core::vocab::Certainty;
-use atlas_core::{Disclosure, EngineResult, Money};
+use atlas_core::provenance::ProvNode;
+use atlas_core::vocab::{Certainty, MoneyClass, ResultStrength};
+use atlas_core::{Calc, Disclosure, EngineResult, Money};
 use std::sync::Arc;
 use chrono::NaiveDate;
 use gpui_kit::*;
 
+use crate::widgets::figure::ExplainedFigure;
 use crate::widgets::grid::{self, Cell, GridColumn, MatchState, Row, Tone};
 
 /// What the timeline shows.
@@ -42,8 +44,10 @@ pub struct TimelineModel {
     /// The occurrences as grid rows — every string formatted here, once, so
     /// the virtualised table only paints (see `widgets::grid`).
     pub rows: grid::Rows,
-    pub total_in: Money,
-    pub total_out: Money,
+    /// Still to come, each with the occurrences it is the sum of — so the
+    /// two headline figures explain themselves like every other screen's do.
+    pub total_in: ExplainedFigure,
+    pub total_out: ExplainedFigure,
     /// Series the viewer may see, in fixture order.
     pub series: Vec<SeriesId>,
     pub hidden_series: usize,
@@ -188,6 +192,47 @@ fn occurrence_row(o: &Occurrence, household: &Household) -> Row {
     .muted(!live)
 }
 
+/// One of the two `Still to come` figures: the live occurrences of one
+/// direction, each a term of the sum so the calculation sheet names the
+/// movements behind the number.
+///
+/// The class is expected-future, never a current one: these are amounts
+/// planned inside the window, not money in hand. The strength is a
+/// conditional path — every term rests on the series' own assumption, and a
+/// fulfilled or skipped occurrence contributes nothing at all.
+#[allow(clippy::too_many_arguments)]
+fn still_to_come(
+    occurrences: &[Occurrence],
+    direction: Direction,
+    currency: atlas_core::Currency,
+    id: &'static str,
+    label: &'static str,
+    household: &Household,
+    viewer: Viewer,
+) -> EngineResult<ExplainedFigure> {
+    let live: Vec<&Occurrence> = occurrences.iter().filter(|o| o.direction == direction && o.is_live()).collect();
+    let total = Money::sum(currency, live.iter().map(|o| o.remaining_expected()))?;
+    let terms: Vec<ProvNode> = live
+        .iter()
+        .map(|o| {
+            ProvNode::input(format!("{} due {}", o.label, o.due.format("%d %b %Y")), o.remaining_expected(), "planned movement")
+                .subject(ObjectRef::Series(o.series))
+                .money_class(MoneyClass::ExpectedFuture)
+        })
+        .collect();
+    let calc = Calc::new(
+        total,
+        ProvNode::sum(label, total, terms)
+            .money_class(MoneyClass::ExpectedFuture)
+            .strength(ResultStrength::ConditionalPath)
+            // The qualification the screen states beside the figures, so it
+            // travels with the number into the sheet and any copy of it.
+            .note("Before tax and fees. Transfers are not counted, and skipped, cancelled or fulfilled movements post nothing.")
+            .note("The remaining amount of each movement: what a partially fulfilled one still expects, not its original amount."),
+    );
+    Ok(ExplainedFigure::new(id, label, &calc, household, viewer))
+}
+
 impl TimelineModel {
     pub fn compute(household: &Household, viewer: Viewer, filter: TimelineFilter) -> EngineResult<Self> {
         log::info!("computing timeline through {} for viewer {} (scenario {:?})", filter.through, viewer.person, filter.scenario);
@@ -216,8 +261,8 @@ impl TimelineModel {
             .filter(|o| filter.status.is_none_or(|s| o.status == s))
             .collect();
         let currency = household.base_currency;
-        let total_in = Money::sum(currency, occurrences.iter().filter(|o| o.direction == Direction::Income && o.is_live()).map(|o| o.remaining_expected()))?;
-        let total_out = Money::sum(currency, occurrences.iter().filter(|o| o.direction == Direction::Expense && o.is_live()).map(|o| o.remaining_expected()))?;
+        let total_in = still_to_come(&occurrences, Direction::Income, currency, "upcoming-income", "Income", household, viewer)?;
+        let total_out = still_to_come(&occurrences, Direction::Expense, currency, "upcoming-expenses", "Expenses", household, viewer)?;
         let rows = Arc::new(occurrences.iter().map(|o| occurrence_row(o, household)).collect());
         let (actual_rows, actual_ids) = actual_rows(household, viewer, filter.actuals_account);
         let hidden_actuals = household.actuals.iter().filter(|t| !matches!(household.disclosure_for(viewer, ObjectRef::Account(t.account)), Disclosure::Full | Disclosure::SelectedFields)).count();

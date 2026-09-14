@@ -191,9 +191,12 @@ pub fn render_upcoming(app: &AtlasApp, model: &TimelineModel, household: &Househ
                     None => "Expected · Baseline".to_string(),
                 })
                 .description("Expected values, less what has already been received or paid.")
+                // Both totals are figures now, not plain text: each carries
+                // the movements it is the sum of, so `ⓘ` opens the same kind
+                // of calculation sheet every other headline number does.
                 .child(columns([
-                    fact("Income", model.total_in.format(), cx).into_any_element(),
-                    fact("Expenses", model.total_out.format(), cx).into_any_element(),
+                    model.total_in.standard().into_any_element(),
+                    model.total_out.standard().into_any_element(),
                     info_card(
                         "upcoming-basis",
                         IconName::Info,
