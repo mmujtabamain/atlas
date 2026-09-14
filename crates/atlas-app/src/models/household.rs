@@ -13,15 +13,14 @@ use atlas_core::model::{Assumption, Household};
 use atlas_core::{Calc, Disclosure, EngineResult, Money};
 use chrono::NaiveDate;
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, group_box::GroupBox, h_flex,
+    ActiveTheme as _, Sizable as _, group_box::GroupBox,
     table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
     tag::Tag, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::widgets::explain;
-use crate::widgets::figure::{ExplainedFigure, card};
+use crate::widgets::figure::ExplainedFigure;
 use crate::widgets::labels;
 use crate::widgets::table::{money_cell, muted_cell};
 
@@ -236,99 +235,6 @@ impl HouseholdOverview {
             occurrence_count: projection.accounts.iter().map(|a| a.postings.len()).sum(),
         })
     }
-}
-
-pub fn render(overview: &HouseholdOverview, household: &Household, cx: &App) -> impl IntoElement {
-    let theme = cx.theme();
-    let viewer_name = overview.viewer_name.as_str();
-
-    v_flex()
-        .id("screen-household")
-        .test_support()
-        .w_full()
-        .gap_6()
-        .child(
-            v_flex()
-                .gap_1()
-                .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Household"))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(format!(
-                    "{} · balances reconciled {} · {} people · {} companies · {} accounts · viewing as {}",
-                    household.name,
-                    household.as_of.format("%d %b %Y"),
-                    household.people.len(),
-                    household.companies.len(),
-                    household.accounts.len(),
-                    viewer_name
-                ))),
-        )
-        .child(
-            GroupBox::new().id("money-definitions").title("Money today").child(
-                v_flex()
-                    .gap_4()
-                    .child(div().text_xs().text_color(theme.muted_foreground).child(
-                        "Settled cash, earmarked cash and free cash are kept apart. Open “Why?” on any figure to see how it was calculated.",
-                    ))
-                    .child(h_flex().flex_wrap().gap_8().children(overview.money.iter().map(|f| card(f.figure(f.id.as_ref() == "free-cash"))))),
-            ),
-        )
-        .child(
-            GroupBox::new()
-                .id("conditional-projection")
-                .title(format!("Projection through {}", overview.horizon.format("%d %b %Y")))
-                .child(
-                    h_flex()
-                        .w_full()
-                        .items_start()
-                        .gap_8()
-                        .child(
-                            v_flex()
-                                .gap_6()
-                                .w_80()
-                                .flex_shrink_0()
-                                .child(overview.conditional.figure(true))
-                                .child(overview.unreserved.figure(false))
-                                .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                                    "{} planned postings, expected case, baseline, taxes included once. Only the starting cash is money already received; everything after it depends on the assumptions below.",
-                                    overview.occurrence_count
-                                ))),
-                        )
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_2()
-                                .child(div().text_xs().text_color(theme.muted_foreground).child("How the projection is built up — nested terms open with “Why?”"))
-                                .child(explain::render_top_block(overview.unreserved.calc.node(), cx)),
-                        ),
-                ),
-        )
-        .child(
-            GroupBox::new()
-                .id("assumptions")
-                .title("Assumptions this projection depends on")
-                // Plain full-width rows: a sentence in a flex_1/min_w_0 cell of a
-                // wrap row costs taffy ~1,500 measure callbacks per assumption per
-                // frame; a column with the tag on its own line costs ~100.
-                .child(v_flex().w_full().gap_2().children(overview.assumptions.iter().enumerate().map(|(index, assumption)| {
-                    v_flex()
-                        .w_full()
-                        .gap_1()
-                        .child(div().w_full().child(format!("{}. {}", index + 1, assumption.text)))
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(labels::certainty_tag(assumption.certainty))
-                                .child(div().text_xs().text_color(theme.muted_foreground).child(match assumption.accepted_on {
-                                    Some(date) => format!("{} · accepted {}", assumption.source.describe(), date.format("%d %b %Y")),
-                                    None => format!("{} · not yet accepted", assumption.source.describe()),
-                                })),
-                        )
-                }))),
-        )
-        .child(render_people(overview, cx))
-        .child(render_companies(overview, cx))
-        .child(render_accounts(overview, household, cx))
 }
 
 pub(crate) fn render_people(overview: &HouseholdOverview, cx: &App) -> impl IntoElement {
