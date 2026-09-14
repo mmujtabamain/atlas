@@ -164,11 +164,11 @@ our meter's numbers stay in the log, where the phase split is the point.
 - `scripts/perf-screens.sh <label>` on the box: every screen, scripted
   scrolling, one line per screen with the phase split, into
   `shots/perf-screens-<label>.txt`.
-- The counting gpui build: copy `~/.cargo/registry/src/*/gpui-pre-0.3.4` to
-  `gpui-lab/vendor/gpui-pre`, add counters around
-  `TaffyLayoutEngine::compute_layout` (nodes, measure callbacks, time) and
+- The counting gpui build: copy `~/.cargo/registry/src/*/gpui-pre-0.3.4` to a
+  scratch directory outside the repo (say `../gpui-pre-counting`), add counters
+  around `TaffyLayoutEngine::compute_layout` (nodes, measure callbacks, time) and
   `LineLayoutCache::layout_line` (misses), and add
-  `[patch.crates-io] gpui-pre = { path = "../gpui-lab/vendor/gpui-pre" }` to
+  `[patch.crates-io] gpui-pre = { path = "../gpui-pre-counting" }` to
   the workspace `Cargo.toml` — never commit the patch. Bisect a screen by
   temporarily gating its sections on an environment variable and reading the
   `measure_calls` count, which is deterministic; timings on the box are not.

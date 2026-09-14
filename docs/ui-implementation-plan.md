@@ -45,7 +45,8 @@ atlas/
 │                              reservations, timeline, forecast, provenance, authz, fixtures
 ├── crates/atlas-app/          gpui-kit window: shell, screens, explain sheet, alerting hook
 ├── docs/                      this plan + later design notes (mirrored to DevBench docs)
-├── scripts/shoot.sh           headless screenshots of every screen (uses ../gpui-lab/gpui-shot)
+├── tools/gpui-shot/           gpui-shot: headless screenshot helper (Xvfb + lavapipe + X11 GetImage)
+├── scripts/shoot.sh           headless screenshots of every screen (drives target/debug/gpui-shot)
 └── shots/                     PNG output (gitignored; shared via `devbench media put`)
 ```
 
@@ -207,16 +208,18 @@ Acceptance ids (E0x, V0xx) refer to `plan.md` §44–§45.
 
 macOS (Mujtaba): `cd atlas && cargo run --bin atlas` — plain toolchain, no extra setup.
 
-Linux DevBench box (agents): `source ~/.cargo/env`; the vendored `.sysroot` symlink points at
-`../gpui-lab/.sysroot` (created by `gpui-lab/scripts/setup-linux-sysroot.sh`), `.cargo/config.toml`
-wires it into the linker, and `~/.cargo/config.toml` keeps `jobs = 2` for the 2 GiB cgroup.
-Screenshots: `scripts/shoot.sh` (uses `../gpui-lab/target/debug/gpui-shot`).
+Linux DevBench box (agents): `source ~/.cargo/env`; `scripts/setup-linux-sysroot.sh` (once per
+box) vendors the system libraries gpui needs into `.sysroot`, `.cargo/config.toml` wires it into
+the linker, and `~/.cargo/config.toml` keeps `jobs = 2` for the 2 GiB cgroup. Screenshots:
+`scripts/shoot.sh` (builds and drives `tools/gpui-shot`, a workspace member).
 
 ---
 
 ## 6. Open decisions (asked in chat, not blocking)
 
 1. Baseline theme for Atlas: gpui-kit default light/dark (current) or one of the bundled JSON themes.
-2. Whether `gpui-lab/` moves into the repo (e.g. `atlas/tools/gpui-lab`) now that product code lives in `atlas/`.
+2. ~~Whether `gpui-lab/` moves into the repo now that product code lives in `atlas/`.~~ Decided: the
+   part the repo depends on, the `gpui-shot` helper, lives in `tools/gpui-shot` together with
+   `scripts/setup-linux-sysroot.sh`; the lab's demo window and its scratch material stay outside.
 3. `test-support` on the main gpui-kit dependency (single build on the small box) vs dev-dependency (double build) — kept on the main dependency until the box has headroom.
 4. Fixture currency and presentation: the plan's examples are unit-less whole numbers; the fixture uses `PKR`-style whole units and shows minor units only when non-zero.

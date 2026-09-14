@@ -17,8 +17,11 @@ data model, not a later feature (§7.1).
 | `crates/atlas-store` | Persistence: one SQLite file per household, backups, lock file. |
 | `crates/atlas-app` | The gpui-kit window: shell, screens, the explain sheet, data entry, failure alerting. Binary `atlas`. |
 | `docs/ui-implementation-plan.md` | Milestones M0–M11 and their tasks (mirrored on the DevBench board). |
+| `tools/gpui-shot` | `gpui-shot`, the headless screenshot helper the scripts below drive (Xvfb + lavapipe + X11 capture). A workspace member, never a dependency of the product. |
 | `scripts/shoot.sh` | Headless screenshots of every screen, light and dark, plus sheets and details (Linux box). |
 | `scripts/walkthrough.sh` | The captioned walkthrough video (`shots/walkthrough.mp4`) from a gpui-shot step sequence. |
+| `scripts/perf-screens.sh` | Per-screen frame cost, before and after a change (`docs/perf.md`). |
+| `scripts/setup-linux-sysroot.sh` | Vendors the system libraries gpui needs into `.sysroot` on a Linux box without root (once per box). |
 | `docs/handover.md` | What was built per milestone, how to run and test, known limits. |
 | `plan.md` | The requirements document this repo implements. |
 
@@ -105,11 +108,21 @@ empty rather than prefilled.
 
 ### Linux DevBench box
 
-The box has no root and no GPU. `source ~/.cargo/env` first; the linker finds the vendored
-system libraries through `.cargo/config.toml` and the `.sysroot` symlink into
-`../gpui-lab/.sysroot` (built by `gpui-lab/scripts/setup-linux-sysroot.sh`). Keep
-`~/.cargo/config.toml` at `jobs = 2` (2 GiB memory cgroup). Screenshots:
-`scripts/shoot.sh [scenario]`, then `devbench media put shots/<name>.png`.
+The box has no root and no GPU; everything the build and the screenshots need is in this
+checkout. `source ~/.cargo/env` first, then once per box `scripts/setup-linux-sysroot.sh`: it
+downloads the system libraries gpui links against (`apt-get download`, no root) into
+`.sysroot/` (gitignored), which `.cargo/config.toml` hands to the linker and pkg-config. Keep
+`~/.cargo/config.toml` at `jobs = 2` (2 GiB memory cgroup).
+
+Screenshots: `scripts/shoot.sh [scenario]` builds `atlas` and `gpui-shot` (`tools/gpui-shot`,
+a workspace member) and writes `shots/<name>.png` with the app log beside it; then
+`devbench media put shots/<name>.png`. The helper starts its own Xvfb, hands the app Mesa's
+lavapipe from `.sysroot` as its Vulkan driver, drives `--step click:X,Y | key:NAME | wait:MS |
+shot:extra.png` before the capture, and exits 0 for a settled frame, 3 for a frame that never
+settled or is blank, 1 on error — `target/debug/gpui-shot --help` has the rest. One-off:
+`target/debug/gpui-shot --out shots/x.png -- target/debug/atlas --sample --viewer a --screen today`.
+Its unit tests run with `cargo test -p gpui-shot`; `GPUI_SHOT_E2E=1 cargo test -p gpui-shot
+--test e2e` drives a real window.
 
 ## Your data
 

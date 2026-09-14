@@ -4,20 +4,18 @@
 # Usage: scripts/shoot.sh              # every scenario, light + dark
 #        scripts/shoot.sh today-dark   # one scenario by name
 #
-# Needs the gpui-shot helper from ../gpui-lab (built with `cargo build -p gpui-shot`
-# there) and the vendored sysroot it points the Vulkan loader at. Output lands in
+# Everything it needs is in this repo: the gpui-shot helper (`tools/gpui-shot`, built
+# here alongside the app) and the vendored sysroot it points the Vulkan loader at
+# (`.sysroot`, from `scripts/setup-linux-sysroot.sh`, once per box). Output lands in
 # shots/<name>.png with the app log next to it; share PNGs with `devbench media put`.
 # Long pages are photographed with a taller window (gpui-shot cannot scroll).
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LAB="${GPUI_LAB:-$REPO/../gpui-lab}"
-SHOT="$LAB/target/debug/gpui-shot"
-APP="${CARGO_TARGET_DIR:-$REPO/target}/debug/atlas"
+source "$REPO/scripts/lib/gpui-shot.sh"
 ONLY="${1:-}"
 WIDTH=1600
 
-[ -x "$SHOT" ] || { echo "gpui-shot not built: (cd $LAB && cargo build -p gpui-shot)"; exit 1; }
-(cd "$REPO" && source ~/.cargo/env 2>/dev/null; cargo build -p atlas-app)
+build_app_and_gpui_shot
 mkdir -p "$REPO/shots"
 
 scenario() { # scenario <name> <height> [gpui-shot args...] -- [atlas args...]

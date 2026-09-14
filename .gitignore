@@ -22,6 +22,9 @@
 /shots/logs.prev.log
 /crates/*/logs.log
 /crates/*/logs.prev.log
+# The gpui-shot end-to-end tests launch the app from the tool's own directory.
+/tools/*/logs.log
+/tools/*/logs.prev.log
 
 # Experiment builds with a different profile (never the product).
 /target-opt
