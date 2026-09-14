@@ -62,6 +62,14 @@ pub enum Relation {
     HistoricalPayments,
     #[sea_orm(has_many = "super::reconciliation_links::Entity")]
     ReconciliationLinks,
+    #[sea_orm(
+        belongs_to = "super::scenarios::Entity",
+        from = "Column::ScenarioId",
+        to = "super::scenarios::Column::Id",
+        on_update = "NoAction",
+        on_delete = "Restrict"
+    )]
+    Scenarios,
     #[sea_orm(has_many = "super::series_amount_changes::Entity")]
     SeriesAmountChanges,
     #[sea_orm(has_many = "super::series_exceptions::Entity")]
@@ -83,6 +91,12 @@ impl Related<super::historical_payments::Entity> for Entity {
 impl Related<super::reconciliation_links::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::ReconciliationLinks.def()
+    }
+}
+
+impl Related<super::scenarios::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Scenarios.def()
     }
 }
 
