@@ -49,10 +49,11 @@ jobs:
         run: crates/atlas-store/scripts/migrate-lint.sh
 
       - name: Apply migrations to a fresh database
+        working-directory: crates/atlas-store
         run: >-
           atlas migrate apply
           --env local
-          --config file://${{ github.workspace }}/crates/atlas-store/atlas.hcl
+          --config file://atlas.hcl
           --url sqlite://${{ runner.temp }}/atlas-financer-ci.sqlite
 
       - name: Require desired schema and migration head to match
@@ -72,8 +73,8 @@ jobs:
           crates/atlas-store/scripts/generate-entities.sh
           git diff --exit-code -- crates/atlas-store/src/entities
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Check persistence formatting
+        run: cargo fmt -p atlas-store -- --check
 
       - name: Lint persistence crate
         run: cargo clippy -p atlas-store --all-targets --no-deps -- -D warnings
