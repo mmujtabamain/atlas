@@ -11,33 +11,166 @@ use serde::de::DeserializeOwned;
 
 use crate::{StoreError, StoreResult, now_millis};
 
-const ROOT_TABLES: [&str; 16] = [
-    "audit_events",
-    "access_grants",
-    "goals",
-    "rules",
+const REBUILT_TABLES: [&str; 20] = [
+    "company_owners",
+    "company_roles",
+    "company_employees",
+    "company_constraints",
+    "account_owners",
+    "account_fees",
+    "account_fund_categories",
+    "series_amount_changes",
+    "series_exceptions",
+    "assumption_series",
+    "scenario_components",
+    "scenario_changes",
+    "tax_rule_categories",
+    "tax_rules",
+    "policy_full_access",
+    "policy_purposes",
+    "rule_conditions",
+    "rule_versions",
     "historical_payments",
     "reconciliation_links",
-    "actual_transactions",
-    "access_policies",
-    "tax_packs",
-    "scenarios",
-    "assumptions",
-    "event_series",
-    "reservations",
-    "accounts",
-    "companies",
-    "people",
 ];
+
+const POSITIONED_ROOT_TABLES: [&str; 13] = [
+    "people",
+    "companies",
+    "accounts",
+    "reservations",
+    "event_series",
+    "assumptions",
+    "scenarios",
+    "access_policies",
+    "actual_transactions",
+    "rules",
+    "goals",
+    "access_grants",
+    "audit_events",
+];
+
+const POSITION_OFFSET: i64 = 1_i64 << 40;
 
 pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
     db: &C,
     household: &Household,
 ) -> StoreResult<()> {
     let transaction = db.begin().await.map_err(StoreError::db)?;
-    for table in ROOT_TABLES {
+    for table in REBUILT_TABLES {
         transaction
             .execute_unprepared(&format!("DELETE FROM {table}"))
+            .await
+            .map_err(StoreError::db)?;
+    }
+    transaction
+        .execute_unprepared("DELETE FROM tax_packs")
+        .await
+        .map_err(StoreError::db)?;
+    retain_ids(
+        &transaction,
+        "audit_events",
+        household.audit.iter().map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "access_grants",
+        household.grants.iter().map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "goals",
+        household.goals.iter().map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "rules",
+        household.rules.iter().map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "actual_transactions",
+        household
+            .actuals
+            .iter()
+            .map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "access_policies",
+        household
+            .policies
+            .iter()
+            .map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "scenarios",
+        household
+            .scenarios
+            .iter()
+            .map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "assumptions",
+        household
+            .assumptions
+            .iter()
+            .map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "event_series",
+        household.series.iter().map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "reservations",
+        household
+            .reservations
+            .iter()
+            .map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "accounts",
+        household
+            .accounts
+            .iter()
+            .map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "companies",
+        household
+            .companies
+            .iter()
+            .map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    retain_ids(
+        &transaction,
+        "people",
+        household.people.iter().map(|item| i64::from(item.id.raw())),
+    )
+    .await?;
+    for table in POSITIONED_ROOT_TABLES {
+        transaction
+            .execute_unprepared(&format!(
+                "UPDATE {table} SET position = position + {POSITION_OFFSET}"
+            ))
             .await
             .map_err(StoreError::db)?;
     }
@@ -727,6 +860,20 @@ async fn load_payloads<T: DeserializeOwned, C: ConnectionTrait>(
             serde_json::from_str(&payload).map_err(StoreError::from)
         })
         .collect()
+}
+
+async fn retain_ids<C, I>(db: &C, table: &str, ids: I) -> StoreResult<()>
+where
+    C: ConnectionTrait,
+    I: IntoIterator<Item = i64>,
+{
+    let ids = serde_json::to_string(&ids.into_iter().collect::<Vec<_>>())?;
+    execute(
+        db,
+        &format!("DELETE FROM {table} WHERE id NOT IN (SELECT value FROM json_each(?))"),
+        vec![ids.into()],
+    )
+    .await
 }
 
 async fn execute<C: ConnectionTrait>(db: &C, sql: &str, values: Vec<Value>) -> StoreResult<()> {
