@@ -57,6 +57,10 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
     household: &Household,
 ) -> StoreResult<()> {
     let transaction = db.begin().await.map_err(StoreError::db)?;
+    transaction
+        .execute_unprepared("PRAGMA defer_foreign_keys = ON")
+        .await
+        .map_err(StoreError::db)?;
     for table in REBUILT_TABLES {
         transaction
             .execute_unprepared(&format!("DELETE FROM {table}"))
