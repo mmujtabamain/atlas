@@ -781,6 +781,12 @@ table "event_series" {
     on_update   = NO_ACTION
     on_delete   = RESTRICT
   }
+  foreign_key "2" {
+    columns     = [column.scenario_id]
+    ref_columns = [table.scenarios.column.id]
+    on_update   = NO_ACTION
+    on_delete   = RESTRICT
+  }
   index "event_series_position" {
     unique  = true
     columns = [column.position]
@@ -1058,6 +1064,9 @@ table "scenarios" {
     unique  = true
     columns = [column.position]
   }
+  index "idx_scenarios_private_to" {
+    columns = [column.private_to]
+  }
   check {
     expr = "(id >= 0)"
   }
@@ -1100,6 +1109,9 @@ table "scenario_components" {
   index "scenario_components_scenario_id_component_id" {
     unique  = true
     columns = [column.scenario_id, column.component_id]
+  }
+  index "idx_scenario_components_component" {
+    columns = [column.component_id]
   }
   check {
     expr = "(position >= 0)"
@@ -1881,6 +1893,9 @@ table "goals" {
   }
   index "idx_goals_target_priority" {
     columns = [column.target_on, column.priority]
+  }
+  index "idx_goals_private_to" {
+    columns = [column.private_to]
   }
   check {
     expr = "(id >= 0)"

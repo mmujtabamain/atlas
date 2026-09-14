@@ -164,7 +164,7 @@ CREATE TABLE event_series (
   certainty TEXT NOT NULL,
   category TEXT NOT NULL,
   tax_treatment TEXT NOT NULL,
-  scenario_id INTEGER,
+  scenario_id INTEGER REFERENCES scenarios(id) ON DELETE RESTRICT,
   notes TEXT NOT NULL,
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
@@ -222,6 +222,7 @@ CREATE TABLE scenarios (
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
 );
 CREATE UNIQUE INDEX scenarios_position ON scenarios(position);
+CREATE INDEX idx_scenarios_private_to ON scenarios(private_to);
 
 CREATE TABLE scenario_components (
   scenario_id INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
@@ -231,6 +232,7 @@ CREATE TABLE scenario_components (
   CHECK (scenario_id <> component_id)
 );
 CREATE UNIQUE INDEX scenario_components_scenario_id_component_id ON scenario_components(scenario_id, component_id);
+CREATE INDEX idx_scenario_components_component ON scenario_components(component_id);
 
 CREATE TABLE scenario_changes (
   scenario_id INTEGER NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
@@ -394,6 +396,7 @@ CREATE TABLE goals (
 );
 CREATE UNIQUE INDEX goals_position ON goals(position);
 CREATE INDEX idx_goals_target_priority ON goals(target_on, priority);
+CREATE INDEX idx_goals_private_to ON goals(private_to);
 
 CREATE TABLE access_grants (
   id INTEGER NOT NULL PRIMARY KEY CHECK (id >= 0),
