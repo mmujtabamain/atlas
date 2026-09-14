@@ -7,10 +7,9 @@ use atlas_core::authz::Viewer;
 use atlas_core::forecast::Case;
 use atlas_core::ids::{EntityRef, ObjectRef, ScenarioId};
 use atlas_core::model::{Bracket, Household, TaxRulePack};
-use atlas_core::tax::{TaxAssessment, TaxEvent, YearStrategy, assess, multi_year_comparison};
+use atlas_core::tax::{TaxAssessment, YearStrategy, assess, multi_year_comparison};
 use atlas_core::{Disclosure, EngineResult, Money};
 use chrono::NaiveDate;
-use std::sync::Arc;
 use gpui_kit::component::{
     Sizable as _,
     tag::Tag,
@@ -18,7 +17,6 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::widgets::figure::ExplainedFigure;
-use crate::widgets::grid::{self, Cell, GridColumn, Row};
 use crate::widgets::labels;
 
 /// Which bracket schedule the extraction comparison uses.
@@ -46,41 +44,11 @@ pub struct TaxModel {
     /// Packs the viewer may see (company-only data is not a pack concern; all packs are household objects).
     pub packs: Vec<TaxRulePack>,
     /// The tax events as grid rows, formatted once (see `widgets::grid`).
-    pub event_rows: grid::Rows,
     /// The scenario the toggle applies (see [`super::overlay_scenario`]).
     pub overlay_scenario: Option<ScenarioId>,
 }
 
 /// Columns of the tax-events grid, in display order.
-pub const EVENT_COLUMNS: [GridColumn; 9] = [
-    GridColumn::new("cash", "Cash date", 104.),
-    GridColumn::new("accrued", "Accrued", 104.),
-    GridColumn::new("entity", "Entity", 128.),
-    GridColumn::new("rule", "Rule", 224.),
-    GridColumn::new("base", "Base", 300.),
-    GridColumn::new("base-amount", "Base amount", 128.).right(),
-    GridColumn::new("tax", "Tax", 128.).right(),
-    GridColumn::new("kind", "Kind", 256.),
-    GridColumn::new("account", "Account", 160.),
-];
-
-/// One tax event as a grid row.
-fn event_row(e: &TaxEvent, through: NaiveDate, household: &Household) -> Row {
-    let after = e.cash_date > through;
-    Row::new(vec![
-        Cell::text(e.cash_date.format("%d %b %y").to_string()),
-        Cell::muted(e.accrual_date.format("%d %b %y").to_string()),
-        Cell::muted(household.entity_name(e.entity)),
-        Cell::text(e.rule_name.clone()),
-        Cell::muted(e.base_label.clone()),
-        Cell::money(e.base_amount),
-        Cell::money(e.amount),
-        Cell::Chip(if after { format!("{} · payable after horizon", e.kind.label()).into() } else { e.kind.label().into() }),
-        Cell::muted(household.account(e.account).map(|a| a.name.clone()).unwrap_or_default()),
-    ])
-    .muted(after)
-}
-
 impl TaxModel {
     pub fn compute(household: &Household, viewer: Viewer, through: NaiveDate, scenario_on: bool, e05_amount: Money, e05_split: bool, e05_schedule: E05Schedule) -> EngineResult<Self> {
         log::info!("computing tax model through {through} scenario={scenario_on} e05 amount={} split={e05_split}", e05_amount.format());
@@ -129,9 +97,7 @@ impl TaxModel {
             .enumerate()
             .map(|(index, s)| ExplainedFigure::new(format!("e05-incremental-{index}"), format!("{} — incremental tax", s.name), &s.incremental, household, viewer))
             .collect();
-        let event_rows = Arc::new(assessment.events.iter().map(|e| event_row(e, assessment.through, household)).collect());
         Ok(TaxModel {
-            event_rows,
             assessment,
             scenario_on,
             by_entity,

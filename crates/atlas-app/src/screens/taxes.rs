@@ -22,7 +22,6 @@ use crate::app::AtlasApp;
 use crate::models::taxes::{TaxModel, verification_tag};
 use crate::nav::{Destination, Route};
 use crate::widgets::facts::facts;
-use crate::widgets::grid;
 use crate::widgets::record::{self, Lane};
 use crate::widgets::scope;
 use crate::widgets::states::{action_bar, columns, columns_leading, count_line, empty_state, fact, info_card, note, section};
@@ -44,7 +43,6 @@ fn inline_control(label: &'static str, control: impl IntoElement, cx: &App) -> i
 }
 
 pub fn render_taxes(app: &AtlasApp, model: &TaxModel, household: &Household, cx: &mut Context<AtlasApp>) -> AnyElement {
-    grid::sync(&app.grids.tax_events, &model.event_rows, cx);
     let header = workspace_header(Destination::RulesTaxes, Route::Taxes, vec![], cx);
     let packs: Vec<AnyElement> = model
         .packs

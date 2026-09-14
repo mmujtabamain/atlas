@@ -13,7 +13,7 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use gpui_kit::*;
 
-use crate::widgets::grid::{self, Cell, GridColumn, Row, Tone};
+use crate::widgets::grid::{self, Cell, GridColumn, MatchState, Row, Tone};
 
 /// What the timeline shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,12 +58,17 @@ pub struct TimelineModel {
 }
 
 /// Columns of the actual-transactions grid, in display order.
-pub const ACTUAL_COLUMNS: [GridColumn; 5] = [
-    GridColumn::new("date", "Date", 104.),
-    GridColumn::new("account", "Account", 200.),
-    GridColumn::new("description", "Description", 300.),
-    GridColumn::new("amount", "Signed amount", 140.).right(),
-    GridColumn::new("reconciled", "Reconciled to", 360.),
+///
+/// The widths add up to [`grid::CONTENT_WIDTH`]: a table of fixed columns
+/// that falls short leaves a headerless empty column at the trailing edge,
+/// which reads as a lane whose contents failed to load.
+pub const ACTUAL_COLUMNS: [GridColumn; 6] = [
+    GridColumn::new("date", "Date", 110.),
+    GridColumn::new("account", "Account", 240.),
+    GridColumn::new("description", "Description", 344.),
+    GridColumn::new("amount", "Signed amount", 150.).right(),
+    GridColumn::new("matched", "Matched", 150.),
+    GridColumn::new("reconciled", "Reconciled to", 300.),
 ];
 
 fn actual_rows(household: &Household, viewer: Viewer, account: Option<AccountId>) -> (grid::Rows, Vec<atlas_core::ids::TransactionId>) {
@@ -84,17 +89,24 @@ fn actual_rows(household: &Household, viewer: Viewer, account: Option<AccountId>
                     .links
                     .iter()
                     .filter(|l| l.transaction == t.id)
-                    .map(|l| {
-                        let name = household.series_by_id(l.series).map(|s| s.name.clone()).unwrap_or_else(|| l.series.to_string());
-                        format!("{} due {} — {}", name, l.original_due.format("%d %b %Y"), l.amount.format())
-                    })
+                    .map(|l| household.series_by_id(l.series).map(|s| s.name.clone()).unwrap_or_else(|| l.series.to_string()))
                     .collect();
+                // The state is the chip; the lane beside it names what the
+                // transaction was matched *to*. The amount and due date of
+                // each link are in the inspector the row opens, which is
+                // where a register's worth of them belongs.
+                let state = match crate::occurrence_entry::actual_unallocated(household, t.id) {
+                    _ if links.is_empty() => MatchState::Unreconciled,
+                    Some((_, unallocated)) if unallocated.is_positive() => MatchState::Partially,
+                    _ => MatchState::Fully,
+                };
                 Row::new(vec![
                     Cell::text(t.date.format("%d %b %y").to_string()),
                     Cell::muted(household.account(t.account).map(|a| a.name.clone()).unwrap_or_default()),
                     Cell::text(t.description.clone()),
                     Cell::money(t.amount),
-                    Cell::muted(if links.is_empty() { "Unreconciled".to_string() } else { links.join(" · ") }),
+                    Cell::Match(state),
+                    Cell::muted(if links.is_empty() { "—".to_string() } else { links.join(" · ") }),
                 ])
             })
             .collect(),
@@ -103,13 +115,19 @@ fn actual_rows(household: &Household, viewer: Viewer, account: Option<AccountId>
 }
 
 /// Columns of the occurrences grid, in display order.
+///
+/// Every header states its column in full: `Due · settles / availabl` and
+/// `Remaining (signed` were each a few pixels short, and a clipped header is
+/// worse than a shorter name, because the reader cannot tell what was cut.
+/// The widths add up to [`grid::CONTENT_WIDTH`] for the same reason
+/// [`ACTUAL_COLUMNS`] does.
 pub const OCCURRENCE_COLUMNS: [GridColumn; 6] = [
-    GridColumn::new("due", "Due · settles / available", 190.),
-    GridColumn::new("series", "Series · whose", 300.),
-    GridColumn::new("account", "Account", 200.),
-    GridColumn::new("expected", "Remaining (signed)", 160.).right(),
-    GridColumn::new("certainty", "Certainty", 130.),
-    GridColumn::new("status", "Status", 130.),
+    GridColumn::new("due", "Due · settles / available", 215.),
+    GridColumn::new("series", "Series · whose", 320.),
+    GridColumn::new("account", "Account", 254.),
+    GridColumn::new("expected", "Remaining (signed)", 180.).right(),
+    GridColumn::new("certainty", "Certainty", 160.),
+    GridColumn::new("status", "Status", 165.),
 ];
 
 /// One occurrence as a grid row: the strings the table paints.

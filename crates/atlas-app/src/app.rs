@@ -271,7 +271,6 @@ pub struct Grids {
     pub timeline_actuals: grid::Grid,
     pub forecast_values: grid::Grid,
     pub decision_values: grid::Grid,
-    pub tax_events: grid::Grid,
     pub rule_fees: grid::Grid,
 }
 
@@ -282,7 +281,6 @@ impl Grids {
             timeline_actuals: grid::new_selectable_grid(models::timeline::ACTUAL_COLUMNS.to_vec(), window, cx),
             forecast_values: grid::new_selectable_grid(models::projections::PATH_COLUMNS.to_vec(), window, cx),
             decision_values: grid::new_selectable_grid(models::decisions::PATH_COLUMNS.to_vec(), window, cx),
-            tax_events: grid::new_grid(models::taxes::EVENT_COLUMNS.to_vec(), window, cx),
             rule_fees: grid::new_grid(models::rules::FEE_COLUMNS.to_vec(), window, cx),
         }
     }

@@ -10,10 +10,10 @@ use gpui_kit::*;
 
 /// Columns of the result's `Values` table.
 pub const PATH_COLUMNS: [crate::widgets::grid::GridColumn; 4] = [
-    crate::widgets::grid::GridColumn::new("date", "Date", 130.),
-    crate::widgets::grid::GridColumn::new("baseline", "Baseline", 170.).right(),
-    crate::widgets::grid::GridColumn::new("purchase", "With the purchase", 190.).right(),
-    crate::widgets::grid::GridColumn::new("delta", "Difference", 150.).right(),
+    crate::widgets::grid::GridColumn::new("date", "Date", 274.),
+    crate::widgets::grid::GridColumn::new("baseline", "Baseline", 340.).right(),
+    crate::widgets::grid::GridColumn::new("purchase", "With the purchase", 340.).right(),
+    crate::widgets::grid::GridColumn::new("delta", "Difference", 340.).right(),
 ];
 
 #[derive(Clone, Debug)]

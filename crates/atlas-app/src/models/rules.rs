@@ -40,11 +40,11 @@ pub struct RulesModel {
 
 /// Columns of the fee-postings grid, in display order.
 pub const FEE_COLUMNS: [GridColumn; 5] = [
-    GridColumn::new("date", "Date", 104.),
-    GridColumn::new("account", "Account", 192.),
-    GridColumn::new("event", "Fee event", 420.),
-    GridColumn::new("amount", "Amount", 128.).right(),
-    GridColumn::new("rule", "Rule", 96.),
+    GridColumn::new("date", "Date", 120.),
+    GridColumn::new("account", "Account", 230.),
+    GridColumn::new("event", "Fee event", 470.),
+    GridColumn::new("amount", "Amount", 160.).right(),
+    GridColumn::new("rule", "Rule", 314.),
 ];
 
 /// One fee posting as a grid row.

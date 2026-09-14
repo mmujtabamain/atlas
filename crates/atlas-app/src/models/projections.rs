@@ -45,10 +45,10 @@ pub struct ProjectionModel {
 
 /// Columns of the `Values` table.
 pub const PATH_COLUMNS: [GridColumn; 4] = [
-    GridColumn::new("date", "Date", 120.),
-    GridColumn::new("balance", "Balance after posting", 190.).right(),
-    GridColumn::new("change", "Change", 150.).right(),
-    GridColumn::new("floor", "Against the floor", 200.),
+    GridColumn::new("date", "Date", 180.),
+    GridColumn::new("balance", "Balance after posting", 300.).right(),
+    GridColumn::new("change", "Change", 250.).right(),
+    GridColumn::new("floor", "Against the floor", 564.),
 ];
 
 impl ProjectionModel {
