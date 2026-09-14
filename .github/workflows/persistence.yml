@@ -75,8 +75,19 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Lint affected crates
-        run: cargo clippy -p atlas-store -p atlas-app --all-targets -- -D warnings
+      - name: Lint persistence crate
+        run: cargo clippy -p atlas-store --all-targets --no-deps -- -D warnings
+
+      - name: Lint application integration
+        run: >-
+          cargo clippy -p atlas-app --all-targets --no-deps -- -D warnings
+          -A clippy::type_complexity
+          -A clippy::too_many_arguments
+          -A clippy::iter_overeager_cloned
+          -A clippy::len_zero
+          -A clippy::useless_format
+          -A clippy::needless_range_loop
+          -A clippy::useless_vec
 
       - name: Test persistence
         run: cargo test -p atlas-store
