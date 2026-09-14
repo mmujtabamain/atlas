@@ -1,0 +1,23 @@
+[package]
+name = "gpui-shot"
+description = "Headless screenshot helper for gpui windows on Linux: Xvfb + lavapipe + X11 GetImage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "gpui-shot"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+# Pure-Rust X11 client: window discovery (_NET_WM_PID / title), GetImage capture,
+# XTEST pointer/keyboard injection for "special scenarios". No libxcb needed.
+x11rb = { version = "0.13", features = ["xtest"] }
+# PNG encoder only (the `image` crate would pull in a dozen decoders we do not need).
+png = "0.17"

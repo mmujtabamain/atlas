@@ -45,7 +45,8 @@ atlas/
 │                              reservations, timeline, forecast, provenance, authz, fixtures
 ├── crates/atlas-app/          gpui-kit window: shell, screens, explain sheet, alerting hook
 ├── docs/                      this plan + later design notes (mirrored to DevBench docs)
-├── scripts/shoot.sh           headless screenshots of every screen (uses ../gpui-lab/gpui-shot)
+├── tools/gpui-shot/           gpui-shot: headless screenshot helper (Xvfb + lavapipe + X11 GetImage)
+├── scripts/shoot.sh           headless screenshots of every screen (drives target/debug/gpui-shot)
 └── shots/                     PNG output (gitignored; shared via `devbench media put`)
 ```
 
@@ -217,6 +218,8 @@ Screenshots: `scripts/shoot.sh` (uses `../gpui-lab/target/debug/gpui-shot`).
 ## 6. Open decisions (asked in chat, not blocking)
 
 1. Baseline theme for Atlas: gpui-kit default light/dark (current) or one of the bundled JSON themes.
-2. Whether `gpui-lab/` moves into the repo (e.g. `atlas/tools/gpui-lab`) now that product code lives in `atlas/`.
+2. ~~Whether `gpui-lab/` moves into the repo now that product code lives in `atlas/`.~~ Decided: the
+   part the repo depends on, the `gpui-shot` helper, lives in `tools/gpui-shot` together with
+   `scripts/setup-linux-sysroot.sh`; the lab's demo window and its scratch material stay outside.
 3. `test-support` on the main gpui-kit dependency (single build on the small box) vs dev-dependency (double build) — kept on the main dependency until the box has headroom.
 4. Fixture currency and presentation: the plan's examples are unit-less whole numbers; the fixture uses `PKR`-style whole units and shows minor units only when non-zero.

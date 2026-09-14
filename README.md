@@ -17,6 +17,7 @@ data model, not a later feature (§7.1).
 | `crates/atlas-store` | Persistence: one SQLite file per household, backups, lock file. |
 | `crates/atlas-app` | The gpui-kit window: shell, screens, the explain sheet, data entry, failure alerting. Binary `atlas`. |
 | `docs/ui-implementation-plan.md` | Milestones M0–M11 and their tasks (mirrored on the DevBench board). |
+| `tools/gpui-shot` | `gpui-shot`, the headless screenshot helper the scripts below drive (Xvfb + lavapipe + X11 capture). A workspace member, never a dependency of the product. |
 | `scripts/shoot.sh` | Headless screenshots of every screen, light and dark, plus sheets and details (Linux box). |
 | `scripts/walkthrough.sh` | The captioned walkthrough video (`shots/walkthrough.mp4`) from a gpui-shot step sequence. |
 | `docs/handover.md` | What was built per milestone, how to run and test, known limits. |

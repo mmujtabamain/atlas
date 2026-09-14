@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/atlas-core", "crates/atlas-store", "crates/atlas-app"]
+# `tools/gpui-shot` is the headless screenshot helper the scripts in `scripts/`
+# drive (Xvfb + lavapipe + X11 GetImage); it is a workspace member so one
+# `cargo build` leaves it next to `atlas` in `target/debug/`. Never a dependency
+# of the product crates.
+members = ["crates/atlas-core", "crates/atlas-store", "crates/atlas-app", "tools/gpui-shot"]
 
 [workspace.package]
 version = "0.1.0"

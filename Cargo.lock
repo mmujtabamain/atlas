@@ -3137,6 +3137,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "70a09e0bf58aede45b8e7eed6e8d5d6552381c431014d62b349b0133008737bd"
 
 [[package]]
+name = "gpui-shot"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "png 0.17.16",
+ "x11rb",
+]
+
+[[package]]
 name = "granit-parser"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
