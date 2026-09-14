@@ -238,6 +238,6 @@ household (`rules` table; the tie-break policy in `meta`).
 `DEVBENCH_NOTIFY_URL` and `DEVBENCH_NOTIFY_TOKEN` are set in the deployment environment,
 posts panics and calculation failures to DevBench's notify endpoint
 (`POST $DEVBENCH_NOTIFY_URL/api/notify/`, bearer token, `{"text","level","source":"atlas-app"}`).
-Without them it degrades to local logging. (`alerting::status_label` was written for a status-bar
-reading that was never wired up and has no caller; the status bar does not say this today.)
+Without them it degrades to local logging. Settings states which of the two is in force, under
+Diagnostics.
 The token is a server-side secret: it is read from the environment only and never logged.

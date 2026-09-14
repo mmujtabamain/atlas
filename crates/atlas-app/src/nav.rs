@@ -47,7 +47,10 @@ impl Destination {
 
     pub fn icon(self) -> IconName {
         match self {
-            Destination::Today => IconName::Sun,
+            // Not a sun: the theme button in the title bar is a sun
+            // whenever the dark theme is on, and two suns in one chrome read
+            // as one control in two places.
+            Destination::Today => IconName::Gauge,
             Destination::Decisions => IconName::Target,
             Destination::Forecast => IconName::ChartLine,
             Destination::Accounts => IconName::Landmark,

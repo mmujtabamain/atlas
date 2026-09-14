@@ -679,8 +679,10 @@ impl AtlasApp {
     /// items act through; the shell renders the menu, so it cannot come from
     /// a `Context<AtlasApp>` here.
     pub fn render_household_menu(&self, this: WeakEntity<Self>) -> impl IntoElement {
-        let dirty = self.dirty;
-        let label = if dirty { format!("{} •", self.household.name) } else { self.household.name.clone() };
+        // No unsaved-changes dot: the title bar states the file's state in
+        // words immediately to the right of this menu, and a dot beside the
+        // household's name reads as a property of the household.
+        let label = self.household.name.clone();
         let save_label = self.save_command_label();
         DropdownButton::new("household-menu")
             .small()
