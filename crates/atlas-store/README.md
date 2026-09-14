@@ -42,6 +42,11 @@ generate a timestamped migration, review the SQL, regenerate checked-in SeaORM
 entities, update repository mappings and tests, and commit all related files.
 Do not edit an applied migration, `atlas.sum`, or generated entity file.
 
+`migrate-lint.sh` requires an Atlas login because current Atlas releases expose
+migration linting through Atlas Pro. CI authenticates the pinned CLI with the
+repository secret `ATLAS_CLOUD_TOKEN`; checksum validation, fresh-database
+application, and schema drift checks do not use a household database.
+
 Atlas CLI and `sea-orm-cli` are development tools. Neither is linked into or
 distributed with Atlas Financer. Production files are migrated only by the
 embedded Rust migrator.
