@@ -482,7 +482,9 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
     for (position, actual) in household.actuals.iter().enumerate() {
         execute(
             &transaction,
-            "INSERT INTO actual_transactions (id, position, transaction_date, account_id, amount_minor, currency, description, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO actual_transactions (id, position, transaction_date, account_id, amount_minor, currency, description, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, transaction_date=excluded.transaction_date, account_id=excluded.account_id, \
+             amount_minor=excluded.amount_minor, currency=excluded.currency, description=excluded.description, payload_json=excluded.payload_json",
             vec![
                 i64::from(actual.id.raw()).into(),
                 position_value(position)?,
@@ -534,7 +536,10 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
         execute(
             &transaction,
             "INSERT INTO rules (id, position, name, scope_json, trigger_json, action_json, priority, effective_from, effective_to, enabled, scenario_id, explanation, version, payload_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, name=excluded.name, scope_json=excluded.scope_json, trigger_json=excluded.trigger_json, \
+             action_json=excluded.action_json, priority=excluded.priority, effective_from=excluded.effective_from, effective_to=excluded.effective_to, \
+             enabled=excluded.enabled, scenario_id=excluded.scenario_id, explanation=excluded.explanation, version=excluded.version, payload_json=excluded.payload_json",
             vec![
                 i64::from(rule.id.raw()).into(),
                 position_value(position)?,
@@ -584,7 +589,9 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
     for (position, goal) in household.goals.iter().enumerate() {
         execute(
             &transaction,
-            "INSERT INTO goals (id, position, name, amount_minor, currency, target_on, priority, private_to, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO goals (id, position, name, amount_minor, currency, target_on, priority, private_to, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, name=excluded.name, amount_minor=excluded.amount_minor, currency=excluded.currency, \
+             target_on=excluded.target_on, priority=excluded.priority, private_to=excluded.private_to, payload_json=excluded.payload_json",
             vec![
                 i64::from(goal.id.raw()).into(),
                 position_value(position)?,
@@ -604,7 +611,11 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
         execute(
             &transaction,
             "INSERT INTO access_grants (id, position, object_json, grantee_json, purpose_json, disclosure, calculation_access, effective_from, effective_to, granted_by, granted_at, revoked_on, note, payload_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, object_json=excluded.object_json, grantee_json=excluded.grantee_json, \
+             purpose_json=excluded.purpose_json, disclosure=excluded.disclosure, calculation_access=excluded.calculation_access, \
+             effective_from=excluded.effective_from, effective_to=excluded.effective_to, granted_by=excluded.granted_by, granted_at=excluded.granted_at, \
+             revoked_on=excluded.revoked_on, note=excluded.note, payload_json=excluded.payload_json",
             vec![
                 i64::from(grant.id.raw()).into(),
                 position_value(position)?,
@@ -628,7 +639,10 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
     for (position, event) in household.audit.iter().enumerate() {
         execute(
             &transaction,
-            "INSERT INTO audit_events (id, position, occurred_at, actor_id, object_json, kind_json, summary, policy_version, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO audit_events (id, position, occurred_at, actor_id, object_json, kind_json, summary, policy_version, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, occurred_at=excluded.occurred_at, actor_id=excluded.actor_id, \
+             object_json=excluded.object_json, kind_json=excluded.kind_json, summary=excluded.summary, policy_version=excluded.policy_version, \
+             payload_json=excluded.payload_json",
             vec![
                 i64::from(event.id.raw()).into(),
                 position_value(position)?,
