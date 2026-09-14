@@ -71,7 +71,8 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
     for (position, person) in household.people.iter().enumerate() {
         execute(
             &transaction,
-            "INSERT INTO people (id, position, name, role, payload_json) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO people (id, position, name, role, payload_json) VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, name=excluded.name, role=excluded.role, payload_json=excluded.payload_json",
             vec![
                 i64::from(person.id.raw()).into(),
                 position_value(position)?,
@@ -86,7 +87,8 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
     for (position, company) in household.companies.iter().enumerate() {
         execute(
             &transaction,
-            "INSERT INTO companies (id, position, name, jurisdiction, payload_json) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO companies (id, position, name, jurisdiction, payload_json) VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, name=excluded.name, jurisdiction=excluded.jurisdiction, payload_json=excluded.payload_json",
             vec![
                 i64::from(company.id.raw()).into(),
                 position_value(position)?,
@@ -152,7 +154,14 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
             "INSERT INTO accounts (id, position, name, institution, kind, holder_kind, holder_company_id, currency, liquidity_json, \
              minimum_balance_minor, minimum_balance_currency, transfer_delay_days, tax_treatment, source_of_truth, last_reconciled, \
              withdrawals_permitted, include_in_household, settled_balance_minor, pending_balance_minor, payload_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, name=excluded.name, institution=excluded.institution, kind=excluded.kind, \
+             holder_kind=excluded.holder_kind, holder_company_id=excluded.holder_company_id, currency=excluded.currency, liquidity_json=excluded.liquidity_json, \
+             minimum_balance_minor=excluded.minimum_balance_minor, minimum_balance_currency=excluded.minimum_balance_currency, \
+             transfer_delay_days=excluded.transfer_delay_days, tax_treatment=excluded.tax_treatment, source_of_truth=excluded.source_of_truth, \
+             last_reconciled=excluded.last_reconciled, withdrawals_permitted=excluded.withdrawals_permitted, \
+             include_in_household=excluded.include_in_household, settled_balance_minor=excluded.settled_balance_minor, \
+             pending_balance_minor=excluded.pending_balance_minor, payload_json=excluded.payload_json",
             vec![
                 i64::from(account.id.raw()).into(),
                 position_value(position)?,
@@ -221,7 +230,10 @@ pub(crate) async fn save<C: ConnectionTrait + TransactionTrait>(
         execute(
             &transaction,
             "INSERT INTO reservations (id, position, name, account_id, amount_minor, currency, coverage_json, nested_in_id, hardness, purpose, released_on, payload_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position, name=excluded.name, account_id=excluded.account_id, amount_minor=excluded.amount_minor, \
+             currency=excluded.currency, coverage_json=excluded.coverage_json, nested_in_id=NULL, hardness=excluded.hardness, purpose=excluded.purpose, \
+             released_on=excluded.released_on, payload_json=excluded.payload_json",
             vec![
                 i64::from(reservation.id.raw()).into(),
                 position_value(position)?,
