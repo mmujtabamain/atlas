@@ -1133,6 +1133,9 @@ fn real_data_new_household_entry_save_and_reopen(cx: &mut TestAppContext) {
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         window.click("save-as-path", cx);
+        #[cfg(target_os = "macos")]
+        window.press("cmd-a", cx);
+        #[cfg(not(target_os = "macos"))]
         window.press("ctrl-a", cx);
         window.input(&path_text, cx);
         window.click("confirm-save-as", cx);
