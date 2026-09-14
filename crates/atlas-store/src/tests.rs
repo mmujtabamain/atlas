@@ -67,6 +67,47 @@ fn repeated_open_is_idempotent_and_checksum_drift_is_rejected() {
 }
 
 #[test]
+fn future_migration_is_rejected_without_mutating_database() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let file = HouseholdFile::new(directory.path().join("future.atlas.sqlite"));
+    file.acquire(OWNER, false).expect("lock acquired");
+    file.save_owned(&fixtures::plan_household(), OWNER)
+        .expect("household saved");
+    runtime().block_on(async {
+        let database = connection::connect(file.path(), false)
+            .await
+            .expect("database opened");
+        database
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                "INSERT INTO schema_migrations (version, applied_at, checksum) VALUES (?, ?, ?)",
+                [
+                    "99999999999999_future".into(),
+                    0_i64.into(),
+                    "future".into(),
+                ],
+            ))
+            .await
+            .expect("future migration inserted");
+        database.close().await.expect("database closed");
+    });
+    let before = std::fs::read(file.path()).expect("database snapshot read");
+    assert!(matches!(
+        file.load(),
+        Err(StoreError::IncompatibleVersion { .. })
+    ));
+    assert!(matches!(
+        file.load_read_only(),
+        Err(StoreError::IncompatibleVersion { .. })
+    ));
+    assert_eq!(
+        std::fs::read(file.path()).expect("database snapshot reread"),
+        before
+    );
+    file.release(OWNER).expect("lock released");
+}
+
+#[test]
 fn legacy_json_layout_upgrades_through_a_verified_replacement() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let file = HouseholdFile::new(directory.path().join("legacy.atlas.sqlite"));
