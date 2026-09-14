@@ -1,0 +1,85 @@
+name: Persistence
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/persistence.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/atlas-app/**"
+      - "crates/atlas-core/**"
+      - "crates/atlas-store/**"
+      - "docs/persistence-migrations-requirements.md"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/persistence.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/atlas-app/**"
+      - "crates/atlas-core/**"
+      - "crates/atlas-store/**"
+      - "docs/persistence-migrations-requirements.md"
+
+permissions:
+  contents: read
+
+jobs:
+  persistence:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - uses: ariga/setup-atlas@v0
+        with:
+          version: v1.3.4-fe654df-canary
+          cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
+
+      - name: Install pinned SeaORM generator
+        run: cargo install sea-orm-cli --version 1.1.20 --locked
+
+      - name: Validate and lint migrations
+        env:
+          TERM: xterm
+        run: crates/atlas-store/scripts/migrate-lint.sh
+
+      - name: Apply migrations to a fresh database
+        run: >-
+          atlas migrate apply
+          --env local
+          --config file://${{ github.workspace }}/crates/atlas-store/atlas.hcl
+          --url sqlite://${{ runner.temp }}/atlas-financer-ci.sqlite
+
+      - name: Require desired schema and migration head to match
+        working-directory: crates/atlas-store
+        run: |
+          schema_diff="$(atlas schema diff \
+            --from file://migrations \
+            --to file://schema.hcl \
+            --dev-url 'sqlite://atlas-financer-ci-diff?mode=memory&_fk=1')"
+          printf '%s\n' "$schema_diff"
+          test "$schema_diff" = "Schemas are synced, no changes to be made."
+
+      - name: Require generated entities to be current
+        env:
+          TERM: xterm
+        run: |
+          crates/atlas-store/scripts/generate-entities.sh
+          git diff --exit-code -- crates/atlas-store/src/entities
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint affected crates
+        run: cargo clippy -p atlas-store -p atlas-app --all-targets -- -D warnings
+
+      - name: Test persistence
+        run: cargo test -p atlas-store
+
+      - name: Test application lifecycle
+        run: cargo test -p atlas-app
