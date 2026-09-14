@@ -20,6 +20,7 @@ data model, not a later feature (§7.1).
 | `tools/gpui-shot` | `gpui-shot`, the headless screenshot helper the scripts below drive (Xvfb + lavapipe + X11 capture). A workspace member, never a dependency of the product. |
 | `scripts/shoot.sh` | Headless screenshots of every screen, light and dark, plus sheets and details (Linux box). |
 | `scripts/walkthrough.sh` | The captioned walkthrough video (`shots/walkthrough.mp4`) from a gpui-shot step sequence. |
+| `scripts/setup-linux-sysroot.sh` | Vendors the system libraries gpui needs into `.sysroot` on a Linux box without root (once per box). |
 | `docs/handover.md` | What was built per milestone, how to run and test, known limits. |
 | `plan.md` | The requirements document this repo implements. |
 
@@ -106,9 +107,10 @@ empty rather than prefilled.
 
 ### Linux DevBench box
 
-The box has no root and no GPU. `source ~/.cargo/env` first; the linker finds the vendored
-system libraries through `.cargo/config.toml` and the `.sysroot` symlink into
-`../gpui-lab/.sysroot` (built by `gpui-lab/scripts/setup-linux-sysroot.sh`). Keep
+The box has no root and no GPU; everything the build and the screenshots need is in this
+checkout. `source ~/.cargo/env` first, then once per box `scripts/setup-linux-sysroot.sh`: it
+downloads the system libraries gpui links against (`apt-get download`, no root) into
+`.sysroot/` (gitignored), which `.cargo/config.toml` hands to the linker and pkg-config. Keep
 `~/.cargo/config.toml` at `jobs = 2` (2 GiB memory cgroup). Screenshots:
 `scripts/shoot.sh [scenario]`, then `devbench media put shots/<name>.png`.
 

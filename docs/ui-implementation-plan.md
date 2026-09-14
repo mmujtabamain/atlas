@@ -208,10 +208,10 @@ Acceptance ids (E0x, V0xx) refer to `plan.md` §44–§45.
 
 macOS (Mujtaba): `cd atlas && cargo run --bin atlas` — plain toolchain, no extra setup.
 
-Linux DevBench box (agents): `source ~/.cargo/env`; the vendored `.sysroot` symlink points at
-`../gpui-lab/.sysroot` (created by `gpui-lab/scripts/setup-linux-sysroot.sh`), `.cargo/config.toml`
-wires it into the linker, and `~/.cargo/config.toml` keeps `jobs = 2` for the 2 GiB cgroup.
-Screenshots: `scripts/shoot.sh` (uses `../gpui-lab/target/debug/gpui-shot`).
+Linux DevBench box (agents): `source ~/.cargo/env`; `scripts/setup-linux-sysroot.sh` (once per
+box) vendors the system libraries gpui needs into `.sysroot`, `.cargo/config.toml` wires it into
+the linker, and `~/.cargo/config.toml` keeps `jobs = 2` for the 2 GiB cgroup. Screenshots:
+`scripts/shoot.sh` (builds and drives `tools/gpui-shot`, a workspace member).
 
 ---
 
