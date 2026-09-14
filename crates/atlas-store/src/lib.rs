@@ -378,6 +378,7 @@ impl HouseholdFile {
             .await
             .map_err(StoreError::db)?;
         database.close().await.map_err(StoreError::db)?;
+        self.remember_stamp()?;
         let backup = connection::connect_read_only(&target).await?;
         migrations::integrity_check(&backup).await?;
         backup.close().await.map_err(StoreError::db)?;
@@ -393,8 +394,25 @@ impl HouseholdFile {
     pub async fn restore_backup_async(&self, backup: &Path, owner: &str) -> StoreResult<()> {
         self.verify_process_lock(Some(owner))?;
         let source = connection::connect_read_only(backup).await?;
-        migrations::integrity_check(&source).await?;
-        source.close().await.map_err(StoreError::db)?;
+        let validation = async {
+            migrations::integrity_check(&source).await?;
+            if legacy::is_legacy(&source).await? {
+                legacy::load(&source).await?;
+                return Ok(());
+            }
+            if !legacy::table_exists(&source, "schema_migrations").await? {
+                return Err(StoreError::NotAHousehold);
+            }
+            let plan = migrations::plan(&source).await?;
+            if plan.pending.is_empty() {
+                repository::load(&source).await?;
+            }
+            Ok(())
+        }
+        .await;
+        let close = source.close().await.map_err(StoreError::db);
+        validation?;
+        close?;
         if self.exists() {
             self.backup_async().await?;
         }
