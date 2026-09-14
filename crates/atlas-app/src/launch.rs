@@ -30,6 +30,10 @@ pub struct Launch {
     pub height: f32,
     /// The route to open with (after the viewer is chosen).
     pub route: Route,
+    /// `--screen person` and the other detail slugs, which name a kind of
+    /// record rather than one record; resolved against the household once it
+    /// is open, since only then is there an id to open.
+    pub detail: Option<crate::nav::FirstDetail>,
     /// Which fixture person is looking (`a` or `b`) when given explicitly;
     /// `--viewer <person id>` for real households. Without it a household with
     /// several people opens behind the "Who is looking?" chooser.
@@ -56,6 +60,7 @@ impl Default for Launch {
             width: 1600.,
             height: 1000.,
             route: Route::Today,
+            detail: None,
             viewer: None,
             viewer_id: None,
             start: Start::Welcome,
@@ -89,9 +94,19 @@ impl Launch {
                 }
                 "--screen" => {
                     i += 1;
-                    match args.get(i).and_then(|s| Route::from_slug(s)) {
-                        Some(route) => launch.route = route,
-                        None => log::warn!("unknown --screen {:?}; known: {}", args.get(i), Route::slugs().join(", ")),
+                    match args.get(i) {
+                        Some(slug) if Route::from_slug(slug).is_some() => {
+                            launch.route = Route::from_slug(slug).expect("just checked");
+                            launch.detail = None;
+                        }
+                        Some(slug) if crate::nav::FirstDetail::from_slug(slug).is_some() => {
+                            launch.detail = crate::nav::FirstDetail::from_slug(slug);
+                        }
+                        other => log::warn!(
+                            "unknown --screen {other:?}; known: {}, {}",
+                            Route::slugs().join(", "),
+                            crate::nav::FirstDetail::slugs().join(", ")
+                        ),
                     }
                 }
                 "--viewer" => {
@@ -126,7 +141,7 @@ impl Launch {
                 "-h" | "--help" => {
                     println!(
                         "atlas [--theme light|dark] [--size WxH] [--screen {}] [--viewer a|b|<person id>] [--household FILE.atlas.sqlite | --new | --sample] [--as-of YYYY-MM-DD] [--owner NAME] [--take-over] [--perf-overlay]\n\nLogs go to stderr and logs.log (ATLAS_LOG_FILE=path|off, RUST_LOG=filter, ATLAS_LOG_FILE_FILTER=filter); the status bar shows gpui's frame timing.",
-                        Route::slugs().join("|")
+                        [Route::slugs(), crate::nav::FirstDetail::slugs()].concat().join("|")
                     );
                     std::process::exit(0);
                 }

@@ -7,28 +7,15 @@ use atlas_core::authz::Viewer;
 use atlas_core::ids::{AccountId, EntityRef, ObjectRef, ScenarioId, SeriesId};
 use atlas_core::model::Household;
 use atlas_core::timeline::{Direction, Occurrence, OccurrenceStatus};
-use atlas_core::vocab::Certainty;
-use atlas_core::{Disclosure, EngineResult, Money};
+use atlas_core::provenance::ProvNode;
+use atlas_core::vocab::{Certainty, MoneyClass, ResultStrength};
+use atlas_core::{Calc, Disclosure, EngineResult, Money};
 use std::sync::Arc;
 use chrono::NaiveDate;
-use gpui_kit::assets::IconName;
-use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    checkbox::Checkbox,
-    group_box::GroupBox, h_flex,
-    select::Select,
-    table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
-    v_flex,
-};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{AtlasApp, Grids, TimelineControls};
-use crate::widgets::grid::{self, Cell, GridColumn, Row, Tone};
-use crate::widgets::labels;
-use crate::widgets::master::page_header;
-use crate::widgets::table::{money_cell, muted_cell};
+use crate::widgets::figure::ExplainedFigure;
+use crate::widgets::grid::{self, Cell, GridColumn, MatchState, Row, Tone};
 
 /// What the timeline shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,8 +44,10 @@ pub struct TimelineModel {
     /// The occurrences as grid rows — every string formatted here, once, so
     /// the virtualised table only paints (see `widgets::grid`).
     pub rows: grid::Rows,
-    pub total_in: Money,
-    pub total_out: Money,
+    /// Still to come, each with the occurrences it is the sum of — so the
+    /// two headline figures explain themselves like every other screen's do.
+    pub total_in: ExplainedFigure,
+    pub total_out: ExplainedFigure,
     /// Series the viewer may see, in fixture order.
     pub series: Vec<SeriesId>,
     pub hidden_series: usize,
@@ -73,12 +62,17 @@ pub struct TimelineModel {
 }
 
 /// Columns of the actual-transactions grid, in display order.
-pub const ACTUAL_COLUMNS: [GridColumn; 5] = [
-    GridColumn::new("date", "Date", 104.),
-    GridColumn::new("account", "Account", 200.),
-    GridColumn::new("description", "Description", 300.),
-    GridColumn::new("amount", "Signed amount", 140.).right(),
-    GridColumn::new("reconciled", "Reconciled to", 360.),
+///
+/// The widths add up to [`grid::CONTENT_WIDTH`]: a table of fixed columns
+/// that falls short leaves a headerless empty column at the trailing edge,
+/// which reads as a lane whose contents failed to load.
+pub const ACTUAL_COLUMNS: [GridColumn; 6] = [
+    GridColumn::new("date", "Date", 110.),
+    GridColumn::new("account", "Account", 240.),
+    GridColumn::new("description", "Description", 344.),
+    GridColumn::new("amount", "Signed amount", 150.).right(),
+    GridColumn::new("matched", "Matched", 150.),
+    GridColumn::new("reconciled", "Reconciled to", 300.),
 ];
 
 fn actual_rows(household: &Household, viewer: Viewer, account: Option<AccountId>) -> (grid::Rows, Vec<atlas_core::ids::TransactionId>) {
@@ -99,17 +93,24 @@ fn actual_rows(household: &Household, viewer: Viewer, account: Option<AccountId>
                     .links
                     .iter()
                     .filter(|l| l.transaction == t.id)
-                    .map(|l| {
-                        let name = household.series_by_id(l.series).map(|s| s.name.clone()).unwrap_or_else(|| l.series.to_string());
-                        format!("{} due {} — {}", name, l.original_due.format("%d %b %Y"), l.amount.format())
-                    })
+                    .map(|l| household.series_by_id(l.series).map(|s| s.name.clone()).unwrap_or_else(|| l.series.to_string()))
                     .collect();
+                // The state is the chip; the lane beside it names what the
+                // transaction was matched *to*. The amount and due date of
+                // each link are in the inspector the row opens, which is
+                // where a register's worth of them belongs.
+                let state = match crate::occurrence_entry::actual_unallocated(household, t.id) {
+                    _ if links.is_empty() => MatchState::Unreconciled,
+                    Some((_, unallocated)) if unallocated.is_positive() => MatchState::Partially,
+                    _ => MatchState::Fully,
+                };
                 Row::new(vec![
                     Cell::text(t.date.format("%d %b %y").to_string()),
                     Cell::muted(household.account(t.account).map(|a| a.name.clone()).unwrap_or_default()),
                     Cell::text(t.description.clone()),
                     Cell::money(t.amount),
-                    Cell::muted(if links.is_empty() { "Unreconciled".to_string() } else { links.join(" · ") }),
+                    Cell::Match(state),
+                    Cell::muted(if links.is_empty() { "—".to_string() } else { links.join(" · ") }),
                 ])
             })
             .collect(),
@@ -118,13 +119,19 @@ fn actual_rows(household: &Household, viewer: Viewer, account: Option<AccountId>
 }
 
 /// Columns of the occurrences grid, in display order.
+///
+/// Every header states its column in full: `Due · settles / availabl` and
+/// `Remaining (signed` were each a few pixels short, and a clipped header is
+/// worse than a shorter name, because the reader cannot tell what was cut.
+/// The widths add up to [`grid::CONTENT_WIDTH`] for the same reason
+/// [`ACTUAL_COLUMNS`] does.
 pub const OCCURRENCE_COLUMNS: [GridColumn; 6] = [
-    GridColumn::new("due", "Due · settles / available", 190.),
-    GridColumn::new("series", "Series · whose", 300.),
-    GridColumn::new("account", "Account", 200.),
-    GridColumn::new("expected", "Remaining (signed)", 160.).right(),
-    GridColumn::new("certainty", "Certainty", 130.),
-    GridColumn::new("status", "Status", 130.),
+    GridColumn::new("due", "Due · settles / available", 215.),
+    GridColumn::new("series", "Series · whose", 320.),
+    GridColumn::new("account", "Account", 254.),
+    GridColumn::new("expected", "Remaining (signed)", 180.).right(),
+    GridColumn::new("certainty", "Certainty", 160.),
+    GridColumn::new("status", "Status", 165.),
 ];
 
 /// One occurrence as a grid row: the strings the table paints.
@@ -185,6 +192,47 @@ fn occurrence_row(o: &Occurrence, household: &Household) -> Row {
     .muted(!live)
 }
 
+/// One of the two `Still to come` figures: the live occurrences of one
+/// direction, each a term of the sum so the calculation sheet names the
+/// movements behind the number.
+///
+/// The class is expected-future, never a current one: these are amounts
+/// planned inside the window, not money in hand. The strength is a
+/// conditional path — every term rests on the series' own assumption, and a
+/// fulfilled or skipped occurrence contributes nothing at all.
+#[allow(clippy::too_many_arguments)]
+fn still_to_come(
+    occurrences: &[Occurrence],
+    direction: Direction,
+    currency: atlas_core::Currency,
+    id: &'static str,
+    label: &'static str,
+    household: &Household,
+    viewer: Viewer,
+) -> EngineResult<ExplainedFigure> {
+    let live: Vec<&Occurrence> = occurrences.iter().filter(|o| o.direction == direction && o.is_live()).collect();
+    let total = Money::sum(currency, live.iter().map(|o| o.remaining_expected()))?;
+    let terms: Vec<ProvNode> = live
+        .iter()
+        .map(|o| {
+            ProvNode::input(format!("{} due {}", o.label, o.due.format("%d %b %Y")), o.remaining_expected(), "planned movement")
+                .subject(ObjectRef::Series(o.series))
+                .money_class(MoneyClass::ExpectedFuture)
+        })
+        .collect();
+    let calc = Calc::new(
+        total,
+        ProvNode::sum(label, total, terms)
+            .money_class(MoneyClass::ExpectedFuture)
+            .strength(ResultStrength::ConditionalPath)
+            // The qualification the screen states beside the figures, so it
+            // travels with the number into the sheet and any copy of it.
+            .note("Before tax and fees. Transfers are not counted, and skipped, cancelled or fulfilled movements post nothing.")
+            .note("The remaining amount of each movement: what a partially fulfilled one still expects, not its original amount."),
+    );
+    Ok(ExplainedFigure::new(id, label, &calc, household, viewer))
+}
+
 impl TimelineModel {
     pub fn compute(household: &Household, viewer: Viewer, filter: TimelineFilter) -> EngineResult<Self> {
         log::info!("computing timeline through {} for viewer {} (scenario {:?})", filter.through, viewer.person, filter.scenario);
@@ -213,202 +261,12 @@ impl TimelineModel {
             .filter(|o| filter.status.is_none_or(|s| o.status == s))
             .collect();
         let currency = household.base_currency;
-        let total_in = Money::sum(currency, occurrences.iter().filter(|o| o.direction == Direction::Income && o.is_live()).map(|o| o.remaining_expected()))?;
-        let total_out = Money::sum(currency, occurrences.iter().filter(|o| o.direction == Direction::Expense && o.is_live()).map(|o| o.remaining_expected()))?;
+        let total_in = still_to_come(&occurrences, Direction::Income, currency, "upcoming-income", "Income", household, viewer)?;
+        let total_out = still_to_come(&occurrences, Direction::Expense, currency, "upcoming-expenses", "Expenses", household, viewer)?;
         let rows = Arc::new(occurrences.iter().map(|o| occurrence_row(o, household)).collect());
         let (actual_rows, actual_ids) = actual_rows(household, viewer, filter.actuals_account);
         let hidden_actuals = household.actuals.iter().filter(|t| !matches!(household.disclosure_for(viewer, ObjectRef::Account(t.account)), Disclosure::Full | Disclosure::SelectedFields)).count();
         let overlay_scenario = super::overlay_scenario(household, viewer);
         Ok(TimelineModel { filter, all_occurrences, occurrences, rows, total_in, total_out, series, hidden_series, actual_rows, actual_ids, hidden_actuals, overlay_scenario })
     }
-}
-
-pub fn render(model: &TimelineModel, controls: &TimelineControls, grids: &Grids, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
-    grid::sync(&grids.timeline_occurrences, &model.rows, cx);
-    grid::sync(&grids.timeline_actuals, &model.actual_rows, cx);
-    let theme = cx.theme();
-    let scenario_name = model.filter.scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone());
-    let overlay_on = model.filter.scenario.is_some();
-    let overlay_name = model.overlay_scenario.and_then(|id| household.scenario(id)).map(|s| s.name.clone());
-
-    v_flex()
-        .id("screen-timeline")
-        .test_support()
-        .w_full()
-        .gap_6()
-        .child(
-            h_flex().justify_between().items_start().gap_4().child(page_header(
-                "Timeline",
-                format!(
-                    "{} planned movements from {} through {}, each with its due, settlement and availability dates and whether it has been paid",
-                    model.occurrences.len(),
-                    household.as_of.format("%d %b %Y"),
-                    model.filter.through.format("%d %b %Y")
-                ),
-                cx,
-            ))
-            .child(
-                h_flex()
-                    .flex_shrink_0()
-                    .gap_2()
-                    .child(
-                        Button::new("new-series")
-                            .small()
-                            .outline()
-                            .icon(IconName::Plus)
-                            .label("New series…")
-                            .on_click(cx.listener(|this, _, window, cx| this.open_entry(crate::entry::Entry::Series, window, cx))),
-                    )
-                    .child(
-                        Button::new("new-actual")
-                            .small()
-                            .outline()
-                            .label("Record actual…")
-                            .on_click(cx.listener(|this, _, window, cx| this.open_entry(crate::entry::Entry::Actual, window, cx))),
-                    ),
-            ),
-        )
-        .child(
-            h_flex()
-                .flex_wrap()
-                .gap_3()
-                .items_end()
-                .child(labelled("Entity", Select::new(&controls.entity).small().w_48(), cx))
-                .child(labelled("Account", Select::new(&controls.account).small().w_56(), cx))
-                .child(labelled("Certainty", Select::new(&controls.certainty).small().w_40(), cx))
-                .child(labelled("Status", Select::new(&controls.status).small().w_40(), cx))
-                .child(labelled("Horizon", Select::new(&controls.horizon).small().w_48(), cx))
-                .when_some(overlay_name, |this, name| {
-                    this.child(
-                        Checkbox::new("timeline-buy-car")
-                            .label(format!("Overlay scenario “{name}”"))
-                            .checked(overlay_on)
-                            .on_change(cx.listener(|this, checked, _, cx| this.set_timeline_scenario(*checked, cx))),
-                    )
-                }),
-        )
-        .child(
-            GroupBox::new().id("timeline-occurrences").title(match &scenario_name {
-                Some(name) => format!("Occurrences — baseline + scenario “{name}”"),
-                None => "Occurrences — baseline".to_string(),
-            }).child(
-                v_flex()
-                    .gap_3()
-                    .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                        "Still to come: {} in · {} out (expected values, less what has already been received or paid). Skipped, cancelled and fulfilled rows post nothing.",
-                        model.total_in.format(),
-                        model.total_out.format()
-                    )))
-                    .child(if model.occurrences.is_empty() {
-                        div().text_sm().text_color(theme.muted_foreground).child("No occurrences match the filters in this window.").into_any_element()
-                    } else {
-                        grid::render("timeline-occurrences-grid", &grids.timeline_occurrences, cx).into_any_element()
-                    }),
-            ),
-        )
-        .child(render_series(model, household, cx))
-        .child(render_actuals(model, grids, cx))
-}
-
-fn labelled(label: &'static str, control: impl IntoElement, cx: &App) -> impl IntoElement {
-    v_flex().gap_1().child(div().text_xs().text_color(cx.theme().muted_foreground).child(label)).child(control)
-}
-
-fn render_series(model: &TimelineModel, household: &Household, cx: &mut Context<AtlasApp>) -> impl IntoElement {
-    let theme = cx.theme();
-    GroupBox::new().id("timeline-series").title("Event series").child(
-        v_flex()
-            .gap_3()
-            .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                "{} series generate the movements above{}. Edit one occurrence, change the amount from a date on, or end a series without recreating it.",
-                model.series.len(),
-                if model.hidden_series > 0 { format!(" ({} not disclosed to this viewer)", model.hidden_series) } else { String::new() }
-            )))
-            .child(
-                Table::new()
-                    .child(
-                        TableHeader::new().child(
-                            TableRow::new()
-                                .child(TableHead::new().w_64().flex_shrink_0().child("Series"))
-                                .child(TableHead::new().w_20().flex_shrink_0().child("Direction"))
-                                .child(TableHead::new().w_40().flex_shrink_0().text_right().child("Amount"))
-                                .child(TableHead::new().min_w_0().child("Recurrence · clocks"))
-                                .child(TableHead::new().w_64().flex_shrink_0().child("Changes and exceptions"))
-                                .child(TableHead::new().w_32().flex_shrink_0().child("Certainty"))
-                                .child(TableHead::new().w_24().flex_shrink_0().child("")),
-                        ),
-                    )
-                    .child(TableBody::new().children(model.series.iter().enumerate().filter_map(|(index, id)| {
-                        let series = household.series_by_id(*id)?;
-                        let id = *id;
-                        let mut edits: Vec<String> = series.amount_changes.iter().map(|c| format!("from {}: {}", c.effective_from.format("%d %b %Y"), c.amount.describe())).collect();
-                        edits.extend(series.exceptions.iter().map(|e| e.describe()));
-                        let clocks = format!(
-                            "{} · settles +{}d · available +{}d · order {}",
-                            series.recurrence.describe(),
-                            series.settlement_lag_days,
-                            series.availability_lag_days,
-                            series.intraday_order
-                        );
-                        Some(
-                            TableRow::new()
-                                .when(index % 2 == 1, |row| row.bg(theme.table_even))
-                                .child(
-                                    TableCell::new().w_64().flex_shrink_0().child(
-                                        v_flex()
-                                            .child(series.name.clone())
-                                            .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                                                "{} · {}",
-                                                household.entity_name(series.entity),
-                                                household.account(series.account).map(|a| a.name.clone()).unwrap_or_default()
-                                            ))),
-                                    ),
-                                )
-                                .child(muted_cell(series.direction.label(), cx).w_20().flex_shrink_0())
-                                .child(money_cell(series.amount.expected(), cx).w_40().flex_shrink_0())
-                                .child(muted_cell(clocks, cx).min_w_0().overflow_hidden())
-                                .child(muted_cell(if edits.is_empty() { "—".to_string() } else { edits.join(" · ") }, cx).w_64().flex_shrink_0().overflow_hidden())
-                                .child(TableCell::new().w_32().flex_shrink_0().child(labels::certainty_tag(series.certainty)))
-                                .child(
-                                    TableCell::new().w_24().flex_shrink_0().child(
-                                        h_flex()
-                                            .gap_1()
-                                            .child(
-                                                Button::new(SharedString::from(format!("edit-series-{}", id.raw())))
-                                                    .xsmall()
-                                                    .ghost()
-                                                    .icon(IconName::Pencil)
-                                                    .tooltip("Edit series…")
-                                                    .on_click(cx.listener(move |this, _, window, cx| this.open_series_editor(id, window, cx))),
-                                            )
-                                            .child(
-                                                Button::new(SharedString::from(format!("delete-series-{}", id.raw())))
-                                                    .xsmall()
-                                                    .ghost()
-                                                    .icon(IconName::Trash)
-                                                    .tooltip("Delete series")
-                                                    .on_click(cx.listener(move |this, _, window, cx| this.delete_object(ObjectRef::Series(id), window, cx))),
-                                            ),
-                                    ),
-                                ),
-                        )
-                    }))),
-            ),
-    )
-}
-
-fn render_actuals(model: &TimelineModel, grids: &Grids, cx: &App) -> impl IntoElement {
-    let theme = cx.theme();
-    GroupBox::new().id("timeline-actuals").title("Actual transactions").child(
-        v_flex()
-            .gap_3()
-            .child(div().text_xs().text_color(theme.muted_foreground).child(
-                "Once an actual transaction is linked to a planned occurrence, only the remainder of that occurrence stays in the forecast — nothing is counted twice.",
-            ))
-            .child(if model.actual_rows.is_empty() {
-                div().text_sm().text_color(theme.muted_foreground).child("No actual transactions visible to this viewer.").into_any_element()
-            } else {
-                grid::render("timeline-actuals-grid", &grids.timeline_actuals, cx).into_any_element()
-            }),
-    )
 }

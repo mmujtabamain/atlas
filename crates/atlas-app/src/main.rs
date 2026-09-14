@@ -19,11 +19,31 @@ fn main() {
     // The full Lucide catalog: the sidebar and screens use finance icons that
     // are not among the 101 default component icons.
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
+    let reopen_launch = launch.clone();
+    app.on_reopen(move |cx| {
+        let front_window = cx
+            .window_stack()
+            .and_then(|windows| windows.first().copied())
+            .or_else(|| cx.windows().first().copied());
+        if let Some(handle) = front_window {
+            let _ = handle.update(cx, |_, window, _| window.activate_window());
+        } else {
+            open_atlas_window(reopen_launch.clone(), cx);
+        }
+    });
     app.run(move |cx| {
         gpui_kit::init(cx);
+        #[cfg(target_os = "macos")]
+        atlas_app::macos::init(cx);
         launch.apply_theme(cx);
 
-        let bounds = Bounds::centered(None, size(px(launch.width), px(launch.height)), cx);
+        open_atlas_window(launch.clone(), cx);
+    });
+}
+
+fn open_atlas_window(launch: Launch, cx: &mut App) {
+    let bounds = Bounds::centered(None, size(px(launch.width), px(launch.height)), cx);
+    cx.spawn(async move |cx| {
         let mut window_options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             ..TitleBar::window_options()
@@ -32,22 +52,19 @@ fn main() {
             titlebar.title = Some("Atlas Financer".into());
         }
 
-        let launch = launch.clone();
-        cx.spawn(async move |cx| {
-            cx.open_window(window_options, |window, cx| {
-                if launch.perf_overlay {
-                    // gpui's own frame-time readout, painted straight into the
-                    // scene (no view invalidation, so it never causes a frame).
-                    window.set_debug_frame_overlay_mode(DebugFrameOverlayMode::Full);
-                    log::info!("perf: gpui frame-time overlay on (top-right: current draw, 1%/10% worst, max, frame count)");
-                }
-                // The shell creates the content view; Root must be the first
-                // view in every gpui-kit window.
-                let shell = cx.new(|cx| Shell::new(&launch, window, cx));
-                cx.new(|cx| Root::new(shell, window, cx))
-            })
-            .expect("failed to open the Atlas Financer window");
+        cx.open_window(window_options, |window, cx| {
+            if launch.perf_overlay {
+                // gpui's own frame-time readout, painted straight into the
+                // scene (no view invalidation, so it never causes a frame).
+                window.set_debug_frame_overlay_mode(DebugFrameOverlayMode::Full);
+                log::info!("perf: gpui frame-time overlay on (top-right: current draw, 1%/10% worst, max, frame count)");
+            }
+            // The shell creates the content view; Root must be the first
+            // view in every gpui-kit window.
+            let shell = cx.new(|cx| Shell::new(&launch, window, cx));
+            cx.new(|cx| Root::new(shell, window, cx))
         })
-        .detach();
-    });
+        .expect("failed to open the Atlas Financer window");
+    })
+    .detach();
 }

@@ -958,6 +958,12 @@ pub fn evaluate(household: &Household, plan: &PurchasePlan, at_least: NaiveDate)
             .minus(),
         ],
     )
+    // Conditional, not expected: this is cash on a future date under a
+    // purchase nobody has made yet and a funding strategy nobody has chosen,
+    // which is the same reading the forecast's own end-of-window figure has.
+    // Without a class the screen has nothing true to say and labels the
+    // leading figure `Kind not assigned`.
+    .money_class(MoneyClass::ConditionalFuture)
     .strength(ResultStrength::ScenarioTested)
     .note("Salary extraction, if any, enters as gross income on the same day and its withholding as a tax posting; the terms above are the decision's own figures, the total is the forecast's.");
     let after = |f: &BoundaryForecast| -> (Money, Option<NaiveDate>) {
@@ -1512,6 +1518,15 @@ mod tests {
         assert_eq!(decision.monthly_payment, monthly_payment(pkr(5_500_000), 36, 1_200));
         assert!(decision.metrics.iter().any(|m| m.name == "Immediate cash after purchase"));
         assert!(decision.immediate_cash.node().verify_sums().is_empty());
+        // A figure with no money class has nothing true to say about what
+        // kind of money it is, and the screen that leads with it can only
+        // print `Kind not assigned`. Conditional, because the purchase has
+        // not been made and the funding strategy has not been chosen.
+        assert_eq!(
+            decision.immediate_cash.node().money_class_label(),
+            Some(MoneyClass::ConditionalFuture),
+            "the immediate-cash figure states what kind of money it is"
+        );
         assert_eq!(decision.goals.len(), household.goals.len());
         assert!(!decision.grid.is_empty());
         assert!(decision.statement.render().contains("under the following assumptions"));

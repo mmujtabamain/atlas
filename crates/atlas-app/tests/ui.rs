@@ -1133,6 +1133,9 @@ fn real_data_new_household_entry_save_and_reopen(cx: &mut TestAppContext) {
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         window.click("save-as-path", cx);
+        #[cfg(target_os = "macos")]
+        window.press("cmd-a", cx);
+        #[cfg(not(target_os = "macos"))]
         window.press("ctrl-a", cx);
         window.input(&path_text, cx);
         window.click("confirm-save-as", cx);
@@ -1380,4 +1383,175 @@ fn long_registers_scroll_without_losing_the_header(cx: &mut TestAppContext) {
         assert!(window.find("upcoming-grid").visible(), "the virtualised grid is still painted after a scroll");
     })
     .unwrap();
+}
+
+// ----- Fact lists ----------------------------------------------------------------
+
+/// Settings renders every fact it states, including the ones underneath a
+/// value long enough to wrap.
+///
+/// This is the regression that shipped: Settings stated its facts with
+/// gpui-kit's `DescriptionList`, which wraps itself and each value cell in an
+/// unconditional `overflow_hidden()`. The list is sized from a measuring pass
+/// that does not see the wrap, so the height is short by however many lines
+/// the value actually took — the sentence is cut mid-word and every row below
+/// it is clipped out of the screen entirely. Settings was losing the log
+/// location and the frame-time readout, and the nine launch options rendered
+/// as an empty box. All of them are facts the screen is required to state.
+#[gpui_kit::test]
+fn settings_states_the_facts_below_a_wrapping_value(cx: &mut TestAppContext) {
+    let (handle, _app) = open_app(cx, sample(Route::Settings));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        // The failure-notification sentence is the long one; `Log` and
+        // `Frame-time readout` are what used to disappear beneath it.
+        for id in ["settings-version-facts-row-0", "settings-log-facts-row-0", "settings-log-facts-row-1"] {
+            assert!(present(window, id), "{id} renders");
+        }
+
+        // Each row sits below the previous one rather than on top of it,
+        // which is what a clipped list looks like when it does render.
+        let log = window.find("settings-log-facts-row-0").bounds();
+        let failures = window.find("settings-log-facts-row-1").bounds();
+        assert!(
+            failures.origin.y >= log.origin.y + log.size.height,
+            "the row after the log path is below it, not clipped into it"
+        );
+
+        // The launch options are a fact list inside an accordion, which is
+        // where the loss was total: the box drew with nothing in it.
+        for index in 0..9 {
+            let id: &'static str = &*Box::leak(format!("settings-launch-facts-row-{index}").into_boxed_str());
+            assert!(present(window, id), "launch option {index} renders");
+        }
+    })
+    .unwrap();
+}
+
+/// An accordion header opens the section under it.
+///
+/// gpui-kit's accordion is fully controlled: each item's open state is a prop
+/// and `on_toggle_click` reports what the new set should be. A screen that
+/// sets the prop and never wires the callback gets headers that look
+/// interactive and do nothing, because the next render puts the old state
+/// straight back. Settings' launch options and all four families of the
+/// figure-meanings sheet shipped that way.
+#[gpui_kit::test]
+fn an_accordion_header_opens_its_section(cx: &mut TestAppContext) {
+    // The trigger's `expanded` is the controlled state itself. The panel's
+    // height cannot be used instead: it is driven by a spring against the
+    // background executor's clock, which a test window never advances, so a
+    // panel that is open still measures zero here.
+    let (handle, _app) = open_app(cx, sample(Route::Settings));
+    let window = handle.into();
+    let expanded = |window: &mut gpui_kit::Window| window.within("settings-launch").find(("trigger", 0usize)).expanded();
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window), Some(false), "launch options start closed");
+        window.within("settings-launch").click(("trigger", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window), Some(true), "the header expanded the section");
+        window.within("settings-launch").click(("trigger", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window), Some(false), "and closes it again — the state follows the reader");
+    })
+    .unwrap();
+}
+
+/// Every family of the figure-meanings sheet opens on click.
+///
+/// The sheet sets each item's open state from the term it was opened on and
+/// never wired `on_toggle_click`, so all four accordions were inert: the
+/// header toggled the component's own idea of the state and the next render
+/// put it straight back.
+#[gpui_kit::test]
+fn the_figure_meanings_sheet_opens_its_sections(cx: &mut TestAppContext) {
+    let (handle, app) = open_app(cx, sample(Route::Today));
+    let window = handle.into();
+    cx.update_window(window, |_, window, cx| {
+        app.update(cx, |app, cx| app.open_figure_meanings(None, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+
+    let expanded = |window: &mut gpui_kit::Window, index: usize| {
+        window.within("meanings-money-classes").find(("trigger", index)).expanded()
+    };
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window, 1), Some(false), "nothing is open when the sheet is opened on no term");
+        window.within("meanings-money-classes").click(("trigger", 1usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window, 1), Some(true), "the header opened its term");
+        // `multiple` is on, so a second term opens beside the first.
+        window.within("meanings-money-classes").click(("trigger", 3usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(expanded(window, 1), Some(true), "the first stays open");
+        assert_eq!(expanded(window, 3), Some(true), "and the second opens too");
+    })
+    .unwrap();
+}
+
+// ----- Launching on a detail ------------------------------------------------------
+
+/// `--screen person` opens a person, not the screen the app falls back to.
+///
+/// `Route::slug` has always emitted `"person"`, `"company"`, `"account"`,
+/// `"rule"` and `"series-detail"`, but nothing turned one back into a route:
+/// `from_slug` returned `None`, the launch kept its default, and the window
+/// opened on Today while saying so only in the log. README promised these
+/// worked and the screenshot script had been photographing Today.
+#[gpui_kit::test]
+fn a_detail_slug_opens_a_record(cx: &mut TestAppContext) {
+    use atlas_app::nav::FirstDetail;
+
+    for (detail, expect) in [
+        (FirstDetail::Person, "a person"),
+        (FirstDetail::Company, "a company"),
+        (FirstDetail::Account, "an account"),
+        (FirstDetail::Series, "a series"),
+        (FirstDetail::Rule, "a rule"),
+    ] {
+        let launch = Launch { detail: Some(detail), ..sample(Route::Today) };
+        let (_handle, app) = open_app(cx, launch);
+        cx.update(|cx| {
+            let route = app.read(cx).route();
+            let opened = matches!(
+                route,
+                Route::Person(_) | Route::Company(_) | Route::Account(_) | Route::SeriesDetail(_) | Route::Rule(_)
+            );
+            assert!(opened, "--screen {detail:?} opens {expect}, not {route:?}");
+            assert_ne!(route, Route::Today, "and never silently falls back to Today");
+        });
+    }
+}
+
+/// An empty household has no record to open, so the register is the honest
+/// answer — not the default screen, and not a detail of nothing.
+#[gpui_kit::test]
+fn a_detail_slug_on_an_empty_household_opens_the_register(cx: &mut TestAppContext) {
+    use atlas_app::nav::FirstDetail;
+
+    let launch = Launch { start: Start::Empty, detail: Some(FirstDetail::Person), ..Launch::default() };
+    let (_handle, app) = open_app(cx, launch);
+    cx.update(|cx| assert_eq!(app.read(cx).route(), Route::People));
 }

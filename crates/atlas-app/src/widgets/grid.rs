@@ -86,6 +86,28 @@ pub enum Cell {
     Status(OccurrenceStatus),
     /// A small outlined tag.
     Chip(SharedString),
+    /// How much of a recorded transaction is matched to planned occurrences.
+    Match(MatchState),
+}
+
+/// Whether a recorded transaction has been matched to what it was expected to
+/// settle, and how far. Three states, not a yes/no: a part payment matches
+/// some of an occurrence and leaves the rest planned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchState {
+    Unreconciled,
+    Partially,
+    Fully,
+}
+
+impl MatchState {
+    pub fn label(self) -> &'static str {
+        match self {
+            MatchState::Unreconciled => "Unreconciled",
+            MatchState::Partially => "Partly matched",
+            MatchState::Fully => "Fully matched",
+        }
+    }
 }
 
 impl Cell {
@@ -110,6 +132,7 @@ impl Cell {
     pub fn as_text(&self) -> String {
         match self {
             Cell::Text(text) | Cell::Muted(text) | Cell::Chip(text) => text.to_string(),
+            Cell::Match(state) => state.label().to_string(),
             Cell::Stack { title, subtitle } => format!("{title} · {subtitle}"),
             Cell::Money { text, detail: Some(detail), .. } => format!("{text} ({detail})"),
             Cell::Money { text, .. } => text.to_string(),
@@ -156,6 +179,13 @@ impl Cell {
                 _ => Tag::secondary().xsmall().outline().child(status.label()),
             }),
             Cell::Chip(text) => centred(Tag::secondary().xsmall().outline().child(text.clone())),
+            // Unmatched is not an error — a transaction is unreconciled until
+            // somebody matches it — so it is a plain tag, and only the state
+            // that leaves work half-done is warned about.
+            Cell::Match(state) => centred(match state {
+                MatchState::Partially => Tag::warning().xsmall().outline().child(state.label()),
+                _ => Tag::secondary().xsmall().outline().child(state.label()),
+            }),
         }
     }
 }
@@ -262,6 +292,15 @@ pub fn sync(grid: &Grid, rows: &Rows, cx: &mut App) {
     grid.update(cx, |state, _| state.delegate_mut().rows = rows);
 }
 
+/// The width a register's columns are laid out to fill: the content column of
+/// the default 1600px window, less the sidebar and the page's own padding.
+///
+/// A `DataTable` column is a fixed width — there is no grow — so a set of
+/// columns that falls short of this leaves a headerless empty column at the
+/// trailing edge, and one that exceeds it makes the table scroll sideways.
+/// Narrower windows scroll, which is the honest behaviour for a register.
+pub const CONTENT_WIDTH: f32 = 1294.;
+
 /// Rows shown before the grid scrolls inside itself.
 pub const MAX_VISIBLE_ROWS: usize = 11;
 
@@ -272,4 +311,37 @@ pub fn render(id: &'static str, grid: &Grid, cx: &App) -> impl IntoElement {
     let rows = grid.read(cx).delegate().rows().len();
     let height = ROW_HEIGHT * (rows.clamp(1, MAX_VISIBLE_ROWS) + 1) as f32 + px(2.);
     div().id(id).test_support().w_full().h(height).flex_none().child(DataTable::new(grid).stripe(true).with_size(Size::Size(ROW_HEIGHT)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CONTENT_WIDTH;
+    use crate::models;
+
+    /// Every register fills the content column exactly.
+    ///
+    /// A `DataTable` column is a fixed width and nothing grows, so a set that
+    /// falls short leaves a headerless empty column at the trailing edge —
+    /// which reads as a lane whose contents failed to load — and a set that
+    /// overruns pushes its last columns off the side, where a reader has no
+    /// reason to look for them. Upcoming and Actuals each left about 190px
+    /// empty and Forecast · Values left 630px.
+    #[test]
+    fn every_register_fills_the_content_column() {
+        let sets: [(&str, &[crate::widgets::grid::GridColumn]); 5] = [
+            ("Activity · Upcoming", &models::timeline::OCCURRENCE_COLUMNS),
+            ("Activity · Actuals", &models::timeline::ACTUAL_COLUMNS),
+            ("Forecast · Values", &models::projections::PATH_COLUMNS),
+            ("Decisions · Purchase values", &models::decisions::PATH_COLUMNS),
+            ("Rules · Fees", &models::rules::FEE_COLUMNS),
+        ];
+        for (name, columns) in sets {
+            let total: f32 = columns.iter().map(|c| c.width).sum();
+            assert_eq!(
+                total, CONTENT_WIDTH,
+                "{name}: its columns come to {total}px in a {CONTENT_WIDTH}px table, so it {}",
+                if total < CONTENT_WIDTH { "leaves an empty lane at the trailing edge" } else { "pushes its last columns out of sight" }
+            );
+        }
+    }
 }

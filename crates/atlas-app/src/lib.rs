@@ -36,6 +36,8 @@ pub mod entry;
 pub mod launch;
 pub mod lifecycle;
 pub mod logging;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod models;
 pub mod nav;
 pub mod occurrence_entry;

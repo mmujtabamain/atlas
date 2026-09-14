@@ -23,12 +23,22 @@ use crate::app::AtlasApp;
 use crate::entry::Entry;
 use crate::models::entities::EntityModels;
 use crate::nav::{Destination, Route};
-use crate::widgets::figure::card;
 use crate::widgets::labels;
 use crate::widgets::record::{self, Lane};
-use crate::widgets::states::{about_access_button, count_line, empty_state, fact, lanes, none_disclosed, note, section};
+use crate::widgets::states::{about_access_button, action_bar, columns, columns_leading, count_line, empty_state, info_card, none_disclosed, note, section};
 
-const LANES: [(&str, Lane); 4] = [("Company / jurisdiction", Lane::fixed(300.)), ("Disclosure", Lane::fixed(150.)), ("Business cash", Lane::money(180.)), ("Cash ceiling before extraction costs", Lane::flex())];
+// The register's lanes, run out to the full width. The two money lanes are
+// right-aligned at the trailing edge with the row's `open` chevron after them,
+// and the identity lane — the only one with long text — takes the slack. Before
+// this every lane was fixed and the last one flexible, so the ceiling, which is
+// what this register is read for, floated in the middle of the window.
+const LANES: [(&str, Lane); 5] = [
+    ("Company / jurisdiction", Lane::flex()),
+    ("Disclosure", Lane::fixed(130.)),
+    ("Business cash", Lane::money(240.)),
+    ("Cash ceiling before extraction costs", Lane::money(300.)),
+    ("", Lane::fixed(32.)),
+];
 
 pub fn render_list(app: &AtlasApp, models: &EntityModels, household: &Household, cx: &mut Context<AtlasApp>) -> AnyElement {
     let header = workspace_header(
@@ -45,7 +55,11 @@ pub fn render_list(app: &AtlasApp, models: &EntityModels, household: &Household,
             let company = household.company(model.id)?;
             let id = model.id;
             let full = matches!(model.disclosure, Disclosure::Full | Disclosure::SelectedFields);
-            let cash: AnyElement = if full { model.cash.compact().into_any_element() } else { record::muted("Not disclosed", cx) };
+            // The terms are dropped in the register for the reason
+            // `Figure::terms` records: they do not fit a money lane. The lane
+            // headers carry the qualifier that matters here — a ceiling is
+            // before extraction costs — and the `ⓘ` still opens each chain.
+            let cash: AnyElement = if full { model.cash.compact().terms(false).into_any_element() } else { record::muted("Not disclosed", cx) };
             Some(record::row(
                 SharedString::from(format!("company-{}", id.raw())),
                 selected == Some(id),
@@ -53,25 +67,39 @@ pub fn render_list(app: &AtlasApp, models: &EntityModels, household: &Household,
                     (LANES[0].1, record::stack(company.name.clone(), company.jurisdiction.clone(), cx)),
                     (LANES[1].1, h_flex().child(labels::disclosure_tag(model.disclosure)).into_any_element()),
                     (LANES[2].1, cash),
-                    (LANES[3].1, h_flex().child(model.ceiling.compact()).into_any_element()),
+                    (LANES[3].1, model.ceiling.compact().terms(false).into_any_element()),
+                    (
+                        LANES[4].1,
+                        Button::new(SharedString::from(format!("company-open-{}", id.raw())))
+                            .xsmall()
+                            .ghost()
+                            .compact()
+                            .icon(IconName::ChevronRight)
+                            .tooltip("Open company")
+                            .on_click(cx.listener(move |this, _, _, cx| this.navigate(Route::Company(id), cx)))
+                            .into_any_element(),
+                    ),
                 ],
-                move |_, _, cx| crate::app::with_app(cx, |app, cx| app.select_company(id, cx)),
+                cx.listener(move |this, _, _, cx| this.select_company(id, cx)),
             ))
         })
         .collect();
     let visible = models.companies.len();
     let total = household.companies.len();
-    let theme = cx.theme();
+
+    // The foot of the register: what is selected on the left, what can be done
+    // with it on the right, ruled off from the rows above.
     let footer = selected.and_then(|id| household.company(id)).map(|company| {
         let id = company.id;
-        h_flex()
-            .w_full()
-            .justify_end()
-            .items_center()
-            .gap_2()
-            .child(div().flex_1().text_xs().text_color(theme.muted_foreground).child(format!("Selected: {}", company.name)))
-            .child(Button::new("company-open").small().outline().label("Open company").on_click(cx.listener(move |this, _, _, cx| this.navigate(Route::Company(id), cx))))
+        action_bar(
+            "companies-footer",
+            vec![note(format!("{} · {}", company.name, company.jurisdiction), cx).into_any_element()],
+            vec![Button::new("company-open").small().outline().label("Open company").on_click(cx.listener(move |this, _, _, cx| this.navigate(Route::Company(id), cx))).into_any_element()],
+            cx,
+        )
+        .into_any_element()
     });
+
     let body: AnyElement = if total == 0 {
         let action = if household.people.is_empty() {
             Button::new("companies-add-person").small().outline().label("Add person…").on_click(cx.listener(|this, _, window, cx| this.open_entry(Entry::Person, window, cx))).into_any_element()
@@ -91,10 +119,24 @@ pub fn render_list(app: &AtlasApp, models: &EntityModels, household: &Household,
         .w_full()
         .gap_6()
         .child(header)
-        .child(count_line(visible, total, "companies", cx))
+        // The honest visible / total / not-disclosed count, with the rule that
+        // governs every figure under it on the same line. The mockup reduced
+        // this to `1 visible company` and dropped the not-disclosed count,
+        // which the privacy contract requires; the count line stays as it is.
+        .child(h_flex().w_full().gap_1().items_center().child(count_line(visible, total, "companies", cx)).child(note("· Business cash is separate from household cash", cx)))
         .child(body)
+        // What a ceiling is, stated once for the whole register: a standing
+        // fact, so a bordered card rather than a muted trailing sentence.
+        .when(visible > 0, |this| {
+            this.child(info_card(
+                "companies-ceiling",
+                IconName::Gavel,
+                "A cash ceiling is not permission to withdraw",
+                "The ceiling is what the company's cash could bear before extraction costs, and it is never money available to the household. A lawful withdrawal also depends on route-specific rules and legal capacity. A summary viewer sees the ceiling only.",
+                cx,
+            ))
+        })
         .children(footer)
-        .child(note("Cash ceilings are before extraction costs and are never money available to the household. A summary viewer sees the ceiling only.", cx))
         .into_any_element()
 }
 
@@ -111,12 +153,15 @@ pub fn render_detail(app: &AtlasApp, id: CompanyId, models: &EntityModels, house
     let viewer = app.viewer();
     let full = matches!(model.disclosure, Disclosure::Full | Disclosure::SelectedFields);
     let owner = household.policy_for(ObjectRef::Company(id)).is_some_and(|p| p.full_access.contains(&viewer.person));
-    let subtitle = h_flex()
-        .gap_2()
-        .items_center()
-        .child(div().text_sm().text_color(cx.theme().muted_foreground).child(format!("Jurisdiction {}", company.jurisdiction)))
-        .child(labels::disclosure_tag(model.disclosure))
-        .child(Tag::secondary().xsmall().outline().child("Separate legal entity"))
+    let muted = cx.theme().muted_foreground;
+    // One meta line of the facts that identify the company, with the access
+    // tags on the line beneath it rather than sharing a wrap row with it
+    // (`docs/perf.md` §3.3) — the same shape the account detail uses.
+    let subtitle = v_flex()
+        .w_full()
+        .gap_1()
+        .child(div().w_full().text_sm().text_color(muted).child(format!("Jurisdiction {}", company.jurisdiction)))
+        .child(h_flex().w_full().gap_2().items_center().child(labels::disclosure_tag(model.disclosure)).child(Tag::secondary().xsmall().outline().child("Separate legal entity")))
         .into_any_element();
     let mut actions: Vec<AnyElement> = Vec::new();
     if full {
@@ -134,10 +179,12 @@ pub fn render_detail(app: &AtlasApp, id: CompanyId, models: &EntityModels, house
         );
     }
     let header = detail_header(Destination::Household, Route::Companies, "Companies", company.name.clone(), Some(subtitle), actions, cx);
-    let theme = cx.theme();
 
     if !full {
         // The planning-safe summary: identity and the ceiling, nothing else.
+        // The ceiling leads because it is the only figure there is; the card
+        // beside it names the *categories* withheld, never a withheld value,
+        // and nothing on this screen calls the ceiling business cash.
         return v_flex()
             .id("screen-company")
             .test_support()
@@ -146,14 +193,26 @@ pub fn render_detail(app: &AtlasApp, id: CompanyId, models: &EntityModels, house
             .child(header)
             .child(
                 section("company-summary", "What this viewer may see")
-                    .child(card(model.ceiling.leading()))
-                    .child(note("Bank balances, revenue, employee pay, payroll and tax records are not disclosed to this viewer. The owner sees the complete company ledger.", cx))
-                    .child(h_flex().child(about_access_button("company-about-access"))),
+                    .child(columns_leading(
+                        0.4,
+                        [
+                            model.ceiling.leading().into_any_element(),
+                            info_card(
+                                "company-summary-access",
+                                IconName::ShieldCheck,
+                                "Only this planning-safe total is disclosed",
+                                "Bank balances, revenue, employee pay, payroll and tax records are not disclosed to this viewer. The owner sees the complete company ledger.",
+                                cx,
+                            ),
+                        ],
+                    ))
+                    .child(note("A ceiling before extraction costs is not household cash, and it does not establish what may lawfully be withdrawn.", cx)),
             )
+            .child(action_bar("company-summary-commands", vec![about_access_button("company-about-access").into_any_element()], vec![], cx))
             .into_any_element();
     }
 
-    let owners: Vec<AnyElement> = company.owners.iter().map(|o| fact(household.entity_name(EntityRef::Person(o.person)), format!("{}% owner", o.basis_points / 100), cx).into_any_element()).collect();
+    let owners: Vec<String> = company.owners.iter().map(|o| format!("{} · {}% owner", household.entity_name(EntityRef::Person(o.person)), o.basis_points / 100)).collect();
     let roles: Vec<String> = company.roles.iter().map(|r| format!("{} — {}", household.entity_name(EntityRef::Person(r.person)), r.role.label())).collect();
     let constraints: Vec<String> = company.constraints.iter().map(|c| c.describe()).collect();
 
@@ -212,64 +271,74 @@ pub fn render_detail(app: &AtlasApp, id: CompanyId, models: &EntityModels, house
         .w_full()
         .gap_6()
         .child(header)
+        // Three readings of one company's cash, as one even grid across the
+        // width. None of the three is emphasised: the ceiling is the figure the
+        // screen is read for, but an emphasised ceiling reads as an amount that
+        // may be taken out, which is exactly what it is not.
         .child(
             section("company-cash", "Cash position")
                 .description("Business cash, what it is already committed to, and the ceiling the cash could bear before extraction costs. None of it is household cash.")
-                .action(
-                    h_flex()
-                        .gap_2()
-                        .child(Button::new("company-view-money").small().ghost().icon(IconName::Landmark).label("View money").on_click(cx.listener(move |this, _, _, cx| this.open_earmarks_for_boundary(Boundary::Company(id), cx))))
-                        .child(Button::new("company-view-forecast").small().ghost().icon(IconName::ChartLine).label("View forecast").on_click(cx.listener(move |this, _, _, cx| this.open_forecast_for_boundary(Boundary::Company(id), cx)))),
-                )
-                .child(lanes([card(model.cash.standard()).into_any_element(), card(model.committed.standard()).into_any_element(), card(model.ceiling.leading()).into_any_element()])),
+                .child(columns([model.cash.standard().into_any_element(), model.committed.standard().into_any_element(), model.ceiling.standard().into_any_element()])),
         )
+        // The statement leads; the caveat that makes it a statement and not a
+        // number sits beside it, and the one command that follows from it is at
+        // the trailing edge of the heading.
         .child(
             section("company-extractable", "Lawfully extractable cash")
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(div().id("company-extractable-value").test_support().text_lg().font_weight(FontWeight::SEMIBOLD).child("Not yet determinable"))
-                        .child(labels::strength_tag(model.extractable.calc.node().result_strength())),
-                )
-                .child(note("This needs route-specific rules and legal capacity, not cash alone. Each route — salary, permitted dividend, documented reimbursement, shareholder-loan repayment — is evaluated separately when a purchase names it; the ceiling above is never an amount that may be taken out.", cx))
-                .child(h_flex().child(Button::new("company-test-purchase").small().outline().icon(IconName::Target).label("Test a purchase with this company").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Purchase, cx))))),
+                .divider(true)
+                .action(Button::new("company-test-purchase").small().outline().icon(IconName::Target).label("Test a purchase with this company").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Purchase, cx))))
+                .child(columns_leading(
+                    0.35,
+                    [
+                        v_flex()
+                            .w_full()
+                            .gap_2()
+                            .child(div().id("company-extractable-value").test_support().text_lg().font_weight(FontWeight::SEMIBOLD).child("Not yet determinable"))
+                            .child(h_flex().child(labels::strength_tag(model.extractable.calc.node().result_strength())))
+                            .into_any_element(),
+                        div()
+                            .w_full()
+                            .text_xs()
+                            .text_color(muted)
+                            .child("This needs route-specific rules and legal capacity, not cash alone. Each route — salary, permitted dividend, documented reimbursement, shareholder-loan repayment — is evaluated separately when a purchase names it; the ceiling above is never an amount that may be taken out.")
+                            .into_any_element(),
+                    ],
+                )),
         )
-        .child(
-            h_flex()
-                .w_full()
-                .gap_8()
-                .items_start()
-                .child(
-                    v_flex().flex_1().min_w_0().child(
-                        section("company-owners", "Owners, shares and roles")
-                            .child(lanes(owners))
-                            .child(if roles.is_empty() { note("No company role assigned.", cx).into_any_element() } else { v_flex().gap_0p5().text_sm().children(roles.into_iter().map(|r| div().child(r))).into_any_element() })
-                            .child(note("A company role gives no household access, and household membership gives no company access.", cx)),
-                    ),
-                )
-                .child(
-                    v_flex().flex_1().min_w_0().child(
-                        section("company-constraints", "Constraints")
-                            .description("Each one limits what the cash may be used for; the ceiling honours all of them.")
-                            .child(if constraints.is_empty() { note("No constraint recorded.", cx).into_any_element() } else { v_flex().gap_1().text_sm().children(constraints.into_iter().map(|c| h_flex().gap_2().child("•").child(c))).into_any_element() }),
-                    ),
-                ),
-        )
-        .child(section("company-accounts", "Accounts and active earmarks").child(if account_rows.is_empty() { note("No company account yet.", cx).into_any_element() } else { record::list("company-accounts-list", record::header(&account_lanes, cx), account_rows).into_any_element() }))
+        .child(columns([
+            section("company-owners", "Owners, shares and roles")
+                .child(if owners.is_empty() { note("No owner recorded.", cx).into_any_element() } else { v_flex().w_full().gap_0p5().text_sm().children(owners.into_iter().map(|o| div().w_full().child(o))).into_any_element() })
+                .child(if roles.is_empty() { note("No company role assigned.", cx).into_any_element() } else { v_flex().w_full().gap_0p5().text_sm().children(roles.into_iter().map(|r| div().w_full().child(r))).into_any_element() })
+                .child(note("A company role gives no household access, and household membership gives no company access.", cx))
+                .into_any_element(),
+            section("company-constraints", "Constraints")
+                .description("Each one limits what the cash may be used for; the ceiling honours all of them.")
+                .child(if constraints.is_empty() { note("No constraint recorded.", cx).into_any_element() } else { v_flex().w_full().gap_1().text_sm().children(constraints.into_iter().map(|c| h_flex().w_full().gap_2().items_start().child("•").child(div().flex_1().min_w_0().child(c)))).into_any_element() })
+                .into_any_element(),
+        ]))
+        // Ruled off: what the company holds is a different question from who
+        // owns it and what limits its cash.
+        .child(section("company-accounts", "Accounts and active earmarks").divider(true).child(if account_rows.is_empty() { note("No company account yet.", cx).into_any_element() } else { record::list("company-accounts-list", record::header(&account_lanes, cx), account_rows).into_any_element() }))
         .child(
             section("company-employees", "Employees and payroll")
                 .description("Payroll is planned through the company's series; employment changes are modelled in a scenario, not edited here.")
                 .child(if employee_rows.is_empty() { note("No employees.", cx).into_any_element() } else { record::list("company-employees-list", record::header(&employee_lanes, cx), employee_rows).into_any_element() }),
         )
-        .child(
-            h_flex()
-                .gap_2()
-                .flex_wrap()
-                .child(Button::new("company-tax-details").small().ghost().icon(IconName::Gavel).label("Tax details").on_click(cx.listener(move |this, _, window, cx| this.open_taxes_for_entity(EntityRef::Company(id), window, cx))))
-                .child(Button::new("company-extraction").small().ghost().label("Extraction timing illustration").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Extraction, cx))))
-                .child(Button::new("company-policy").small().ghost().label("View policy").on_click(cx.listener(move |this, _, _, cx| this.open_policy_for(ObjectRef::Company(id), cx))))
-                .child(div().text_xs().text_color(theme.muted_foreground).child("The illustration is a bounded tax comparison, not a legal or cash evaluation.")),
-        )
+        .child(div().w_full().text_xs().text_color(muted).child("The extraction timing illustration is a bounded tax comparison, not a legal or cash evaluation."))
+        // The screen's own commands, ruled off at its foot: where this company's
+        // money can be inspected on the left, what governs access to it on the
+        // right. They were a wrapping row of three peers with a sentence caught
+        // between them.
+        .child(action_bar(
+            "company-commands",
+            vec![
+                Button::new("company-view-money").small().ghost().icon(IconName::Landmark).label("View money").on_click(cx.listener(move |this, _, _, cx| this.open_earmarks_for_boundary(Boundary::Company(id), cx))).into_any_element(),
+                Button::new("company-view-forecast").small().ghost().icon(IconName::ChartLine).label("View forecast").on_click(cx.listener(move |this, _, _, cx| this.open_forecast_for_boundary(Boundary::Company(id), cx))).into_any_element(),
+                Button::new("company-tax-details").small().ghost().icon(IconName::Gavel).label("Tax details").on_click(cx.listener(move |this, _, window, cx| this.open_taxes_for_entity(EntityRef::Company(id), window, cx))).into_any_element(),
+                Button::new("company-extraction").small().ghost().label("Extraction timing illustration").on_click(cx.listener(|this, _, _, cx| this.navigate(Route::Extraction, cx))).into_any_element(),
+            ],
+            vec![Button::new("company-policy").small().outline().label("View policy").on_click(cx.listener(move |this, _, _, cx| this.open_policy_for(ObjectRef::Company(id), cx))).into_any_element()],
+            cx,
+        ))
         .into_any_element()
 }

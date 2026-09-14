@@ -3,11 +3,13 @@
 //! explain itself, [`explain`] is the calculation sheet, [`meanings`] the
 //! reference sheet for every tag, [`labels`] the tag vocabularies, [`scope`]
 //! the local analysis header, [`states`] the empty / not-disclosed / error
-//! blocks, [`grid`] the virtualised table, [`chart`] the cash path.
+//! blocks, [`facts`] the label/value statements a detail is made of, [`grid`]
+//! the virtualised table, [`chart`] the cash path.
 
 pub mod chart;
 pub mod copy;
 pub mod explain;
+pub mod facts;
 pub mod figure;
 pub mod grid;
 pub mod labels;
