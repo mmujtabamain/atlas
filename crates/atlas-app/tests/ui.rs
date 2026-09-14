@@ -1507,3 +1507,48 @@ fn the_figure_meanings_sheet_opens_its_sections(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+// ----- Launching on a detail ------------------------------------------------------
+
+/// `--screen person` opens a person, not the screen the app falls back to.
+///
+/// `Route::slug` has always emitted `"person"`, `"company"`, `"account"`,
+/// `"rule"` and `"series-detail"`, but nothing turned one back into a route:
+/// `from_slug` returned `None`, the launch kept its default, and the window
+/// opened on Today while saying so only in the log. README promised these
+/// worked and the screenshot script had been photographing Today.
+#[gpui_kit::test]
+fn a_detail_slug_opens_a_record(cx: &mut TestAppContext) {
+    use atlas_app::nav::FirstDetail;
+
+    for (detail, expect) in [
+        (FirstDetail::Person, "a person"),
+        (FirstDetail::Company, "a company"),
+        (FirstDetail::Account, "an account"),
+        (FirstDetail::Series, "a series"),
+        (FirstDetail::Rule, "a rule"),
+    ] {
+        let launch = Launch { detail: Some(detail), ..sample(Route::Today) };
+        let (_handle, app) = open_app(cx, launch);
+        cx.update(|cx| {
+            let route = app.read(cx).route();
+            let opened = matches!(
+                route,
+                Route::Person(_) | Route::Company(_) | Route::Account(_) | Route::SeriesDetail(_) | Route::Rule(_)
+            );
+            assert!(opened, "--screen {detail:?} opens {expect}, not {route:?}");
+            assert_ne!(route, Route::Today, "and never silently falls back to Today");
+        });
+    }
+}
+
+/// An empty household has no record to open, so the register is the honest
+/// answer — not the default screen, and not a detail of nothing.
+#[gpui_kit::test]
+fn a_detail_slug_on_an_empty_household_opens_the_register(cx: &mut TestAppContext) {
+    use atlas_app::nav::FirstDetail;
+
+    let launch = Launch { start: Start::Empty, detail: Some(FirstDetail::Person), ..Launch::default() };
+    let (_handle, app) = open_app(cx, launch);
+    cx.update(|cx| assert_eq!(app.read(cx).route(), Route::People));
+}

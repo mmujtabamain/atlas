@@ -6,7 +6,10 @@
 //! route knows its destination and its local tab, so the shell can highlight
 //! the sidebar and each workspace can draw its tab bar from the same value.
 
-use atlas_core::ids::{AccountId, CompanyId, PersonId, RuleId, SeriesId};
+use atlas_core::authz::Viewer;
+use atlas_core::ids::{AccountId, CompanyId, ObjectRef, PersonId, RuleId, SeriesId};
+use atlas_core::model::Household;
+use atlas_core::Disclosure;
 use gpui_kit::assets::IconName;
 
 /// The sidebar entries, in order. `Settings` lives in the footer.
@@ -138,6 +141,71 @@ pub enum Route {
     Settings,
 }
 
+/// A `--screen` value naming a *kind* of detail rather than a record: a
+/// command line cannot name a record, because a record's id is internal.
+///
+/// `Route::slug` has always emitted these — `Route::Person(_)` is `"person"` —
+/// but `from_slug` had no way to turn one back into a route, so `--screen
+/// person` resolved to nothing and the app opened on its default screen
+/// instead, saying so only in the log. They now open the first record the
+/// chosen viewer may see.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FirstDetail {
+    Person,
+    Company,
+    Account,
+    Series,
+    Rule,
+}
+
+impl FirstDetail {
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Some(match slug {
+            "person" => FirstDetail::Person,
+            "company" => FirstDetail::Company,
+            "account" => FirstDetail::Account,
+            "series-detail" => FirstDetail::Series,
+            "rule" => FirstDetail::Rule,
+            _ => return None,
+        })
+    }
+
+    /// Every detail slug, for `--help` and the unknown-screen warning.
+    pub fn slugs() -> &'static [&'static str] {
+        &["person", "company", "account", "series-detail", "rule"]
+    }
+
+    /// The register the detail belongs to — where a household with none of
+    /// that record, or none this viewer may see, opens instead.
+    pub fn register(self) -> Route {
+        match self {
+            FirstDetail::Person => Route::People,
+            FirstDetail::Company => Route::Companies,
+            FirstDetail::Account => Route::Accounts,
+            FirstDetail::Series => Route::Series,
+            FirstDetail::Rule => Route::Rules,
+        }
+    }
+
+    /// The first record of this kind the viewer may see. A hidden record is
+    /// never opened by a command-line flag: `--screen` is a convenience, not
+    /// a way past a policy.
+    pub fn resolve(self, household: &Household, viewer: Viewer) -> Route {
+        let visible = |object: ObjectRef| !matches!(household.disclosure_for(viewer, object), Disclosure::Hidden);
+        let route = match self {
+            FirstDetail::Person => household.people.iter().find(|p| visible(ObjectRef::Person(p.id))).map(|p| Route::Person(p.id)),
+            FirstDetail::Company => household.companies.iter().find(|c| visible(ObjectRef::Company(c.id))).map(|c| Route::Company(c.id)),
+            FirstDetail::Account => household.accounts.iter().find(|a| visible(ObjectRef::Account(a.id))).map(|a| Route::Account(a.id)),
+            FirstDetail::Series => household.series.iter().find(|s| visible(ObjectRef::Series(s.id))).map(|s| Route::SeriesDetail(s.id)),
+            FirstDetail::Rule => household.rules.first().map(|r| Route::Rule(r.id)),
+        };
+        route.unwrap_or_else(|| {
+            log::warn!("--screen {self:?}: this household has no such record this viewer may see; opening its register");
+            self.register()
+        })
+    }
+}
+
 impl Route {
     pub fn destination(self) -> Option<Destination> {
         Some(match self {
@@ -246,7 +314,8 @@ impl Route {
         })
     }
 
-    /// Every launchable slug, for `--help` and the unknown-screen warning.
+    /// Every launchable screen slug, for `--help` and the unknown-screen
+    /// warning. The detail slugs are [`FirstDetail::slugs`].
     pub fn slugs() -> &'static [&'static str] {
         &[
             "today", "purchase", "scenarios", "compare", "extraction", "forecast", "assumptions", "derive", "sensitivity", "accounts", "earmarks", "funding", "upcoming",

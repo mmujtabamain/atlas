@@ -65,15 +65,13 @@ scenario explain-free-cash-dark 1000 --step click:560,200 --step wait:800 -- "$A
 # Person B: a private account is an authorized aggregate, a company is a
 # planning-safe summary, a private scenario is a count.
 scenario today-person-b-light 2000 -- "$APP" --theme light --size ${WIDTH}x2000 --sample --viewer b --screen today
-# `company` is not a slug — a detail carries its object's id, so this clicks
-# the register's open chevron instead of landing on Today (README, The screens).
-scenario company-person-b-light 900 --step click:1541,262 --step wait:700 -- "$APP" --theme light --size ${WIDTH}x900 --sample --viewer b --screen companies
+scenario company-person-b-light 900 -- "$APP" --theme light --size ${WIDTH}x900 --sample --viewer b --screen company
 scenario scenarios-person-b-light 1400 -- "$APP" --theme light --size ${WIDTH}x1400 --sample --viewer b --screen scenarios
 scenario policies-person-b-dark 1800 -- "$APP" --theme dark --size ${WIDTH}x1800 --sample --viewer b --screen policies
 
 # Details reached from a register: an account, a person, a company, a series, a rule.
-scenario account-detail-light 1500 --step click:420,700 --step wait:400 --step click:1420,884 --step wait:700 -- "$APP" --theme light --size ${WIDTH}x1500 --sample --viewer a --screen accounts
-scenario person-detail-light 1600 --step click:600,262 --step wait:400 --step click:1493,392 --step wait:700 -- "$APP" --theme light --size ${WIDTH}x1600 --sample --viewer a --screen people
+scenario account-detail-light 1500 -- "$APP" --theme light --size ${WIDTH}x1500 --sample --viewer a --screen account
+scenario person-detail-light 1600 -- "$APP" --theme light --size ${WIDTH}x1600 --sample --viewer a --screen person
 
 # The purchase builder's steps and its result.
 scenario purchase-step-2-light 1500 --step click:1546,807 --step wait:800 -- "$APP" --theme light --size ${WIDTH}x1500 --sample --viewer a --screen purchase

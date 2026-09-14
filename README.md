@@ -36,10 +36,11 @@ opens on **Welcome**: create a household, open a file, or explore the fictitious
 
 ## The screens
 
-Eight destinations in the sidebar, each with its own tabs. Details are routes of their own, but
-they carry the object's id rather than a slug, so `--screen` reaches the destinations and tabs
-listed below and **not** a detail: `--screen person` is not a slug and falls back to Today. Reach
-a detail by opening its record (`scripts/shoot.sh` clicks through for the shots that need one).
+Eight destinations in the sidebar, each with its own tabs. Details are routes of their own and
+carry the object's id, which a command line cannot name — so `--screen person`, `company`,
+`account`, `rule` and `series-detail` open the **first** record of that kind the chosen viewer
+may see, and the register instead when the household has none. A record hidden from the viewer
+is never opened this way: `--screen` is a convenience, not a way past a policy.
 
 | Destination | Tabs | Details |
 |---|---|---|

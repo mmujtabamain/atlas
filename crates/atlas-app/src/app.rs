@@ -499,7 +499,13 @@ impl AtlasApp {
             None => household.people.first().map(|p| p.id).unwrap_or(fixtures::ids::PERSON_A),
         });
         let viewer_pending = opened && !explicit_viewer && household.people.len() > 1;
-        let route = if opened { launch.route } else { Route::Welcome };
+        // `--screen person` names a kind of record, not one record; only here
+        // is there a household and a viewer to pick the first one they may see.
+        let route = match (opened, launch.detail) {
+            (false, _) => Route::Welcome,
+            (true, Some(detail)) => detail.resolve(&household, viewer),
+            (true, None) => launch.route,
+        };
         let horizon = household.as_of.checked_add_months(Months::new(12)).unwrap_or(fixtures::default_horizon()).max(fixtures::default_horizon().min(household.as_of.checked_add_months(Months::new(12)).unwrap_or(household.as_of)));
         let horizon = if launch.start == Start::Sample { fixtures::default_horizon() } else { horizon };
         for notice in &resolved.notices {
