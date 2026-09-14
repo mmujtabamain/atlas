@@ -3,12 +3,11 @@
 # a gpui-shot step sequence — one frame per scene, captioned — stitched by ffmpeg.
 #
 # Usage: scripts/walkthrough.sh            # writes shots/walkthrough.mp4
-# Needs ../gpui-lab/target/debug/gpui-shot, ffmpeg with libx264 + drawtext, DejaVu Sans.
+# Needs the in-repo gpui-shot (tools/gpui-shot, built below), the vendored sysroot
+# (scripts/setup-linux-sysroot.sh), ffmpeg with libx264 + drawtext, DejaVu Sans.
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LAB="${GPUI_LAB:-$REPO/../gpui-lab}"
-SHOT="$LAB/target/debug/gpui-shot"
-APP="${CARGO_TARGET_DIR:-$REPO/target}/debug/atlas"
+source "$REPO/scripts/lib/gpui-shot.sh"
 FRAMES="$REPO/shots/walkthrough"
 FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 SIZE=1600x1000
@@ -16,8 +15,7 @@ SECONDS_PER_FRAME="${SECONDS_PER_FRAME:-4}"
 # Frames with a text caret never "settle"; 40 s is enough for every scene to be drawn.
 SHOT_TIMEOUT="${SHOT_TIMEOUT:-40}"
 
-[ -x "$SHOT" ] || { echo "gpui-shot not built: (cd $LAB && cargo build -p gpui-shot)"; exit 1; }
-(cd "$REPO" && source ~/.cargo/env 2>/dev/null; cargo build -p atlas-app)
+build_app_and_gpui_shot
 rm -rf "$FRAMES"; mkdir -p "$FRAMES"
 : > "$FRAMES/list.txt"
 n=0

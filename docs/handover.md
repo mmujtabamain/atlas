@@ -99,5 +99,6 @@ logs at `info` (boundary, horizon, viewer, policy versions) and failure paths at
 - `README.md` — layout, build, data files, per-milestone feature notes.
 - `docs/ui-implementation-plan.md` — the milestone plan (M0–M12) as executed.
 - `docs/real-data-requirements.md` — the M12 requirements analysis and the answers received.
-- `scripts/shoot.sh`, `scripts/walkthrough.sh` — reference screenshots and the walkthrough.
+- `scripts/shoot.sh`, `scripts/walkthrough.sh` — reference screenshots and the walkthrough, driven
+  by the in-repo `tools/gpui-shot`; `scripts/setup-linux-sysroot.sh` prepares a Linux box without root.
 - DevBench board tasks #2717–#2816 carry per-task notes, screenshots and reasons.
