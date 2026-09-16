@@ -266,6 +266,22 @@ impl WindowLayout {
         }
     }
 
+    /// Replaces the whole tree with one projected back from a live view of
+    /// this window (the UI mirrors an edit the person made on screen — a
+    /// divider dragged, a tab chosen, a tab closed — into the model this way).
+    /// The tree is normalized and `active_pane` is repaired so it names a
+    /// pane that is still there; the report says what normalization changed.
+    ///
+    /// Only the window is touched: the caller is responsible for keeping the
+    /// workspace's pane definitions in step (a pane that left the tree must
+    /// lose its definition) and for validating the whole workspace afterwards.
+    pub fn replace_root(&mut self, root: Option<LayoutNode>) -> ops::NormalizeReport {
+        self.root = root;
+        let report = ops::normalize(&mut self.root);
+        self.repair_active_pane();
+        report
+    }
+
     /// Repairs `active_pane` so it names a pane of this window (the tree's
     /// first stack's active pane by default). Returns true when it changed.
     fn repair_active_pane(&mut self) -> bool {
@@ -774,6 +790,26 @@ mod tests {
         assert!(stand_in.is_unavailable());
         assert_eq!(stand_in.original(), Some(original));
         assert_eq!(stand_in.view_state["reason"], "account acc-1 was deleted");
+    }
+
+    #[test]
+    fn replace_root_normalizes_and_repairs_the_active_pane() {
+        let mut window = WindowLayout::main();
+        // A one-child split around a stack whose active pane is not a member:
+        // what a projection from a live view may hand back.
+        let stack = LayoutNode::Stack {
+            id: NodeId::new("s"),
+            panes: vec![PaneId::new("pane_1"), PaneId::new("pane_2")],
+            active_pane_id: Some(PaneId::new("pane_9")),
+        };
+        let report = window.replace_root(Some(LayoutNode::split(NodeId::new("root"), crate::layout::Axis::Horizontal, vec![stack], vec![1.0])));
+        assert!(report.changed);
+        assert_eq!(window.root.as_ref().map(LayoutNode::id), Some(&NodeId::new("s")), "the one-child split collapsed to its stack");
+        assert_eq!(window.active_pane, Some(PaneId::new("pane_1")));
+        window.active_pane = Some(PaneId::new("pane_2"));
+        window.replace_root(None);
+        assert!(window.is_empty());
+        assert_eq!(window.active_pane, None);
     }
 
     #[test]
