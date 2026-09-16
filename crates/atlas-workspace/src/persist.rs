@@ -238,6 +238,49 @@ pub fn save_atomic_json<T: Serialize>(path: &Path, document: &T) -> io::Result<(
     Ok(())
 }
 
+/// Where the app keeps its own files — workspace sessions, saved layouts,
+/// the launcher's arrangement — for the person running it: an `override_env`
+/// variable when set (tests and portable installs), else the platform's
+/// per-user application directory with `app_dir` inside it:
+/// `$XDG_CONFIG_HOME/<app_dir>` or `~/.config/<app_dir>` on Linux,
+/// `~/Library/Application Support/<app_dir>` on macOS, `%APPDATA%\<app_dir>` on
+/// Windows. Falls back to `.<app_dir>` in the current directory when no home
+/// is known, so there is always an answer.
+pub fn app_data_dir(app_dir: &str, override_env: &str) -> PathBuf {
+    if let Some(dir) = std::env::var_os(override_env).filter(|value| !value.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    let home = std::env::var_os("HOME").filter(|value| !value.is_empty()).map(PathBuf::from);
+    if cfg!(target_os = "macos") {
+        if let Some(home) = home {
+            return home.join("Library").join("Application Support").join(app_dir);
+        }
+    } else if cfg!(target_os = "windows") {
+        if let Some(appdata) = std::env::var_os("APPDATA").filter(|value| !value.is_empty()) {
+            return PathBuf::from(appdata).join(app_dir);
+        }
+    } else {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
+            return PathBuf::from(xdg).join(app_dir);
+        }
+        if let Some(home) = home {
+            return home.join(".config").join(app_dir);
+        }
+    }
+    PathBuf::from(format!(".{app_dir}"))
+}
+
+/// Reads a JSON document written by [`save_atomic_json`]; `None` when there
+/// is no file, `Err` when it cannot be read or parsed.
+pub fn load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, PersistError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(PersistError::Io(err)),
+    };
+    serde_json::from_slice(&bytes).map(Some).map_err(PersistError::Json)
+}
+
 /// `<path>.tmp`
 pub fn temp_path(path: &Path) -> PathBuf {
     with_suffix(path, ".tmp")
@@ -406,6 +449,16 @@ pub fn scrub_workspace(layout: &mut WorkspaceLayout) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_data_dir_honours_the_override_and_falls_back_sensibly() {
+        let dir = super::app_data_dir("atlas-financer", "ATLAS_TEST_DATA_DIR_OVERRIDE_UNSET");
+        assert!(dir.to_string_lossy().contains("atlas-financer"), "{dir:?}");
+        // SAFETY: tests in this module run single-threaded with respect to this variable.
+        unsafe { std::env::set_var("ATLAS_TEST_DATA_DIR_OVERRIDE", "/tmp/atlas-override") };
+        assert_eq!(super::app_data_dir("atlas-financer", "ATLAS_TEST_DATA_DIR_OVERRIDE"), std::path::PathBuf::from("/tmp/atlas-override"));
+        unsafe { std::env::remove_var("ATLAS_TEST_DATA_DIR_OVERRIDE") };
+    }
+
     use super::*;
     use serde_json::json;
 
