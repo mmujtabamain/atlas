@@ -2250,3 +2250,56 @@ fn a_launch_naming_a_kind_of_record_opens_the_first_one_the_viewer_may_see(cx: &
     })
     .unwrap();
 }
+
+// ----- the skin: cards, gaps, close buttons ------------------------------------------------
+
+#[gpui_kit::test]
+fn every_tab_and_a_lone_title_carry_a_close_button(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let accounts = active(cx, &workspace);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.stack_onto(&accounts, Route::Rules, window, cx).expect("tab"));
+    assert_eq!(pane_count(cx, &workspace), 3);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        // The stack of Accounts and Rules shows tabs; each has its close
+        // button, the displayed one's on show.
+        assert!(window.find("tab-close-1").visible(), "the displayed tab's close button is on show");
+        assert!(window.try_find("tab-close-0").is_some(), "the other tab has one too (shown on hover)");
+        // The lone Today pane shows a title with one close button.
+        assert!(window.find("tab-close").visible());
+        window.click("tab-close-1", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 2, "the displayed tab closed");
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Close Rules"));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-accounts").visible(), "the other tab is on show now");
+        // Two lone panes now: two title close buttons; the first slot's is Today's.
+        window.within(("resizable-panel", 0u64)).click("tab-close", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 1, "the title's close button closes the pane");
+    let only = active(cx, &workspace);
+    cx.update(|cx| assert_eq!(workspace.read(cx).pane_route(&only, cx), Some(Route::Accounts)));
+}
+
+#[gpui_kit::test]
+fn a_held_tab_widens_the_gaps_and_a_drop_closes_them(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    assert!(!cx.update(|cx| workspace.read(cx).skin().is_held()));
+    cx.update_window(window, |_, window, cx| {
+        start_drag_over(window, 2, 1, cx);
+    })
+    .unwrap();
+    assert!(cx.update(|cx| workspace.read(cx).skin().is_held()), "the skin knows a tab is held");
+    cx.update_window(window, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert!(!cx.update(|cx| workspace.read(cx).skin().is_held()), "and that it was let go");
+}

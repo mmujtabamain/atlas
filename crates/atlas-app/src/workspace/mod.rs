@@ -37,6 +37,7 @@
 //! | [`jobs`] | the job centre: long-running work that outlives the pane that started it |
 //! | [`floating`] | a floating window: another root over the same workspace |
 //! | [`session`] | the session file per household: debounced atomic autosave and restore |
+//! | [`skin`] | the dock's look: panes as cards with a gap, tabs with a close button, the room a drag needs |
 //! | [`layouts`] | saved layouts and templates: save, load, presets, manage |
 //! | [`commands`] | the keyboard commands: split, close, next pane, back |
 //!
@@ -58,6 +59,7 @@ pub mod layouts;
 pub mod mirror;
 pub mod pane;
 pub mod session;
+pub mod skin;
 pub mod view;
 
 pub use floating::FloatingView;

@@ -77,7 +77,7 @@ use atlas_core::authz::Viewer;
 use atlas_workspace::resolver::{self, Intent, Resolution};
 use atlas_workspace::{Axis, ClosedPane, ClosedPanes, DockTarget, LayoutHistory, LayoutNode, NodeId, OpError, PaneDefinition, PaneId, Scope, Side, SplitLimits, WindowId, WorkspaceLayout, ops};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::dock::{DockArea, DockEvent, DockLayout, DockSkin, InsertTarget, PanelId, TabGroup, TabGroupEvent, panel_handle};
+use gpui_kit::component::dock::{DockArea, DockEvent, DockLayout, InsertTarget, PanelId, TabGroup, TabGroupEvent, panel_handle};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::component::{
@@ -94,6 +94,7 @@ use atlas_workspace::focus::{self, Direction};
 use super::dock_targets::{self, Band, DragInFlight, Dragged, Outcome};
 use super::floating::FloatingView;
 use super::session::{self, SessionStore};
+use super::skin::WorkspaceSkin;
 use atlas_workspace::persist::LoadOutcome;
 use atlas_workspace::{WindowFrame, WindowLayout, WindowRole};
 use super::kinds;
@@ -159,7 +160,7 @@ pub struct WorkspaceView {
     pub(crate) layout: WorkspaceLayout,
     panes: HashMap<PaneId, Entity<PaneView>>,
     area: Entity<DockArea>,
-    skin: Rc<DockSkin>,
+    skin: Rc<WorkspaceSkin>,
     history: LayoutHistory,
     closed: ClosedPanes,
     seen: HouseholdSnapshot,
@@ -204,6 +205,7 @@ struct FloatingWindow {
     handle: AnyWindowHandle,
     view: Entity<FloatingView>,
     area: Entity<DockArea>,
+    skin: Rc<WorkspaceSkin>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -214,9 +216,7 @@ impl WorkspaceView {
     /// The workspace for `app`'s window. Starts empty, and with the household
     /// the launch opened (if it is usable already) the moment it exists.
     pub fn new(app: Entity<AtlasApp>, launch: &Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (area, skin) = DockSkin::dock_area("atlas-workspace", None, window, cx);
-        // There are no side docks to collapse; the affordance would be noise.
-        skin.set_toggle_button_visible(false, cx);
+        let (area, skin) = WorkspaceSkin::dock_area("atlas-workspace", None, window, cx);
         let area_events = cx.subscribe_in(&area, window, |this, _, event: &DockEvent, window, cx| match event {
             DockEvent::LayoutChanged => this.mirror_from_area(&WindowId::main(), window, cx),
             DockEvent::DragDrop { item, target } => this.item_dropped_on_dock(item, target, window, cx),
@@ -348,9 +348,18 @@ impl WorkspaceView {
         }
     }
 
-    /// The skin the dock area wears.
-    pub fn skin(&self) -> &Rc<DockSkin> {
+    /// The skin the main window's dock area wears.
+    pub fn skin(&self) -> &Rc<WorkspaceSkin> {
         &self.skin
+    }
+
+    /// Tells every window's skin whether a tab is held: the gaps widen and
+    /// the cards pull in while one is.
+    fn set_skins_held(&self, held: bool, cx: &mut App) {
+        self.skin.set_held(held, cx);
+        for floating in self.floating.values() {
+            floating.skin.set_held(held, cx);
+        }
     }
 
     /// The undo history of layout changes.
@@ -1247,6 +1256,7 @@ impl WorkspaceView {
         let next = DragInFlight { dragged, pointer, level_offset };
         if self.drag.as_ref() != Some(&next) {
             self.drag = Some(next);
+            self.set_skins_held(true, cx);
             cx.notify();
         }
     }
@@ -1439,14 +1449,13 @@ impl WorkspaceView {
             }
             // The build closure runs before `open_window` returns, so the
             // view and area it makes can be handed out through this slot.
-            let mut opened: Option<(Entity<FloatingView>, Entity<DockArea>)> = None;
+            let mut opened: Option<(Entity<FloatingView>, Entity<DockArea>, Rc<WorkspaceSkin>)> = None;
             let for_build = workspace.clone();
             let id_for_build = window_id.clone();
             let result = cx.open_window(options, |window, cx| {
-                let (area, skin) = DockSkin::dock_area(SharedString::from(format!("atlas-workspace-{id_for_build}")), None, window, cx);
-                skin.set_toggle_button_visible(false, cx);
+                let (area, skin) = WorkspaceSkin::dock_area(SharedString::from(format!("atlas-workspace-{id_for_build}")), None, window, cx);
                 let view = cx.new(|cx| FloatingView::new(for_build.clone(), id_for_build.clone(), area.clone(), cx));
-                opened = Some((view.clone(), area));
+                opened = Some((view.clone(), area, skin));
                 // The close box sends the panes home rather than losing them.
                 let closing = for_build.clone();
                 let closing_id = id_for_build.clone();
@@ -1457,7 +1466,7 @@ impl WorkspaceView {
                 cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
             });
             match (result, opened) {
-                (Ok(handle), Some((view, area))) => workspace.update(cx, |workspace, cx| workspace.register_floating_window(&window_id, frame, handle.into(), view, area, cx)),
+                (Ok(handle), Some((view, area, skin))) => workspace.update(cx, |workspace, cx| workspace.register_floating_window(&window_id, frame, handle.into(), view, area, skin, cx)),
                 (Err(err), _) => log::error!("workspace: floating window {window_id} could not be opened: {err}"),
                 (Ok(_), None) => log::error!("workspace: floating window {window_id} opened without a view"),
             }
@@ -1466,7 +1475,7 @@ impl WorkspaceView {
 
     /// Takes a freshly opened floating window into the workspace: its area is
     /// watched and filled from the model's tree for that window.
-    fn register_floating_window(&mut self, id: &WindowId, frame: WindowFrame, handle: AnyWindowHandle, view: Entity<FloatingView>, area: Entity<DockArea>, cx: &mut Context<Self>) {
+    fn register_floating_window(&mut self, id: &WindowId, frame: WindowFrame, handle: AnyWindowHandle, view: Entity<FloatingView>, area: Entity<DockArea>, skin: Rc<WorkspaceSkin>, cx: &mut Context<Self>) {
         let id_for_events = id.clone();
         // The area's events arrive after its update has finished, so its
         // window is free to be brought in by its handle. Subscribed at the
@@ -1487,7 +1496,7 @@ impl WorkspaceView {
                 log::warn!("workspace: floating window {id} could not take a dock event: {err}");
             }
         });
-        self.floating.insert(id.clone(), FloatingWindow { handle, view, area, _subscriptions: vec![events] });
+        self.floating.insert(id.clone(), FloatingWindow { handle, view, area, skin, _subscriptions: vec![events] });
         log::info!("workspace: floating window {id} opened at {frame:?}");
         if self.layout.window(id).is_none() {
             // The model dropped the window before it could open (its pane
@@ -1624,6 +1633,7 @@ impl WorkspaceView {
     /// The drag is over (dropped, cancelled, released elsewhere): no overlay.
     pub(crate) fn end_drag_overlay(&mut self, cx: &mut Context<Self>) {
         if self.drag.take().is_some() {
+            self.set_skins_held(false, cx);
             cx.notify();
         }
     }
