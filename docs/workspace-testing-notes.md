@@ -1,0 +1,89 @@
+# Workspace rebuild — testing notes for the final review pass
+
+These notes accumulate while the "everything is a pane" rebuild is implemented, one task at a
+time. The independent tester at the end of the run takes this file as its brief: every section
+lists what a task claims, how to verify it, and what looked fragile while it was built. Add a
+section per task; never delete one.
+
+Conventions for the tester:
+
+- Work in the worktree `/home/coder/project/atlas/.claude/worktrees/everything-is-a-pane`
+  (branch `devbench/atlas-financer-panes`). Build with the shared target dir and sysroot
+  (`CARGO_TARGET_DIR=/home/coder/project/atlas/target`,
+  `PKG_CONFIG_PATH=/home/coder/project/atlas/.sysroot/lib/pkgconfig`,
+  `LIBRARY_PATH=/home/coder/project/atlas/.sysroot/lib`); the pure model crate can use
+  `CARGO_TARGET_DIR=<worktree>/target-ws`. One cargo build at a time; 2 GiB box.
+- Write review tests in new files (`crates/atlas-workspace/tests/review.rs`,
+  `crates/atlas-app/tests/review.rs`) so they stay separate from the implementers' tests.
+- Report defects with severity (blocker / should-fix / nit), file + function + input + expected
+  vs actual. Small, obvious defects may be fixed directly with a regression test; anything
+  bigger is reported.
+
+---
+
+## 1. Workspace data model — `crates/atlas-workspace` (commit 437fb7e)
+
+**Claims.** Pure-data tree of splits (proportional weights summing to 1) and stacks (tabs);
+transactional ops (`insert`, `remove`, `move_pane`, `stack`, `unstack`, `resize`,
+`set_active`) that leave the layout byte-identical on any `Err`; one central `normalize`
+(idempotent fixpoint: drop empty stacks, collapse one-child splits, flatten same-axis nesting
+with weight scaling, renormalise weights, repair active pane); `validate()` with readable
+`Violation`s; `LayoutHistory` snapshots; `ClosedPanes` + `reopen`; `persist` (schema version,
+migration chain, `load` never fails — `Fresh`/`Loaded`/`Recovered`, `save_atomic` with `.bak`
+and `.tmp` + rename, view-state scrubbing); `presets`; `SavedLayouts` store; `resolver`;
+`focus` geometry; `JobBoard`; `grid` renderer. 79 tests.
+
+**Verify.**
+
+1. Layout algebra: default share 0.35 clamped 0.15..=0.85; sibling docking takes the share
+   from the target child's weight only (`[B|C]` + A right of C → `wB, wC·(1−s), wC·s`);
+   docking beside a same-axis split wraps then flattens (children scale by `1−s`, ratios kept);
+   `remove` leaves unrelated subtrees byte-identical (ids and weights); `move_pane` to the
+   current position → `OpError::NoOp`, layout unchanged; `SplitLimits` (`min_share` 0.08,
+   `max_depth` 12) rejects with `TooSmall`/`TooDeep`.
+2. Invariants: build bad trees by hand through JSON and check `validate()` catches each —
+   duplicate pane ids, pane in two stacks/windows, definition without a tree entry and vice
+   versa, empty stack, one-child split, bad weights (len mismatch, ≤ 0, sum ≠ 1), duplicate
+   node ids, active pane not in its stack, same-axis nesting, missing `active_window`.
+3. Pictures through ops only (`grid::render_numbered`, 3×3 unless noted): `123/123/124`,
+   `123/144/144`, `23/23/44` (2 cols); presets Focus `111/111/111`, Compare `112/112/112`,
+   Main+Inspector `1112/1112/1112` (4 cols), Analysis `112/113/113`, Review `122/133/133`.
+4. Determinism: the same op sequence from `WorkspaceLayout::new` twice → identical JSON.
+5. JSON: camelCase keys (`schemaVersion`, `workspaceId`, `activePaneId`, `viewState`); a
+   hand-written layout in the plan's shape loads; a tree without node `id`s or `weights` loads
+   and normalises.
+6. Randomized: a second generator/seed set (e.g. 5 seeds × 1500 ops over every op incl.
+   Beside-an-ancestor-split, WindowEdge, detach, cross-window move, undo/redo, reopen): after
+   each op `validate()` empty, `normalize` unchanged, every `Err` leaves JSON identical, pane
+   count == definitions count.
+7. Persistence: corrupt file → `Recovered` with a `<path>.corrupt-*` copy holding the original
+   bytes and `.bak` tried first; newer `schemaVersion` → reason names the version; `.bak` after
+   the second save; nested directory created; a pre-existing garbage `.tmp` does not break a
+   save; `scrub_view_state` drops keys containing token/secret/password/authorization/
+   signedUrl/apiKey/credential/cookie and values > 16 KiB.
+8. History: undo/redo of a move restores the exact JSON; `push` clears redo; limit evicts the
+   oldest; `NoOp` results must not be pushed by callers (check the runtime honours this).
+9. Closed panes: reopen → old stack if it exists, else beside the old neighbour on the recorded
+   side, else the fallback; cap 20.
+10. Saved layouts: save/list/get/rename/duplicate/delete; `save_as` → `NameTaken`;
+    `WrongHousehold`; templates load anywhere; no `.tmp` left behind.
+11. Resolver: exact kind+resource match (by JSON value; `None` ≠ `Some`) → `Focus`, prefer the
+    active window; else `Create` in the active stack; empty window → `WindowEdge`;
+    `NewInstance` always creates; `OpenRight/OpenBelow` → `Beside` the active stack;
+    `OpenNewWindow` → `CreateWindow`.
+12. Focus: in `123/123/124`: 2→Right = 3, 4→Left = 2, 3→Down = 4, 1→Left = None;
+    `move_direction_target` at an edge → `WindowEdge`.
+13. Jobs: start→progress→complete; fail(retryable)→retry = new Queued job, attempts+1, same
+    title/source/associated; cancel refuses finished/non-cancellable; prune keeps newest;
+    `percent` None without total.
+14. Floating windows: detach → Floating window; its last pane leaving removes it; the main
+    window's last pane leaving leaves `root: None` and the window present.
+15. Code quality: no `unwrap()`/`expect()` in `src/` without a justifying comment; no
+    milestone/plan codes in ordinary comments; `cargo doc` and `clippy -D warnings` clean;
+    `#[serde(default)]` on optional fields so older files load.
+
+**Known / fragile.** A flat `1|2|3` has no 2–3 sub-group to dock beneath (same-axis
+flattening) — an explicit sibling-range target is planned for the ancestor-docking task; check
+that it exists by the end and that `123/123/144` is reachable through it. `load()` tries
+`<path>.bak` before falling back to a fresh default (a deliberate extension). `resize` returns
+`Err(NoOp)` for unchanged weights.
