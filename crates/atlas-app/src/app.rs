@@ -1862,6 +1862,11 @@ impl AtlasApp {
     /// Attaches the pane workspace that shows the screens. From then on
     /// `navigate` and `go_back` act on its active pane and `route()` answers
     /// with that pane's route.
+    /// The workspace this app's screens show in, once attached.
+    pub fn workspace_handle(&self) -> Option<WeakEntity<crate::workspace::WorkspaceView>> {
+        self.workspace.clone()
+    }
+
     pub fn attach_workspace(&mut self, workspace: WeakEntity<crate::workspace::WorkspaceView>) {
         self.workspace = Some(workspace);
     }

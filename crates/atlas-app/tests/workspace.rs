@@ -424,7 +424,7 @@ fn the_mirror_reads_measured_weights_back_and_undo_restores_the_layout(cx: &mut 
     assert!((weights[0] - 0.65).abs() < 1e-9 && (weights[1] - 0.35).abs() < 1e-9, "the model gave the new pane its default share: {weights:?}");
 
     // A frame measured the split; the mirror reads the measurement back.
-    drive(cx, window, &workspace, |workspace, window, cx| workspace.mirror_from_area(window, cx));
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.mirror_from_area(&atlas_workspace::WindowId::main(), window, cx));
     let mirrored = cx.update(|cx| workspace.read(cx).layout().main_window().unwrap().root.as_ref().unwrap().weights().to_vec());
     assert!((mirrored[0] - 0.65).abs() < 0.02 && (mirrored[1] - 0.35).abs() < 0.02, "measured sizes reproduce the weights: {mirrored:?}");
     assert_eq!(grid(cx, &workspace, 2, 1), "12", "an echo of the workspace's own edit changes nothing");
@@ -1411,6 +1411,140 @@ fn a_second_run_while_one_is_running_is_ignored_and_an_edit_supersedes_the_resul
         let model = app.read(cx).assumptions().expect("recomputed on demand");
         assert_eq!(model.sensitivity.boundary, atlas_core::liquidity::Boundary::Account(atlas_core::fixtures::ids::PERSON_A_CURRENT));
     });
+}
+
+// ----- floating windows ---------------------------------------------------------------------
+
+#[gpui_kit::test]
+fn a_pane_moves_into_a_window_of_its_own_and_back(cx: &mut TestAppContext) {
+    let (window, app, workspace) = today_and_accounts(cx);
+    let accounts = active(cx, &workspace);
+    let floating = drive(cx, window, &workspace, |workspace, window, cx| workspace.detach_pane(&accounts, None, window, cx).expect("detach"));
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2, "a second window opened");
+    assert_eq!(grid(cx, &workspace, 1, 1), "1", "the main window keeps Today alone");
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.layout().window_id_of(&accounts), Some(floating.clone()));
+        assert_eq!(workspace.floating_windows(), vec![floating.clone()]);
+        assert_eq!(workspace.layout().window(&floating).map(|window| window.role), Some(atlas_workspace::WindowRole::Floating));
+        assert!(workspace.layout().window(&floating).and_then(|window| window.frame).is_some(), "the window's frame is kept in the model");
+    });
+    let handle = cx.update(|cx| workspace.read(cx).window_handle_of(&floating)).expect("the floating window's handle");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("pane-2").visible(), "the same pane, drawn in the floating window");
+        assert!(window.find("screen-accounts").visible());
+        assert!(window.find("floating-gather").visible(), "the floating window offers the way back");
+    })
+    .unwrap();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("pane-2").is_none(), "and no longer in the main window");
+        assert!(window.find("pane-1").visible());
+    })
+    .unwrap();
+    assert_eq!(pane_count(cx, &workspace), 2, "still two panes in the workspace");
+    // The pane is a normal pane there: it navigates and stays the active one.
+    cx.update(|cx| app.update(cx, |app, cx| app.navigate(Route::Earmarks, cx)));
+    cx.run_until_parked();
+    cx.update(|cx| assert_eq!(workspace.read(cx).pane_route(&accounts, cx), Some(Route::Earmarks)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-earmarks").visible());
+    })
+    .unwrap();
+    // Back to the main window: the emptied floating window closes.
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.move_pane_to_window(&accounts, &atlas_workspace::WindowId::main(), window, cx).expect("move back"));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1, "the floating window closed with its last pane");
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert!(workspace.floating_windows().is_empty());
+        assert_eq!(workspace.layout().windows.len(), 1);
+        assert_eq!(workspace.layout().window_id_of(&accounts), Some(atlas_workspace::WindowId::main()));
+    });
+    assert_eq!(pane_count(cx, &workspace), 2);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("pane-2").visible(), "drawn in the main window again");
+    })
+    .unwrap();
+    // Undo reopens the floating window with the pane in it.
+    drive(cx, window, &workspace, |workspace, window, cx| assert!(workspace.undo(window, cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2, "undo brought the window back");
+    cx.update(|cx| assert_eq!(workspace.read(cx).layout().window_id_of(&accounts), Some(floating.clone())));
+}
+
+#[gpui_kit::test]
+fn a_screen_opens_in_a_new_window_and_the_close_box_sends_panes_home(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let rules = drive(cx, window, &workspace, |workspace, window, cx| workspace.open(Route::Rules, Intent::OpenNewWindow, window, cx).expect("open in new window"));
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+    let floating = cx.update(|cx| workspace.read(cx).layout().window_id_of(&rules)).expect("in a window");
+    assert_ne!(floating, atlas_workspace::WindowId::main());
+    assert_eq!(pane_count(cx, &workspace), 3);
+    // A second pane joins that window.
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    let accounts = order[1].clone();
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.move_pane_to_window(&accounts, &floating, window, cx).expect("move"));
+    cx.update(|cx| assert_eq!(workspace.read(cx).layout().panes_in(&floating).len(), 2));
+    // The close box: both panes come home, the window goes.
+    let handle = cx.update(|cx| workspace.read(cx).window_handle_of(&floating)).unwrap();
+    cx.update_window(handle, |_, window, cx| workspace.update(cx, |workspace, cx| workspace.floating_window_closed(&floating, window, cx))).unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.layout().windows.len(), 1);
+        assert_eq!(workspace.layout().panes_in(&atlas_workspace::WindowId::main()).len(), 3, "every pane is back in the main window");
+        assert!(workspace.floating_windows().is_empty());
+    });
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Move panes back to the main window"));
+}
+
+#[gpui_kit::test]
+fn releasing_a_drag_outside_the_window_opens_a_window_for_the_pane(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let accounts = active(cx, &workspace);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let handle = window.find(title_id(2)).bounds().center();
+        press_at(window, handle, cx);
+        move_pressed_to(window, handle + point(px(12.), px(4.)), cx);
+        move_pressed_to(window, window.find(pane_id(1)).bounds().center(), cx);
+        window.render_frame(cx);
+        assert!(cx.has_active_drag());
+        // Out through the left edge of the window.
+        let outside = point(px(-60.), px(400.));
+        move_pressed_to(window, outside, cx);
+        release_at(window, outside, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2, "the pane got a window of its own");
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        let floating = workspace.layout().window_id_of(&accounts).expect("placed");
+        assert_ne!(floating, atlas_workspace::WindowId::main());
+        assert_eq!(workspace.floating_windows(), vec![floating]);
+    });
+    assert_eq!(grid(cx, &workspace, 1, 1), "1");
+    assert!(history_labels(cx, &workspace).last().map(String::as_str).unwrap().starts_with("Move Accounts to a new window"));
+    // A release over the window's own chrome is not a request for a window.
+    let today = cx.update(|cx| workspace.read(cx).panes_in_order()[0].clone());
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let handle = window.find(title_id(1)).bounds().center();
+        press_at(window, handle, cx);
+        move_pressed_to(window, handle + point(px(12.), px(4.)), cx);
+        let chrome = point(px(300.), px(16.));
+        move_pressed_to(window, chrome, cx);
+        release_at(window, chrome, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2, "no third window");
+    cx.update(|cx| assert_eq!(workspace.read(cx).layout().window_id_of(&today), Some(atlas_workspace::WindowId::main())));
 }
 
 #[test]

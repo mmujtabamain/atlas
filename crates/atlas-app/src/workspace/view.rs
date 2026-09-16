@@ -42,6 +42,16 @@
 //! A definition this build cannot show is kept and shown as a placeholder
 //! (see [`super::pane`]) rather than dropped.
 //!
+//! There is one workspace and any number of windows. This view is the main
+//! window's content column and the owner of everything shared — the model,
+//! the pane views, history, the closed-pane stack — and every other window
+//! is a [`super::floating::FloatingView`] with a dock area of its own over
+//! the model's tree for that window. Each area is rebuilt from its window's
+//! tree and mirrored back into it; a pane moves between windows by a model
+//! operation followed by a rebuild of both areas, and the pane entity itself
+//! never changes. A floating window closes when its last pane leaves; closing
+//! it from its own close button sends its panes back to the main window.
+//!
 //! The workspace follows the app rather than being told: it observes
 //! [`AtlasApp`] and starts a fresh layout, scoped to the household, the
 //! moment a household is open **and** someone has said who is looking; it
@@ -72,8 +82,10 @@ use gpui_kit::*;
 
 use std::cell::{Cell, RefCell};
 
-use super::commands::{self, Back, ClosePane, FocusNextPane, SplitBelow, SplitRight};
+use super::commands::{self, Back, ClosePane, DetachPane, FocusNextPane, SplitBelow, SplitRight};
 use super::dock_targets::{self, Band, DragInFlight, Dragged, Outcome};
+use super::floating::FloatingView;
+use atlas_workspace::{WindowFrame, WindowLayout, WindowRole};
 use super::kinds;
 use super::launcher::LaunchDrag;
 use super::mirror;
@@ -161,8 +173,24 @@ pub struct WorkspaceView {
     root_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// The pane drag in flight, while one is: what the overlay follows.
     drag: Option<DragInFlight>,
+    /// The floating windows, by the model's id of each.
+    floating: HashMap<WindowId, FloatingWindow>,
+    /// Panes a rebuild took out of one window's area because the model moved
+    /// them elsewhere: the engine's "removed" notice for them is not a close.
+    expected_removals: HashSet<PaneId>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// One floating window: the gpui window, its root view and its dock area.
+struct FloatingWindow {
+    handle: AnyWindowHandle,
+    view: Entity<FloatingView>,
+    area: Entity<DockArea>,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// The size a detached pane's window opens at.
+const FLOATING_WINDOW_SIZE: Size<Pixels> = size(px(960.), px(720.));
 
 impl WorkspaceView {
     /// The workspace for `app`'s window. Starts empty, and with the household
@@ -172,7 +200,7 @@ impl WorkspaceView {
         // There are no side docks to collapse; the affordance would be noise.
         skin.set_toggle_button_visible(false, cx);
         let area_events = cx.subscribe_in(&area, window, |this, _, event: &DockEvent, window, cx| match event {
-            DockEvent::LayoutChanged => this.mirror_from_area(window, cx),
+            DockEvent::LayoutChanged => this.mirror_from_area(&WindowId::main(), window, cx),
             DockEvent::DragDrop { item, target } => this.item_dropped_on_dock(item, target, window, cx),
         });
         let app_changes = cx.observe_in(&app, window, |this, _, window, cx| this.follow_household(window, cx));
@@ -227,6 +255,8 @@ impl WorkspaceView {
             pane_bounds: Rc::new(RefCell::new(HashMap::new())),
             root_bounds: Rc::new(Cell::new(Bounds::default())),
             drag: None,
+            floating: HashMap::new(),
+            expected_removals: HashSet::new(),
             _subscriptions: vec![area_events, app_changes, escape_cancels_drag],
         };
         this.follow_household(window, cx);
@@ -250,9 +280,50 @@ impl WorkspaceView {
         &self.layout
     }
 
-    /// The dock area the panes are shown in.
+    /// The main window's dock area.
     pub fn area(&self) -> &Entity<DockArea> {
         &self.area
+    }
+
+    /// The dock area of any window of the workspace.
+    fn area_of(&self, window: &WindowId) -> Option<Entity<DockArea>> {
+        if *window == WindowId::main() { Some(self.area.clone()) } else { self.floating.get(window).map(|floating| floating.area.clone()) }
+    }
+
+    /// The gpui window behind a model window.
+    pub fn window_handle_of(&self, window: &WindowId) -> Option<AnyWindowHandle> {
+        if *window == WindowId::main() { Some(self.window) } else { self.floating.get(window).map(|floating| floating.handle) }
+    }
+
+    /// The root view of a floating window.
+    pub fn floating_view(&self, window: &WindowId) -> Option<Entity<FloatingView>> {
+        self.floating.get(window).map(|floating| floating.view.clone())
+    }
+
+    /// The model ids of the floating windows open right now.
+    pub fn floating_windows(&self) -> Vec<WindowId> {
+        let mut ids: Vec<WindowId> = self.floating.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    /// The window a pane is in, as the model has it.
+    fn window_of_pane(&self, pane: &PaneId) -> WindowId {
+        self.layout.window_id_of(pane).unwrap_or_else(WindowId::main)
+    }
+
+    /// Runs `f` with the gpui window behind `id`: the current one when that
+    /// is it, else the other window brought in by its handle. Nothing happens
+    /// for a window that does not exist.
+    fn in_window(&self, id: &WindowId, current: &mut Window, cx: &mut App, f: impl FnOnce(&mut Window, &mut App)) {
+        let Some(handle) = self.window_handle_of(id) else {
+            return;
+        };
+        if handle == current.window_handle() {
+            f(current, cx);
+        } else if let Err(err) = handle.update(cx, |_, window, cx| f(window, cx)) {
+            log::warn!("workspace: window {id} could not be updated: {err}");
+        }
     }
 
     /// The skin the dock area wears.
@@ -417,11 +488,7 @@ impl WorkspaceView {
         let result = match resolution {
             Resolution::Focus(pane) => self.set_active_pane(&pane, window, cx).map(|()| pane),
             Resolution::Create { window: target_window, target } => self.create_pane(route, definition, &target_window, target, window, cx),
-            Resolution::CreateWindow => {
-                log::info!("workspace: floating windows are not available yet; opening {} in the active stack", route.slug());
-                let (target_window, target) = self.layout.active_window().map(|window| (window.id.clone(), window.default_target())).unwrap_or((WindowId::main(), DockTarget::edge(Side::Right)));
-                self.create_pane(route, definition, &target_window, target, window, cx)
-            }
+            Resolution::CreateWindow => self.open_in_new_window(route, None, window, cx),
         };
         self.report(&result, window, cx);
         result
@@ -439,7 +506,8 @@ impl WorkspaceView {
     pub fn split_beside(&mut self, pane: &PaneId, side: Side, route: Route, window: &mut Window, cx: &mut Context<Self>) -> Result<PaneId, OpError> {
         let stack = self.layout.stack_of(pane).ok_or_else(|| OpError::UnknownPane(pane.clone()))?;
         let target = DockTarget::beside(stack, side);
-        let result = self.create_pane(route, kinds::definition_of(route), &WindowId::main(), target, window, cx);
+        let in_window = self.window_of_pane(pane);
+        let result = self.create_pane(route, kinds::definition_of(route), &in_window, target, window, cx);
         self.report(&result, window, cx);
         result
     }
@@ -447,7 +515,8 @@ impl WorkspaceView {
     /// Opens `route` as a new tab of the stack that holds `pane`.
     pub fn stack_onto(&mut self, pane: &PaneId, route: Route, window: &mut Window, cx: &mut Context<Self>) -> Result<PaneId, OpError> {
         let stack = self.layout.stack_of(pane).ok_or_else(|| OpError::UnknownPane(pane.clone()))?;
-        let result = self.create_pane(route, kinds::definition_of(route), &WindowId::main(), DockTarget::tab(stack), window, cx);
+        let in_window = self.window_of_pane(pane);
+        let result = self.create_pane(route, kinds::definition_of(route), &in_window, DockTarget::tab(stack), window, cx);
         self.report(&result, window, cx);
         result
     }
@@ -477,11 +546,17 @@ impl WorkspaceView {
         let closed = self.layout.close_pane_detailed(pane)?;
         let title = kinds::route_of(&closed.definition).map(Route::title).unwrap_or("pane");
         log::info!("workspace: closed pane {pane} ({}); {} panes left", closed.definition.kind, self.layout.panes.len());
+        let window_id = closed.window.clone();
         self.closed.record(closed);
         self.record(format!("Close {title}"), before);
         if let Some(view) = self.panes.remove(pane) {
-            self.area.update(cx, |area, cx| area.remove_panel(view, window, cx));
+            if let Some(area) = self.area_of(&window_id) {
+                self.in_window(&window_id, window, cx, |window, cx| area.update(cx, |area, cx| area.remove_panel(view, window, cx)));
+            }
         }
+        // The window the pane left may have been the last thing in a floating
+        // window, which the model has then dropped.
+        self.close_vanished_windows(window, cx);
         self.apply_active_flags(cx);
         self.focus_active(window, cx);
         self.sync_chrome(cx);
@@ -740,6 +815,10 @@ impl WorkspaceView {
             }
             _ => {}
         }
+        if self.expected_removals.remove(pane) {
+            log::debug!("workspace: pane {pane} left one window's dock for another; not a close");
+            return;
+        }
         if self.layout.pane(pane).is_none() {
             self.panes.remove(pane);
             return;
@@ -815,6 +894,7 @@ impl WorkspaceView {
             None => DockTarget::Stack { node: target_stack.clone(), index },
             Some(placement) => DockTarget::Beside { node: target_stack.clone(), side: side_of(placement), share: Some(DROP_SHARE) },
         };
+        let target_window = self.layout.window_of_node(&target_stack).map(|window| window.id.clone()).unwrap_or_else(WindowId::main);
         let same_group = source == target_group;
         log::info!(
             "workspace: pane {pane} dropped from stack {} onto stack {target_stack}{} as {}",
@@ -825,7 +905,7 @@ impl WorkspaceView {
                 Some(placement) => format!("a split on the {placement}"),
             }
         );
-        self.dock_pane(&pane, dock_target, activate, window, cx);
+        self.dock_pane(&pane, &target_window, dock_target, activate, window, cx);
     }
 
     /// Moves `pane` to `target` in the model and shows the result — the one
@@ -834,11 +914,11 @@ impl WorkspaceView {
     /// background). A refused move leaves the model as it was and puts the
     /// area back to it; a move that changes nothing does the same, because the
     /// engine may have redistributed sizes while deciding nothing changed.
-    pub fn dock_pane(&mut self, pane: &PaneId, target: DockTarget, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn dock_pane(&mut self, pane: &PaneId, in_window: &WindowId, target: DockTarget, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.end_drag_overlay(cx);
         let before = self.layout.clone();
-        let displayed_before = self.layout.main_window().and_then(|main| main.root.as_ref()).and_then(|root| target.node().and_then(|node| root.find(node))).and_then(|stack| stack.active_pane().cloned());
-        match self.layout.move_pane(pane, &WindowId::main(), target.clone()) {
+        let displayed_before = self.layout.window(in_window).and_then(|target_window| target_window.root.as_ref()).and_then(|root| target.node().and_then(|node| root.find(node))).and_then(|stack| stack.active_pane().cloned());
+        match self.layout.move_pane(pane, in_window, target.clone()) {
             Ok(()) => {
                 if !activate
                     && let Some(displayed) = displayed_before
@@ -848,8 +928,8 @@ impl WorkspaceView {
                 }
                 self.record(MOVE_LABEL, before);
                 log::info!(
-                    "workspace: moved pane {pane} to {target:?}; grid:\n{}",
-                    atlas_workspace::grid::render_window(self.layout.main_window().and_then(|main| main.root.as_ref()), 12, 4, |pane| pane.minted_counter().map(|n| char::from_digit((n % 36) as u32, 36).unwrap_or('?')).unwrap_or('?'))
+                    "workspace: moved pane {pane} to {target:?} in {in_window}; grid:\n{}",
+                    atlas_workspace::grid::render_window(self.layout.window(in_window).and_then(|target_window| target_window.root.as_ref()), 12, 4, |pane| pane.minted_counter().map(|n| char::from_digit((n % 36) as u32, 36).unwrap_or('?')).unwrap_or('?'))
                 );
                 self.rebuild_area(window, cx);
                 self.focus_active(window, cx);
@@ -876,7 +956,7 @@ impl WorkspaceView {
     // ----- the drag-target overlay -------------------------------------------------------
 
     /// The pointer moved while a pane is dragged: the overlay follows it.
-    fn follow_drag(&mut self, panel: PanelId, pointer: Point<Pixels>, cx: &mut Context<Self>) {
+    pub(crate) fn follow_drag(&mut self, panel: PanelId, pointer: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(pane) = self.pane_of_panel(panel) else {
             return;
         };
@@ -884,7 +964,7 @@ impl WorkspaceView {
     }
 
     /// The pointer moved while a screen is dragged off the launcher.
-    fn follow_launch_drag(&mut self, item: &AnyDrag, pointer: Point<Pixels>, cx: &mut Context<Self>) {
+    pub(crate) fn follow_launch_drag(&mut self, item: &AnyDrag, pointer: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(launch) = item.value().downcast_ref::<LaunchDrag>() else {
             return;
         };
@@ -916,25 +996,312 @@ impl WorkspaceView {
             log::warn!("workspace: screen {} dropped on a group with no pane of this workspace; ignoring it", launch.route.slug());
             return;
         };
+        let target_window = self.layout.window_of_node(&stack).map(|target| target.id.clone()).unwrap_or_else(WindowId::main);
         let dock_target = match placement {
             None => DockTarget::tab(stack),
             Some(placement) => DockTarget::Beside { node: stack, side: side_of(*placement), share: Some(DROP_SHARE) },
         };
-        log::info!("workspace: screen {} dropped from the launcher at {dock_target:?}", launch.route.slug());
-        let result = self.create_pane(launch.route, kinds::definition_of(launch.route), &WindowId::main(), dock_target, window, cx);
+        log::info!("workspace: screen {} dropped from the launcher at {dock_target:?} in {target_window}", launch.route.slug());
+        let result = self.create_pane(launch.route, kinds::definition_of(launch.route), &target_window, dock_target, window, cx);
         self.report(&result, window, cx);
     }
 
     /// Opens a new pane for a screen dropped on a docking band.
-    fn open_on_band(&mut self, route: Route, band: &Band, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_on_band(&mut self, route: Route, in_window: &WindowId, band: &Band, window: &mut Window, cx: &mut Context<Self>) {
         self.end_drag_overlay(cx);
         if !band.accepts_drops() {
             log::info!("workspace: screen {} dropped on a band that refuses it ({}); nothing changed", route.slug(), band.label);
             return;
         }
-        log::info!("workspace: screen {} dropped on band {} ({})", route.slug(), band.element_id(), band.label);
-        let result = self.create_pane(route, kinds::definition_of(route), &WindowId::main(), band.target.clone(), window, cx);
+        log::info!("workspace: screen {} dropped on band {} ({}) in {in_window}", route.slug(), band.element_id(), band.label);
+        let result = self.create_pane(route, kinds::definition_of(route), in_window, band.target.clone(), window, cx);
         self.report(&result, window, cx);
+    }
+
+    // ----- windows -------------------------------------------------------------------------
+
+    /// Opens `route` in a new floating window: a pane of its own, placed at
+    /// `at` (a screen position) or beside the main window.
+    pub fn open_in_new_window(&mut self, route: Route, at: Option<Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>) -> Result<PaneId, OpError> {
+        let before = self.layout.clone();
+        let frame = self.floating_frame(at, window);
+        let mut fresh = WindowLayout::new(self.layout.ids.mint_window(), WindowRole::Floating);
+        fresh.frame = Some(frame);
+        let window_id = fresh.id.clone();
+        self.layout.windows.push(fresh);
+        match self.layout.open_pane(&window_id, kinds::definition_of(route), DockTarget::edge(Side::Right)) {
+            Ok(pane) => {
+                let workspace = cx.weak_entity();
+                let app = self.app.clone();
+                let bounds = self.pane_bounds.clone();
+                let view = cx.new(|cx| PaneView::new(pane.clone(), route, app, workspace, bounds, cx));
+                self.panes.insert(pane.clone(), view);
+                self.record(format!("Open {} in a new window", route.title()), before);
+                log::info!("workspace: opened pane {pane} ({}) in new window {window_id}", route.slug());
+                self.open_floating_window(&window_id, frame, cx);
+                self.rebuild_area(window, cx);
+                self.focus_active(window, cx);
+                self.sync_chrome(cx);
+                Ok(pane)
+            }
+            Err(err) => {
+                self.layout = before;
+                Err(err)
+            }
+        }
+    }
+
+    /// Moves `pane` into a floating window of its own, at `at` (a screen
+    /// position) or beside the main window. One undoable step.
+    pub fn detach_pane(&mut self, pane: &PaneId, at: Option<Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>) -> Result<WindowId, OpError> {
+        let before = self.layout.clone();
+        let frame = self.floating_frame(at, window);
+        let window_id = self.layout.detach_pane(pane, frame)?;
+        let title = self.pane_route(pane, cx).map(Route::title).unwrap_or("pane");
+        self.record(format!("Move {title} to a new window"), before);
+        log::info!("workspace: pane {pane} detached into window {window_id} at {frame:?}");
+        self.open_floating_window(&window_id, frame, cx);
+        self.rebuild_area(window, cx);
+        self.focus_active(window, cx);
+        self.sync_chrome(cx);
+        Ok(window_id)
+    }
+
+    /// Moves `pane` into `target_window`, as a tab of its active stack (or
+    /// alone, when that window is empty). A floating window left empty closes.
+    pub fn move_pane_to_window(&mut self, pane: &PaneId, target_window: &WindowId, window: &mut Window, cx: &mut Context<Self>) -> Result<(), OpError> {
+        let target = self.layout.window(target_window).map(|target| target.default_target()).ok_or_else(|| OpError::UnknownWindow(target_window.clone()))?;
+        let before = self.layout.clone();
+        self.layout.move_pane(pane, target_window, target)?;
+        let title = self.pane_route(pane, cx).map(Route::title).unwrap_or("pane");
+        self.record(format!("Move {title} to another window"), before);
+        log::info!("workspace: pane {pane} moved to window {target_window}");
+        self.rebuild_area(window, cx);
+        self.focus_active(window, cx);
+        self.sync_chrome(cx);
+        Ok(())
+    }
+
+    /// Every pane of a floating window goes back to the main window and the
+    /// window closes — the floating window's own button, and its close box.
+    pub fn gather_window(&mut self, window_id: &WindowId, window: &mut Window, cx: &mut Context<Self>) {
+        let panes = self.layout.panes_in(window_id);
+        if panes.is_empty() || *window_id == WindowId::main() {
+            return;
+        }
+        let before = self.layout.clone();
+        for pane in &panes {
+            let Some(target) = self.layout.main_window().map(|main| main.default_target()) else {
+                break;
+            };
+            if let Err(err) = self.layout.move_pane(pane, &WindowId::main(), target) {
+                log::warn!("workspace: pane {pane} could not be moved back to the main window: {err}");
+            }
+        }
+        self.record("Move panes back to the main window", before);
+        log::info!("workspace: window {window_id} gathered into the main window ({} panes)", panes.len());
+        self.rebuild_area(window, cx);
+        self.focus_active(window, cx);
+        self.sync_chrome(cx);
+    }
+
+    /// A pane drag ended outside the window it was in: the pane opens a
+    /// window of its own where the pointer was let go.
+    pub(crate) fn drag_released_outside(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(DragInFlight { dragged: Dragged::Pane(pane), .. }) = self.drag.clone() else {
+            self.end_drag_overlay(cx);
+            return;
+        };
+        let viewport = Bounds::new(Point::default(), window.viewport_size());
+        if viewport.contains(&position) {
+            // Released over the window's own chrome (title bar, launcher):
+            // not a request for a new window.
+            self.end_drag_overlay(cx);
+            return;
+        }
+        self.end_drag_overlay(cx);
+        let screen = window.bounds().origin + position;
+        log::info!("workspace: pane {pane} released outside the window at {screen:?}; opening a window for it");
+        if let Err(err) = self.detach_pane(&pane, Some(screen), window, cx) {
+            self.report(&Err::<(), _>(err), window, cx);
+        }
+    }
+
+    /// Where a new floating window goes: at `at` (its top-left corner, on
+    /// screen), else offset from the current window; clamped onto a display.
+    fn floating_frame(&self, at: Option<Point<Pixels>>, window: &Window) -> WindowFrame {
+        let current = window.bounds();
+        let origin = at.unwrap_or(current.origin + point(px(80.), px(80.)));
+        WindowFrame::new(f64::from(f32::from(origin.x)), f64::from(f32::from(origin.y)), f64::from(f32::from(FLOATING_WINDOW_SIZE.width)), f64::from(f32::from(FLOATING_WINDOW_SIZE.height)))
+    }
+
+    /// The displays as frames, for keeping windows on screen.
+    fn display_frames(cx: &App) -> Vec<WindowFrame> {
+        cx.displays().iter().map(|display| {
+            let bounds = display.bounds();
+            WindowFrame::new(f64::from(f32::from(bounds.origin.x)), f64::from(f32::from(bounds.origin.y)), f64::from(f32::from(bounds.size.width)), f64::from(f32::from(bounds.size.height)))
+        }).collect()
+    }
+
+    /// Opens the gpui window for the model's floating window `id` — once
+    /// this update is over. Opening a window draws its first frame at once,
+    /// and that frame reads the workspace, which is being updated right now;
+    /// so the window is opened from the app, then registered here, then given
+    /// its area's contents.
+    fn open_floating_window(&mut self, id: &WindowId, frame: WindowFrame, cx: &mut Context<Self>) {
+        if self.floating.contains_key(id) {
+            return;
+        }
+        let fallback = WindowFrame::new(80.0, 80.0, f64::from(f32::from(FLOATING_WINDOW_SIZE.width)), f64::from(f32::from(FLOATING_WINDOW_SIZE.height)));
+        let frame = frame.clamped_to_displays(&Self::display_frames(cx), fallback);
+        let _ = self.layout.set_frame(id, Some(frame));
+        let workspace = cx.entity();
+        let window_id = id.clone();
+        cx.defer(move |cx| {
+            if workspace.read(cx).floating.contains_key(&window_id) {
+                return;
+            }
+            let bounds = Bounds::new(point(px(frame.x as f32), px(frame.y as f32)), size(px(frame.width as f32), px(frame.height as f32)));
+            let mut options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..gpui_kit::component::TitleBar::window_options() };
+            if let Some(titlebar) = options.titlebar.as_mut() {
+                titlebar.title = Some("Atlas Financer — floating window".into());
+            }
+            // The build closure runs before `open_window` returns, so the
+            // view and area it makes can be handed out through this slot.
+            let mut opened: Option<(Entity<FloatingView>, Entity<DockArea>)> = None;
+            let for_build = workspace.clone();
+            let id_for_build = window_id.clone();
+            let result = cx.open_window(options, |window, cx| {
+                let (area, skin) = DockSkin::dock_area(SharedString::from(format!("atlas-workspace-{id_for_build}")), None, window, cx);
+                skin.set_toggle_button_visible(false, cx);
+                let view = cx.new(|cx| FloatingView::new(for_build.clone(), id_for_build.clone(), area.clone(), cx));
+                opened = Some((view.clone(), area));
+                // The close box sends the panes home rather than losing them.
+                let closing = for_build.clone();
+                let closing_id = id_for_build.clone();
+                window.on_window_should_close(cx, move |window, cx| {
+                    closing.update(cx, |workspace, cx| workspace.floating_window_closed(&closing_id, window, cx));
+                    true
+                });
+                cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
+            });
+            match (result, opened) {
+                (Ok(handle), Some((view, area))) => workspace.update(cx, |workspace, cx| workspace.register_floating_window(&window_id, frame, handle.into(), view, area, cx)),
+                (Err(err), _) => log::error!("workspace: floating window {window_id} could not be opened: {err}"),
+                (Ok(_), None) => log::error!("workspace: floating window {window_id} opened without a view"),
+            }
+        });
+    }
+
+    /// Takes a freshly opened floating window into the workspace: its area is
+    /// watched and filled from the model's tree for that window.
+    fn register_floating_window(&mut self, id: &WindowId, frame: WindowFrame, handle: AnyWindowHandle, view: Entity<FloatingView>, area: Entity<DockArea>, cx: &mut Context<Self>) {
+        let id_for_events = id.clone();
+        // The area's events arrive after its update has finished, so its
+        // window is free to be brought in by its handle. Subscribed at the
+        // app's level, not the workspace's: a subscription made through this
+        // context would run with the workspace already leased, and the
+        // handler needs the floating window's context to reach it.
+        let app: &mut App = &mut *cx;
+        let events = app.subscribe(&area, move |_, event: &DockEvent, cx| {
+            let id = id_for_events.clone();
+            let Some(workspace) = workspace_of(cx) else {
+                return;
+            };
+            let result = match event {
+                DockEvent::LayoutChanged => handle.update(cx, |_, window, cx| workspace.update(cx, |workspace, cx| workspace.mirror_from_area(&id, window, cx))),
+                DockEvent::DragDrop { item, target } => handle.update(cx, |_, window, cx| workspace.update(cx, |workspace, cx| workspace.item_dropped_on_dock(item, target, window, cx))),
+            };
+            if let Err(err) = result {
+                log::warn!("workspace: floating window {id} could not take a dock event: {err}");
+            }
+        });
+        self.floating.insert(id.clone(), FloatingWindow { handle, view, area, _subscriptions: vec![events] });
+        log::info!("workspace: floating window {id} opened at {frame:?}");
+        if self.layout.window(id).is_none() {
+            // The model dropped the window before it could open (its pane
+            // moved on already): close it again.
+            self.floating.remove(id);
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+            return;
+        }
+        self.rebuild_window(id, cx);
+        self.focus_active_in(id, cx);
+    }
+
+    /// Rebuilds one window's area from the model, through the window's own handle.
+    fn rebuild_window(&mut self, id: &WindowId, cx: &mut Context<Self>) {
+        let (Some(area), Some(handle)) = (self.area_of(id), self.window_handle_of(id)) else {
+            return;
+        };
+        let root = self.layout.window(id).and_then(|candidate| candidate.root.clone());
+        self.note_expected_removals(&area, root.as_ref(), cx);
+        let extent = self.layout.window(id).and_then(|candidate| candidate.frame).map(|frame| size(px(frame.width as f32), px(frame.height as f32))).unwrap_or(FLOATING_WINDOW_SIZE);
+        let layout = match &root {
+            Some(node) => self.dock_layout_of(node, extent, cx),
+            None => DockLayout::h_split(),
+        };
+        if let Err(err) = handle.update(cx, |_, window, cx| area.update(cx, |area, cx| area.set_center(layout, window, cx))) {
+            log::warn!("workspace: window {id} could not be rebuilt: {err}");
+        }
+        self.apply_active_flags(cx);
+        cx.notify();
+    }
+
+    /// Focuses the active pane if it lives in window `id`, through the window's handle.
+    fn focus_active_in(&self, id: &WindowId, cx: &mut Context<Self>) {
+        let Some(active) = self.active_pane() else {
+            return;
+        };
+        if self.window_of_pane(&active) != *id {
+            return;
+        }
+        let (Some(view), Some(handle)) = (self.panes.get(&active), self.window_handle_of(id)) else {
+            return;
+        };
+        let focus = view.read(cx).focus_handle(cx);
+        let _ = handle.update(cx, |_, window, cx| window.focus(&focus, cx));
+    }
+
+    /// A floating window's close box was used: its panes go back to the main
+    /// window and the window is forgotten.
+    pub fn floating_window_closed(&mut self, id: &WindowId, window: &mut Window, cx: &mut Context<Self>) {
+        self.gather_window(id, window, cx);
+        // gather_window rebuilt the areas; if the model still lists the
+        // window (it had no panes), drop it here.
+        if let Some(index) = self.layout.windows.iter().position(|candidate| candidate.id == *id && candidate.role == WindowRole::Floating) {
+            self.layout.windows.remove(index);
+        }
+        self.floating.remove(id);
+        cx.notify();
+    }
+
+    /// Closes the gpui windows of floating windows the model no longer has,
+    /// and opens windows for floating windows the model has and this view
+    /// does not (a restored layout).
+    fn close_vanished_windows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let live: HashSet<WindowId> = self.layout.windows.iter().map(|candidate| candidate.id.clone()).collect();
+        let vanished: Vec<WindowId> = self.floating.keys().filter(|id| !live.contains(*id)).cloned().collect();
+        for id in vanished {
+            if let Some(floating) = self.floating.remove(&id) {
+                log::info!("workspace: floating window {id} has no panes left; closing it");
+                if floating.handle == window.window_handle() {
+                    window.remove_window();
+                } else if let Err(err) = floating.handle.update(cx, |_, window, _| window.remove_window()) {
+                    log::warn!("workspace: floating window {id} could not be closed: {err}");
+                }
+            }
+        }
+        let missing: Vec<(WindowId, WindowFrame)> = self
+            .layout
+            .windows
+            .iter()
+            .filter(|candidate| candidate.role == WindowRole::Floating && !self.floating.contains_key(&candidate.id))
+            .map(|candidate| (candidate.id.clone(), candidate.frame.unwrap_or(WindowFrame::new(80.0, 80.0, 960.0, 720.0))))
+            .collect();
+        for (id, frame) in missing {
+            self.open_floating_window(&id, frame, cx);
+        }
     }
 
     /// The model stack shown by the engine group `node`, from any pane it displays.
@@ -972,22 +1339,22 @@ impl WorkspaceView {
     }
 
     /// The drag is over (dropped, cancelled, released elsewhere): no overlay.
-    fn end_drag_overlay(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn end_drag_overlay(&mut self, cx: &mut Context<Self>) {
         if self.drag.take().is_some() {
             cx.notify();
         }
     }
 
     /// A screen from the launcher was dropped on one of the overlay's bands.
-    fn drop_item_on_band(&mut self, item: &AnyDrag, band: &Band, window: &mut Window, cx: &mut Context<Self>) {
+    fn drop_item_on_band(&mut self, item: &AnyDrag, in_window: &WindowId, band: &Band, window: &mut Window, cx: &mut Context<Self>) {
         match item.value().downcast_ref::<LaunchDrag>() {
-            Some(launch) => self.open_on_band(launch.route, band, window, cx),
+            Some(launch) => self.open_on_band(launch.route, in_window, band, window, cx),
             None => self.end_drag_overlay(cx),
         }
     }
 
     /// A pane was dropped on one of the overlay's bands.
-    fn drop_on_band(&mut self, panel: PanelId, band: &Band, window: &mut Window, cx: &mut Context<Self>) {
+    fn drop_on_band(&mut self, panel: PanelId, in_window: &WindowId, band: &Band, window: &mut Window, cx: &mut Context<Self>) {
         let Some(pane) = self.pane_of_panel(panel) else {
             log::warn!("workspace: a panel that is not one of the workspace's panes was dropped on a docking band; ignoring it");
             self.end_drag_overlay(cx);
@@ -998,22 +1365,36 @@ impl WorkspaceView {
             self.end_drag_overlay(cx);
             return;
         }
-        log::info!("workspace: pane {pane} dropped on band {} ({})", band.element_id(), band.label);
-        self.dock_pane(&pane, band.target.clone(), true, window, cx);
+        log::info!("workspace: pane {pane} dropped on band {} ({}) in {in_window}", band.element_id(), band.label);
+        self.dock_pane(&pane, in_window, band.target.clone(), true, window, cx);
     }
 
     /// The bands and the preview for the drag in flight, over the area. Only
     /// drawn while a pane drag is active; the panes' own drop zones stay the
     /// engine's, underneath.
-    fn render_drag_overlay(&self, drag: &DragInFlight, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_drag_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let root = self.root_bounds.get();
+        self.render_drag_overlay_for(&WindowId::main(), root.origin, root.size, cx)
+    }
+
+    /// The bands and the preview for the drag in flight, over the area of
+    /// `in_window`, placed relative to that window's `origin` (where its pane
+    /// area is drawn) and kept within `root_size`. Drawn only while a drag is
+    /// in flight; the panes' own drop zones stay the engine's, underneath.
+    pub(crate) fn render_drag_overlay_for(&self, in_window: &WindowId, origin: Point<Pixels>, root_size: Size<Pixels>, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let drag = self.drag.clone()?;
+        if !cx.has_active_drag() {
+            return None;
+        }
+        let drag = &drag;
+        let area_entity = self.area_of(in_window)?;
         let drawn = self.pane_bounds.borrow();
-        let bands = dock_targets::bands_for(&self.layout, &WindowId::main(), &drawn, drag);
+        let bands = dock_targets::bands_for(&self.layout, in_window, &drawn, drag);
         drop(drawn);
         if bands.is_empty() {
             return None;
         }
-        let origin = self.root_bounds.get().origin;
-        let area = self.area.read(cx).bounds();
+        let area = area_entity.read(cx).bounds();
         let theme = cx.theme();
         let primary = theme.primary;
         let muted = theme.muted_foreground;
@@ -1055,14 +1436,16 @@ impl WorkspaceView {
             // so the engine underneath does not treat it as a drop on the
             // pane's own edge zone. Panes and launcher screens both land here.
             let band_for_item = band.clone();
+            let window_for_drop = in_window.clone();
+            let window_for_item = in_window.clone();
             strip = strip
                 .on_drop(cx.listener(move |this, dropped: &DragPanel, window, cx| {
                     cx.stop_propagation();
-                    this.drop_on_band(dropped.panel(), &band_for_drop, window, cx);
+                    this.drop_on_band(dropped.panel(), &window_for_drop, &band_for_drop, window, cx);
                 }))
                 .on_drop(cx.listener(move |this, dropped: &AnyDrag, window, cx| {
                     cx.stop_propagation();
-                    this.drop_item_on_band(dropped, &band_for_item, window, cx);
+                    this.drop_item_on_band(dropped, &window_for_item, &band_for_item, window, cx);
                 }));
             overlay = overlay.child(strip);
         }
@@ -1096,9 +1479,9 @@ impl WorkspaceView {
             // Beside the pointer, or above it when the pointer is near the
             // bottom (the bands people aim for are at the edges).
             let anchor = drag.pointer - origin;
-            let room_below = self.root_bounds.get().size.height - anchor.y;
+            let room_below = root_size.height - anchor.y;
             let label_top = if room_below < px(48.) { anchor.y - px(32.) } else { anchor.y + px(16.) };
-            let label_left = (anchor.x + px(16.)).min(self.root_bounds.get().size.width - px(260.)).max(px(0.));
+            let label_left = (anchor.x + px(16.)).min(root_size.width - px(260.)).max(px(0.));
             overlay = overlay.child(
                 div()
                     .id("dock-band-label")
@@ -1137,9 +1520,12 @@ impl WorkspaceView {
     /// Reads the engine's layout back into the model after an edit the engine
     /// made on its own. An echo of the workspace's own edit changes nothing;
     /// a mirror that would leave the model invalid is reported and dropped.
-    pub fn mirror_from_area(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.area.read(cx).dump(cx);
-        let main = WindowId::main();
+    pub fn mirror_from_area(&mut self, in_window: &WindowId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(area) = self.area_of(in_window) else {
+            return;
+        };
+        let state = area.read(cx).dump(cx);
+        let main = in_window.clone();
         let previous_root = self.layout.window(&main).and_then(|window| window.root.clone());
         let mut candidate = self.layout.clone();
         let root = match mirror::layout_node_from_state(&state.center, previous_root.as_ref(), &mut candidate.ids) {
@@ -1239,31 +1625,59 @@ impl WorkspaceView {
 
     // ----- the area ----------------------------------------------------------------------
 
-    /// Rebuilds the dock area from the model's main window: every stack a tab
+    /// Rebuilds every window's dock area from the model: every stack a tab
     /// group of the existing pane views, every split's slots sized from its
     /// weights. The pane views survive, so their scroll and history do too.
+    /// Floating windows the model dropped are closed; ones it has and this
+    /// view does not are opened.
     pub fn rebuild_area(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let root = self.layout.main_window().and_then(|main| main.root.clone());
-        let layout = match &root {
-            Some(node) => {
-                let extent = self.area_extent(window, cx);
-                self.dock_layout_of(node, extent, cx)
-            }
-            None => DockLayout::h_split(),
-        };
-        self.area.update(cx, |area, cx| area.set_center(layout, window, cx));
+        self.close_vanished_windows(window, cx);
+        let ids: Vec<WindowId> = self.layout.windows.iter().map(|candidate| candidate.id.clone()).collect();
+        for id in ids {
+            let Some(area) = self.area_of(&id) else {
+                continue;
+            };
+            let root = self.layout.window(&id).and_then(|candidate| candidate.root.clone());
+            self.note_expected_removals(&area, root.as_ref(), cx);
+            let extent = self.area_extent(&area, &id, window, cx);
+            let layout = match &root {
+                Some(node) => self.dock_layout_of(node, extent, cx),
+                None => DockLayout::h_split(),
+            };
+            self.in_window(&id, window, cx, |window, cx| area.update(cx, |area, cx| area.set_center(layout, window, cx)));
+        }
         self.apply_active_flags(cx);
         cx.notify();
     }
 
-    /// The area's size — measured, or the content column's size before the
-    /// first frame. Slot sizes are shares of this, so only the ratios matter.
-    fn area_extent(&self, window: &Window, cx: &App) -> Size<Pixels> {
-        let measured = self.area.read(cx).bounds().size;
+    /// Panes `area` shows that `root` (the tree it is about to be rebuilt
+    /// from) no longer has, although the model still has them: they moved to
+    /// another window, and the engine's "removed" notice for each is expected.
+    fn note_expected_removals(&mut self, area: &Entity<DockArea>, root: Option<&LayoutNode>, cx: &App) {
+        let keeps: HashSet<PaneId> = root.map(LayoutNode::panes).unwrap_or_default().into_iter().collect();
+        let shown: Vec<PanelId> = area.read(cx).layout(gpui_kit::component::dock::DockPlacement::Center).map(|tree| tree.panels().collect()).unwrap_or_default();
+        for panel in shown {
+            if let Some(pane) = self.pane_of_panel(panel)
+                && !keeps.contains(&pane)
+                && self.layout.pane(&pane).is_some()
+            {
+                self.expected_removals.insert(pane);
+            }
+        }
+    }
+
+    /// An area's size — measured, or its window's size before the first
+    /// frame. Slot sizes are shares of this, so only the ratios matter.
+    fn area_extent(&self, area: &Entity<DockArea>, id: &WindowId, window: &Window, cx: &App) -> Size<Pixels> {
+        let measured = area.read(cx).bounds().size;
         if measured.width > px(0.) && measured.height > px(0.) {
             return measured;
         }
-        let viewport = window.viewport_size();
+        let viewport = if *id == WindowId::main() {
+            window.viewport_size()
+        } else {
+            self.layout.window(id).and_then(|candidate| candidate.frame).map(|frame| size(px(frame.width as f32), px(frame.height as f32))).unwrap_or(FLOATING_WINDOW_SIZE)
+        };
         size(viewport.width.max(px(1.)), viewport.height.max(px(1.)))
     }
 
@@ -1322,7 +1736,8 @@ impl WorkspaceView {
         let panel = PanelId::from(view.entity_id());
         let index = group.read(cx).panels().iter().position(|candidate| candidate.panel_id(cx) == panel);
         if let Some(index) = index {
-            group.update(cx, |group, cx| group.select_tab(index, window, cx));
+            let in_window = self.window_of_pane(pane);
+            self.in_window(&in_window, window, cx, |window, cx| group.update(cx, |group, cx| group.select_tab(index, window, cx)));
         }
     }
 
@@ -1335,11 +1750,16 @@ impl WorkspaceView {
         }
     }
 
-    /// Gives the active pane keyboard focus, so the workspace commands reach it.
+    /// Gives the active pane keyboard focus, in whichever window it is, so
+    /// the workspace commands reach it.
     fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(view) = self.active_pane().and_then(|active| self.panes.get(&active)) {
+        let Some(active) = self.active_pane() else {
+            return;
+        };
+        if let Some(view) = self.panes.get(&active) {
             let handle = view.read(cx).focus_handle(cx);
-            window.focus(&handle, cx);
+            let in_window = self.window_of_pane(&active);
+            self.in_window(&in_window, window, cx, |window, cx| window.focus(&handle, cx));
         }
     }
 
@@ -1364,7 +1784,7 @@ impl WorkspaceView {
 
     // ----- commands ------------------------------------------------------------------------
 
-    fn command_split(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn command_split(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
         let Some(route) = self.active_route(cx) else {
             log::warn!("workspace: split asked with no pane open");
             return;
@@ -1372,20 +1792,40 @@ impl WorkspaceView {
         let _ = self.split_active(side, route, window, cx);
     }
 
-    fn command_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn command_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.close_active(window, cx);
         self.report(&result, window, cx);
     }
 
-    fn command_focus_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn command_focus_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.focus_next_pane(window, cx);
         self.report(&result, window, cx);
     }
 
-    fn command_back(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn command_back(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         if self.back_active(cx).is_some() {
             self.sync_chrome(cx);
         }
+    }
+
+    /// The active pane goes to a window of its own.
+    pub(crate) fn command_detach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(active) = self.active_pane() else {
+            log::warn!("workspace: detach asked with no pane open");
+            return;
+        };
+        let result = self.detach_pane(&active, None, window, cx);
+        self.report(&result, window, cx);
+    }
+
+    /// `Move to new window` / `Move to the main window` from a pane's menu.
+    pub(crate) fn move_pane_from_menu(&mut self, pane: &PaneId, target: Option<WindowId>, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.set_active_pane(pane, window, cx);
+        let result = match target {
+            None => self.detach_pane(pane, None, window, cx).map(|_| ()),
+            Some(target) => self.move_pane_to_window(pane, &target, window, cx),
+        };
+        self.report(&result, window, cx);
     }
 
     // ----- rendering -------------------------------------------------------------------------
@@ -1417,6 +1857,11 @@ impl WorkspaceView {
                 })
             }))
     }
+}
+
+/// The workspace, from a floating window's event: the app keeps its handle.
+fn workspace_of(cx: &App) -> Option<Entity<WorkspaceView>> {
+    cx.try_global::<crate::actions::AppHandle>().and_then(|handle| handle.0.upgrade()).and_then(|app| app.read(cx).workspace_handle()).and_then(|workspace| workspace.upgrade())
 }
 
 /// The model's side for the engine's placement of a drop zone.
@@ -1458,7 +1903,7 @@ impl Render for WorkspaceView {
         )
         .absolute()
         .inset_0();
-        let overlay = self.drag.clone().and_then(|drag| self.render_drag_overlay(&drag, cx));
+        let overlay = self.render_drag_overlay(cx);
         let root = div()
             .id("workspace")
             .key_context(commands::KEY_CONTEXT)
@@ -1474,7 +1919,9 @@ impl Render for WorkspaceView {
                 this.follow_launch_drag(&item, event.event.position, cx);
             }))
             .capture_any_mouse_up(cx.listener(|this, _, _, cx| this.end_drag_overlay(cx)))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, event: &MouseUpEvent, window, cx| this.drag_released_outside(event.position, window, cx)))
             .child(recorder)
+            .on_action(cx.listener(|this, _: &DetachPane, window, cx| this.command_detach(window, cx)))
             .on_action(cx.listener(|this, _: &SplitRight, window, cx| this.command_split(Side::Right, window, cx)))
             .on_action(cx.listener(|this, _: &SplitBelow, window, cx| this.command_split(Side::Bottom, window, cx)))
             .on_action(cx.listener(|this, _: &ClosePane, window, cx| this.command_close(window, cx)))

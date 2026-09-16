@@ -15,13 +15,14 @@
 //! | [`ClosePane`] | `cmd-w` / `ctrl-w` | closes the active pane |
 //! | [`FocusNextPane`] | `cmd-alt-right` / `ctrl-alt-right` | makes the next pane (reading order) the active one |
 //! | [`Back`] | `cmd-[` / `alt-left` | the active pane shows the screen it showed before |
+//! | [`DetachPane`] | `cmd-shift-n` / `ctrl-shift-n` | moves the active pane into a floating window of its own |
 //!
 //! The pane title bar's menu offers the same commands for *its* pane; it calls
 //! the same `WorkspaceView` methods these handlers do.
 
 use gpui_kit::{App, Global, KeyBinding};
 
-gpui_kit::actions!(workspace, [SplitRight, SplitBelow, ClosePane, FocusNextPane, Back]);
+gpui_kit::actions!(workspace, [SplitRight, SplitBelow, ClosePane, FocusNextPane, Back, DetachPane]);
 
 /// The key context the bindings are scoped to; the workspace's root element
 /// carries it.
@@ -43,6 +44,8 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-\\", SplitRight, context),
         KeyBinding::new("ctrl-\\", SplitRight, context),
+        KeyBinding::new("cmd-shift-n", DetachPane, context),
+        KeyBinding::new("ctrl-shift-n", DetachPane, context),
         KeyBinding::new("cmd-shift-\\", SplitBelow, context),
         KeyBinding::new("ctrl-shift-\\", SplitBelow, context),
         KeyBinding::new("cmd-w", ClosePane, context),

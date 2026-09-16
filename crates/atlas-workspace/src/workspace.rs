@@ -107,6 +107,42 @@ impl WindowFrame {
     pub fn is_sane(&self) -> bool {
         [self.x, self.y, self.width, self.height].iter().all(|v| v.is_finite()) && self.width > 0.0 && self.height > 0.0
     }
+
+    /// The right edge.
+    pub fn right(&self) -> f64 {
+        self.x + self.width
+    }
+
+    /// The bottom edge.
+    pub fn bottom(&self) -> f64 {
+        self.y + self.height
+    }
+
+    /// How much of this frame lies inside `other`, in area.
+    fn overlap_with(&self, other: &WindowFrame) -> f64 {
+        let width = (self.right().min(other.right()) - self.x.max(other.x)).max(0.0);
+        let height = (self.bottom().min(other.bottom()) - self.y.max(other.y)).max(0.0);
+        width * height
+    }
+
+    /// The frame moved and shrunk so it lies inside one of `displays` — the
+    /// one it overlaps most, else the first — so a window saved on a monitor
+    /// that is gone, or off every screen, is never restored out of reach. A
+    /// frame that is not sane, or an empty display list, gives `fallback`.
+    pub fn clamped_to_displays(&self, displays: &[WindowFrame], fallback: WindowFrame) -> WindowFrame {
+        if !self.is_sane() {
+            return fallback;
+        }
+        let best = displays.iter().max_by(|a, b| self.overlap_with(a).partial_cmp(&self.overlap_with(b)).unwrap_or(std::cmp::Ordering::Equal)).filter(|display| self.overlap_with(display) > 0.0);
+        let Some(display) = best.or(displays.first()) else {
+            return fallback;
+        };
+        let width = self.width.min(display.width);
+        let height = self.height.min(display.height);
+        let x = self.x.clamp(display.x, (display.right() - width).max(display.x));
+        let y = self.y.clamp(display.y, (display.bottom() - height).max(display.y));
+        WindowFrame::new(x, y, width, height)
+    }
 }
 
 /// What one pane shows.
@@ -770,6 +806,27 @@ pub fn slug(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_frame_is_clamped_onto_the_display_it_overlaps_most() {
+        use super::WindowFrame;
+        let primary = WindowFrame::new(0.0, 0.0, 1920.0, 1080.0);
+        let secondary = WindowFrame::new(1920.0, 0.0, 1280.0, 1024.0);
+        let displays = [primary, secondary];
+        let fallback = WindowFrame::new(100.0, 100.0, 800.0, 600.0);
+        // On the second display, partly past its right edge: pulled back in.
+        let saved = WindowFrame::new(2800.0, 200.0, 900.0, 700.0);
+        assert_eq!(saved.clamped_to_displays(&displays, fallback), WindowFrame::new(2300.0, 200.0, 900.0, 700.0));
+        // Off every display (the monitor that held it is gone): the first display.
+        let gone = WindowFrame::new(-5000.0, 3000.0, 900.0, 700.0);
+        assert_eq!(gone.clamped_to_displays(&displays, fallback), WindowFrame::new(0.0, 380.0, 900.0, 700.0));
+        // Larger than any display: shrunk to fit.
+        let huge = WindowFrame::new(10.0, 10.0, 5000.0, 5000.0);
+        assert_eq!(huge.clamped_to_displays(&displays, fallback), WindowFrame::new(0.0, 0.0, 1920.0, 1080.0));
+        // Not sane, or no displays known: the fallback.
+        assert_eq!(WindowFrame::new(f64::NAN, 0.0, 10.0, 10.0).clamped_to_displays(&displays, fallback), fallback);
+        assert_eq!(saved.clamped_to_displays(&[], fallback), fallback);
+    }
+
     use super::*;
 
     #[test]
