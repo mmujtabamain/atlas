@@ -607,3 +607,80 @@ comments and docs no longer describe one (`docs/perf-plan.md` is history and kee
 none does today (`is_model_computed`, the perf frame name and the launcher are the readers).
 The `Section`-based element ids of the old sidebar are gone; tests use the launcher's
 `launcher-<slug>` ids.
+
+---
+
+## 14. Workspace polish — cards, drop targets, scale, cross-window drag
+
+**Claims.** *Skin* (`workspace/skin.rs`, `WorkspaceSkin`/`WorkspaceTabs` implementing the
+engine's `DockAreaRenderer`/`TabGroupRenderer`): panes are cards (tab bar = top half with the
+top corners and border, content frame = bottom half) in a darker well, `GAP` (8 px) apart; the
+divider paints nothing at rest, a 2 px accent line while dragged and a fainter one on hover
+(`render_split_handle`). Every tab has `tab-close-<ix>` (hover-revealed unless displayed); a lone
+title has `tab-close`. A window's last pane is draggable (the engine says no; the workspace has
+other windows). While a tab is held (`WorkspaceSkin::set_held`, driven by `follow_dragged` /
+`end_drag_overlay`) the gap heads for `HELD_GAP` (28 px), the area's inset for `HELD_INSET`
+(26 px), each card's scale for `HELD_SCALE` (0.9) and opacity for `HELD_OPACITY` (0.75), all on
+the theme's `spring_move`; released, they spring back.
+
+*Scale* (`workspace/scaled.rs`, `Scaled` element + the engine addition in
+`vendor/gpui-pre`, see `vendor/gpui-pre/PATCH.md`): `Window::with_scale(scale, origin, f)` is a
+paint-time transform — layout and hitboxes untouched, every primitive (quads, borders, shadows,
+text re-rasterized at the scaled size, images, paths, inner content masks) drawn scaled about
+the origin. The card's two halves scale about the card's centre (a canvas in the group frame
+records the card's rectangle). While scaled, `Scaled` takes mouse-down and wheel in the capture
+phase (no clicks, no scrolling); drags and drops pass; the workspace's keystroke interceptor
+swallows every key but Escape and Space while a drag is in flight.
+
+*Drop targets* (`workspace/dock_targets.rs`): `zones_for(layout, window, Field, drag)` — one
+`ZoneKind::Gap` per divider of every split (`dock-gap-<split>-<index>`, target `Beside` the
+child before the divider, label "Place between these panes, as a column/row") and one
+`ZoneKind::Edge` strip per window edge in the area's inset (`dock-band-<side>-<level>`;
+level 0 = `WindowEdge`; `Space` walks `ancestor_targets` for the pane meeting the edge under the
+pointer, broadest first, and the highlight shrinks to that target's span). Zones are laid on the
+*target* inset/gap, not the spring's current value. The stacked pane-edge bands are gone; the
+engine's own centre/half zones on each pane stay.
+
+*Cross-window drag* (`view.rs`): `follow_dragged` gets the source window; `window_under(from,
+screen)` finds another workspace window under the pointer (last-opened floating first, then
+main) and the displayed pane there; `DragInFlight.elsewhere` records it; the other window draws
+`dock-elsewhere` over that pane ("Move here, as a tab" / "Open here, as a tab" / "…into this
+window"); the source window draws no zones meanwhile. `drag_released_outside` docks into that
+window (tab of the pane under the pointer, else its active stack) for panes and launcher
+screens alike, and only otherwise opens a new floating window. The floating title bar's gather
+button is an icon with the tooltip "Move the panes to the active pane in the main window".
+
+**Verify.**
+
+1. `tests/workspace.rs`: `every_tab_and_a_lone_title_carry_a_close_button`,
+   `a_held_tab_widens_the_gaps_and_a_drop_closes_them`,
+   `dropping_into_the_gap_between_two_panes_places_the_pane_between_them`,
+   `a_screen_from_the_launcher_dropped_into_a_gap_opens_between_the_panes`, the edge-strip
+   tests (`dropping_on_the_band_of_two_columns…`, `dropping_on_the_window_band…`,
+   `dropping_on_a_groups_band…`, `the_analysis_shape…`, `hovering_a_band…`,
+   `space_walks_the_edge_strip…`, `a_band_the_minimum_size_rule_refuses…`),
+   `a_pane_dragged_from_a_floating_window_into_the_main_window_lands_as_a_tab`; unit tests in
+   `dock_targets.rs`.
+2. Scale in the harness: springs do not advance (the executor's clock is fake), so tests see
+   the cards at rest; the scaled state is checked by eye (screenshots) and the engine change by
+   the app (a held tab: cards at 90 %, 75 % opacity, titles intact).
+3. Drop onto a *scaled* pane's tab bar and content halves (tab and split zones of the engine)
+   — must still work; clicks on a scaled pane must not (hold a tab, click a toggle with the
+   other hand on a touchpad: nothing).
+4. Every gap of a nested layout (`1 | [2 / 3]`): the gap between 2 and 3 places between them
+   (a row of that column), the gap between 1 and the column places a column.
+5. Edge strips: each side, level 0, then Space through the levels for panes that meet the edge;
+   Space with the pointer over a *gap* (no effect); the refused case (minimum share) on a strip.
+6. A drag from window A over window B then back into A: A's zones return, B's highlight goes.
+   Drop over B's chrome (title bar): the pane joins B's active stack. Drop between two windows
+   (over the desktop): a new floating window, as before. Launcher drag into a floating window.
+7. Text at scale: run a drag over every screen (the reference shoot with a drag step) and look
+   for clipped or misplaced text, images and icons; the SVG icons scale about their own centre.
+8. Keys while a tab is held: only Escape (cancel) and Space (cycle) do anything.
+9. The sash: hover a divider (faint line), drag it (accent line, full length), release.
+
+**Known / fragile.** The gpui change lives in `vendor/gpui-pre` (3 MB of source) behind
+`[patch.crates-io]`; a gpui-kit upgrade means re-applying the diff of that commit. Scaled
+hitboxes stay where the layout put them (by design of the first version). Zones use element ids
+with the level in them (`dock-band-bottom-1` after one Space). The gap between two cards belongs
+to the outer split at a T-junction.
