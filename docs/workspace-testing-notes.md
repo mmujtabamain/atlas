@@ -320,3 +320,47 @@ jobs`. The save (`lifecycle.rs`) is a job with a retry runner; `run_sensitivity`
 list right after finishing if many finished ones are kept. Progress is a single "computing"
 step for the sensitivity job (no sub-steps). The jobs menu re-reads the centre when opened; it
 does not live-update while open.
+
+---
+
+## 8. Floating windows — (commit d3c2c83)
+
+**Claims.** `WorkspaceView` owns the model, pane entities and history for every window;
+`floating: HashMap<WindowId, FloatingWindow { handle, view, area }>`. `FloatingView`
+(`workspace/floating.rs`) is a floating window's root: slim title bar (`floating-gather` button),
+its own `DockArea`, the same drag handlers/actions, Root layers; its render asks the workspace
+for the overlay (`render_drag_overlay_for(window, origin, size)`). `rebuild_area` rebuilds every
+window's area (`in_window` runs a closure in the right gpui window) and closes/opens windows the
+model dropped/added; `rebuild_window` rebuilds one through its handle. `detach_pane`,
+`open_in_new_window`, `move_pane_to_window`, `gather_window`, `floating_window_closed` (close
+box → panes home), `drag_released_outside` (release outside the viewport → detach at the screen
+point), `command_detach` (`cmd/ctrl-shift-n`), pane menu items. Windows open from a deferred
+app-level step (`open_floating_window` → `register_floating_window`), because `open_window`
+draws the first frame synchronously and that frame reads the workspace; the area subscription
+is made at App level for the same reason. `expected_removals` tells a rebuild's removals from
+closes (`pane_left`). Frames are clamped with `WindowFrame::clamped_to_displays`.
+
+**Verify.**
+
+1. `tests/workspace.rs`: `a_pane_moves_into_a_window_of_its_own_and_back`,
+   `a_screen_opens_in_a_new_window_and_the_close_box_sends_panes_home`,
+   `releasing_a_drag_outside_the_window_opens_a_window_for_the_pane`; model unit test
+   `a_frame_is_clamped_onto_the_display_it_overlaps_most`.
+2. Inside a floating window: split right/below, tab drag between two panes there, docking bands
+   (their coordinates are that window's), a launcher drag *cannot* reach it (no launcher there —
+   expected), keyboard commands, a dialog opened by a screen appears in that window.
+3. Drop-outside from a *floating* window makes a third window; the emptied second window closes.
+4. Undo/redo across windows: undo a detach (window closes), redo (window reopens with the pane).
+5. Household switch / close with floating windows open: they must close (the model is replaced —
+   check `clear_for_closed_household`/`start_household` call `rebuild_area` so
+   `close_vanished_windows` runs).
+6. The close box path with an *empty* floating window (should not exist, but if it does, the
+   window is dropped from the model and closed).
+7. Two floating windows: `Move to the main window` from each; `floating_windows()` order.
+
+**Known / fragile.** Focus after a cross-window move goes to the pane's new window
+(`focus_active` → `in_window`), which may raise that window on some platforms. The floating
+window has no launcher; opening a screen there goes through the pane menu (Open right/below on a
+pane already there) or a drag from the main window's launcher is not possible. Window frames in
+the model are updated only when a window is opened (moves/resizes by the person are not tracked
+yet — persistence will record them on save).
