@@ -364,3 +364,38 @@ window has no launcher; opening a screen there goes through the pane menu (Open 
 pane already there) or a drag from the main window's launcher is not possible. Window frames in
 the model are updated only when a window is opened (moves/resizes by the person are not tracked
 yet — persistence will record them on save).
+
+---
+
+## 9. Layout persistence — (commit cbcd367)
+
+**Claims.** `workspace/session.rs`: `SessionStore::for_household(data_dir, identity)` →
+`sessions/<slug>.json`; `load()` (Fresh / Loaded / Recovered, foreign scope → Fresh);
+`write()` scrubs then `save_atomic` (+ `.bak`). `WorkspaceView::touch(reason, cx)` marks dirty
+and starts one timer (`session::DEBOUNCE` 750 ms) whose end calls `flush_session` — so a burst
+of changes is one write, ~750 ms after the *first* change; `record`, `mirror_from_area`,
+`sync_pane_definition` and `set_active_pane` all touch. `flush_session` also runs on household
+start/close and on the main window's close box; it notes every window's frame first.
+`restore_session` skips when `Launch.explicit_screen` (`--screen`/`--open`); `Loaded` →
+`install_layout` (placeholders for unknown kinds, floating windows opened by
+`close_vanished_windows`); `Recovered` → fresh + deferred warning toast + alerting.
+
+**Verify.**
+
+1. `tests/workspace.rs`: `the_workspace_is_written_after_a_change_and_restored_for_the_household`,
+   `a_corrupt_session_starts_fresh_keeps_the_file_and_says_so`,
+   `a_launch_that_names_a_screen_does_not_restore_the_session`,
+   `floating_windows_come_back_with_the_session`; `session.rs` unit test.
+2. A session written by a newer `schemaVersion` → Recovered with the version in the reason.
+3. A session whose pane names a deleted record → the unavailable placeholder, rest intact.
+4. Household A's session is never applied to household B (scope check) — open two real files.
+5. Data dir unwritable → warning through alerting, app keeps running.
+6. Kill the app mid-write: `.tmp` may remain; the next start reads the last complete file.
+7. The main window's frame is noted but not applied on restore (the window exists before the
+   workspace); floating frames are.
+8. Debounce semantics: a change 5 s after the previous write → written ~750 ms later; ten
+   divider drags in 500 ms → one write.
+
+**Known / fragile.** Writes happen ~750 ms after the first change, not the last; `Autosave::due`
+is not consulted (real-time clocks and the test executor's fake clock disagree). The
+`explicit_screen` flag is set by `Launch::parse` only; tests set it directly.
