@@ -19,7 +19,8 @@
 //! the others — and a single pane's title bar carries one too. The tab bar's
 //! menu is the pane's own commands, then zoom, then close.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -31,13 +32,15 @@ use gpui_kit::component::dock::{
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::base::ResizeHandleContext;
 use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _,
+    ActiveTheme as _, AxisExt as _, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::DropdownMenu as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+
+use super::scaled::{ScaleOrigin, Scaled};
 
 /// The gap between two cards at rest.
 pub const GAP: Pixels = px(8.);
@@ -48,6 +51,10 @@ pub const HELD_GAP: Pixels = px(28.);
 pub const HELD_INSET: Pixels = px(26.);
 /// The card's corner radius.
 const RADIUS: Pixels = px(8.);
+/// How much of its size a card is drawn at while a tab is held.
+pub const HELD_SCALE: f32 = 0.9;
+/// How opaque a card is drawn while a tab is held.
+pub const HELD_OPACITY: f32 = 0.75;
 /// The size of the ghost that follows the pointer while a tab is dragged.
 const DRAG_PREVIEW_SIZE: Size<Pixels> = size(px(96.), px(30.));
 
@@ -55,6 +62,16 @@ const DRAG_PREVIEW_SIZE: Size<Pixels> = size(px(96.), px(30.));
 pub struct SkinState {
     area: WeakEntity<DockArea>,
     held: Cell<bool>,
+    /// The inset and the gap as last laid out — mid-spring while a tab is
+    /// picked up or let go — so the drop zones are laid where the cards are.
+    laid_out: Cell<(Pixels, Pixels)>,
+    /// Each card's rectangle as last drawn, by group node: the point its two
+    /// halves scale about.
+    cards: RefCell<HashMap<u64, Rc<Cell<Bounds<Pixels>>>>>,
+    /// The pointer is over one of the workspace's own drop zones (a gap, an
+    /// edge strip), which takes the drop: the engine's pane indicator would
+    /// promise a second place for it.
+    zone_hovered: Cell<bool>,
 }
 
 impl SkinState {
@@ -72,6 +89,21 @@ impl SkinState {
     pub fn target_inset(&self) -> Pixels {
         if self.held.get() { HELD_INSET } else { GAP / 2. }
     }
+
+    /// The scale the cards are heading for.
+    pub fn target_scale(&self) -> f32 {
+        if self.held.get() { HELD_SCALE } else { 1. }
+    }
+
+    /// The opacity the cards are heading for.
+    pub fn target_opacity(&self) -> f32 {
+        if self.held.get() { HELD_OPACITY } else { 1. }
+    }
+
+    /// The live rectangle of the card of group `node`.
+    fn card(&self, node: u64) -> Rc<Cell<Bounds<Pixels>>> {
+        self.cards.borrow_mut().entry(node).or_default().clone()
+    }
 }
 
 /// The skin: gpui-component's, with the workspace's own frames and tab bar.
@@ -85,7 +117,7 @@ impl WorkspaceSkin {
     pub fn dock_area(id: impl Into<SharedString>, version: Option<usize>, window: &mut Window, cx: &mut App) -> (Entity<DockArea>, Rc<Self>) {
         let mut skin = None;
         let area = cx.new(|cx| {
-            let this = Rc::new(WorkspaceSkin { base: DockSkin::new(cx), state: Rc::new(SkinState { area: cx.weak_entity(), held: Cell::new(false) }) });
+            let this = Rc::new(WorkspaceSkin { base: DockSkin::new(cx), state: Rc::new(SkinState { area: cx.weak_entity(), held: Cell::new(false), laid_out: Cell::new((GAP / 2., GAP)), cards: RefCell::new(HashMap::new()), zone_hovered: Cell::new(false) }) });
             skin = Some(this.clone());
             DockArea::new(id, version, window, cx).with_renderer(this)
         });
@@ -109,6 +141,32 @@ impl WorkspaceSkin {
     pub fn is_held(&self) -> bool {
         self.state.is_held()
     }
+
+    /// The area's inset as last drawn.
+    pub fn inset(&self) -> Pixels {
+        self.state.laid_out.get().0
+    }
+
+    /// The gap between cards as last drawn.
+    pub fn gap(&self) -> Pixels {
+        self.state.laid_out.get().1
+    }
+
+    /// Tells the skin whether one of the workspace's drop zones is hovered,
+    /// so the engine's own drop indicator stays out of the way meanwhile.
+    pub fn set_zone_hovered(&self, hovered: bool) {
+        self.state.zone_hovered.set(hovered);
+    }
+
+    /// The inset the area is heading for.
+    pub fn target_inset(&self) -> Pixels {
+        self.state.target_inset()
+    }
+
+    /// The gap the cards are heading for.
+    pub fn target_gap(&self) -> Pixels {
+        self.state.target_gap()
+    }
 }
 
 impl DockAreaRenderer for WorkspaceSkin {
@@ -116,6 +174,8 @@ impl DockAreaRenderer for WorkspaceSkin {
     fn frame(&self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
         let motion = cx.theme().motion_tokens().spring_move;
         let inset = spring(("workspace-inset", "inset"), self.state.target_inset(), motion, window, cx);
+        let (_, gap) = self.state.laid_out.get();
+        self.state.laid_out.set((inset, gap));
         div().id("dock-area").p(inset).bg(gap_colour(cx))
     }
 
@@ -127,9 +187,43 @@ impl DockAreaRenderer for WorkspaceSkin {
         div().id(("dock-split-frame", node.as_u64())).bg(gap_colour(cx))
     }
 
-    /// The divider is the gap itself; nothing is painted over it.
-    fn render_split_handle(&self, _: &ResizeHandleContext, _: &mut Window, _: &mut App) -> Option<AnyElement> {
-        Some(div().into_any_element())
+    /// The divider is the gap itself, and shows only when it is used: a
+    /// fainter line while the pointer rests on it, the accent colour along
+    /// its whole length while it is dragged. A divider drag is known by the
+    /// resize cursor it carries; the dragged divider is the one the pointer
+    /// is at (the layout keeps it under the pointer as it moves).
+    fn render_split_handle(&self, handle: &ResizeHandleContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+        let accent = cx.theme().primary;
+        let axis = handle.axis();
+        let resizing = matches!(cx.active_drag_cursor_style(), Some(CursorStyle::ResizeColumn | CursorStyle::ResizeRow | CursorStyle::ResizeLeftRight | CursorStyle::ResizeUpDown));
+        let dragged_line = canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                if !resizing {
+                    return;
+                }
+                let mouse = window.mouse_position();
+                let centre = bounds.center();
+                let near = if axis.is_horizontal() { (mouse.x - centre.x).abs() <= px(24.) } else { (mouse.y - centre.y).abs() <= px(24.) };
+                if !near {
+                    return;
+                }
+                let line = if axis.is_horizontal() { Bounds::new(point(centre.x - px(1.), bounds.top()), size(px(2.), bounds.size.height)) } else { Bounds::new(point(bounds.left(), centre.y - px(1.)), size(bounds.size.width, px(2.))) };
+                window.paint_quad(fill(line, accent));
+            },
+        )
+        .absolute()
+        .when(axis.is_horizontal(), |this| this.top_0().left(px(-1.)).w(px(2.)).h_full())
+        .when(axis.is_vertical(), |this| this.left_0().top(px(-1.)).h(px(2.)).w_full());
+        let line = div()
+            .flex_none()
+            .relative()
+            .rounded(px(1.))
+            .when(axis.is_horizontal(), |this| this.h_full().w(px(2.)))
+            .when(axis.is_vertical(), |this| this.w_full().h(px(2.)))
+            .group_hover("handle", |this| this.bg(accent.opacity(0.55)))
+            .child(dragged_line);
+        Some(line.into_any_element())
     }
 
     fn render_dock(&self, dock: &DockContext, content: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -172,8 +266,23 @@ impl TabGroupRenderer for WorkspaceTabs {
     /// apart; the actions (zoom, close) are the base skin's.
     fn frame(&self, group: &TabGroupContext, window: &mut Window, cx: &mut App) -> Stateful<Div> {
         let motion = cx.theme().motion_tokens().spring_move;
-        let half_gap = spring((("pane-gap", group.node().as_u64()), "gap"), self.state.target_gap() / 2., motion, window, cx);
-        self.base.frame(group, window, cx).bg(gap_colour(cx)).p(half_gap)
+        let node = group.node().as_u64();
+        let half_gap = spring((("pane-gap", node), "gap"), self.state.target_gap() / 2., motion, window, cx);
+        let opacity = spring((("pane-opacity", node), "opacity"), self.state.target_opacity(), motion, window, cx);
+        let (inset, _) = self.state.laid_out.get();
+        self.state.laid_out.set((inset, half_gap * 2.));
+        // The card's rectangle (the frame less its padding) is what its two
+        // halves scale about; a canvas records it as the frame is laid out.
+        let card = self.state.card(node);
+        let recorder = canvas(
+            move |bounds, _, _| {
+                card.set(bounds);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset(half_gap);
+        self.base.frame(group, window, cx).bg(gap_colour(cx)).p(half_gap).opacity(opacity).child(recorder)
     }
 
     /// The card's lower half.
@@ -184,18 +293,23 @@ impl TabGroupRenderer for WorkspaceTabs {
 
     fn render_tab_bar(&self, group: &TabGroupContext, window: &mut Window, cx: &mut App) -> AnyElement {
         let visible: Vec<usize> = group.panels().iter().enumerate().filter(|(_, panel)| panel.visible(cx)).map(|(ix, _)| ix).collect();
-        match visible.as_slice() {
-            [] => Empty.into_any_element(),
+        let bar = match visible.as_slice() {
+            [] => return Empty.into_any_element(),
             [ix] => self.render_title(group, *ix, window, cx),
             _ => self.render_tabs(group, &visible, window, cx),
-        }
+        };
+        self.scaled(group, bar, window, cx)
     }
 
     fn render_active_panel(&self, panel: AnyView, group: &TabGroupContext, window: &mut Window, cx: &mut App) -> AnyElement {
-        self.base.render_active_panel(panel, group, window, cx)
+        let content = self.base.render_active_panel(panel, group, window, cx);
+        self.scaled(group, content, window, cx)
     }
 
     fn render_drop_indicator(&self, indicator: DropIndicator, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+        if self.state.zone_hovered.get() {
+            return None;
+        }
         self.base.render_drop_indicator(indicator, window, cx)
     }
 
@@ -205,6 +319,16 @@ impl TabGroupRenderer for WorkspaceTabs {
 }
 
 impl WorkspaceTabs {
+    /// One half of the card, drawn at the card's scale about the card's
+    /// centre — so the tab bar and the content shrink as one — and, while it
+    /// is drawn at any size but its own, taking no input.
+    fn scaled(&self, group: &TabGroupContext, half: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement {
+        let node = group.node().as_u64();
+        let motion = cx.theme().motion_tokens().spring_move;
+        let scale = spring((("pane-scale", node), "scale"), self.state.target_scale(), motion, window, cx);
+        Scaled::new(scale, ScaleOrigin::CenterOf(self.state.card(node)), half).into_any_element()
+    }
+
     /// The card's upper half around `bar`: the top corners and border.
     fn bar_shell(&self, cx: &App) -> Div {
         let theme = cx.theme();
@@ -212,10 +336,14 @@ impl WorkspaceTabs {
     }
 
     /// One pane, no tabs: its title, draggable, with the close button and the menu.
+    ///
+    /// Draggable even when it is the window's last pane — the engine sees
+    /// nowhere for such a pane to go, but the workspace does: another window,
+    /// or a window of its own.
     fn render_title(&self, group: &TabGroupContext, ix: usize, window: &mut Window, cx: &mut App) -> AnyElement {
         let panel = &group.panels()[ix];
         let title = title_of(panel, window, cx);
-        let drag = group.is_draggable().then(|| group.drag_panel(ix, cx)).flatten();
+        let drag = (!group.is_locked()).then(|| group.drag_panel(ix, cx)).flatten();
         let panel_for_ghost = panel.clone();
         let panel_id = panel.panel_id(cx);
         let closable = group.is_closable() && !group.is_collapsed();
@@ -285,7 +413,7 @@ impl WorkspaceTabs {
                 let panel = &group.panels()[ix];
                 let panel_id = panel.panel_id(cx);
                 let selected = Some(ix) == displayed_ix;
-                let drag = group.is_draggable().then(|| group.drag_panel(ix, cx)).flatten();
+                let drag = (!group.is_locked()).then(|| group.drag_panel(ix, cx)).flatten();
                 let panel_for_ghost = panel.clone();
                 let group_name = SharedString::from(format!("workspace-tab-{ix}"));
                 let group_for_close = group.clone();

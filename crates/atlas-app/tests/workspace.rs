@@ -10,7 +10,7 @@
 //! Drags are real pointer sequences on the pane titles (`pane-title-<n>`),
 //! the drag handle of a single-pane stack, dropped on the engine's zones of
 //! another pane — its centre for a tab, an edge for a split — or on the
-//! workspace's own bands (`dock-band-<side>-<depth>`) for docking beside a
+//! workspace's own zones (`dock-band-<side>-<level>` strips along the window's edges, `dock-gap-…` between panes) for docking beside a
 //! group, a run of siblings, or along the window.
 
 mod common;
@@ -772,35 +772,59 @@ fn start_drag_over(window: &mut Window, from: u64, over: u64, cx: &mut gpui_kit:
     assert!(cx.has_active_drag(), "the title started a drag");
 }
 
-/// Moves the drag in flight onto the band `dock-band-<side>-<depth>` and
-/// returns the band's centre.
-fn hover_band(window: &mut Window, side: &str, depth: usize, cx: &mut gpui_kit::App) -> Point<Pixels> {
-    let id = SharedString::from(format!("dock-band-{side}-{depth}"));
-    let centre = window.find(id).bounds().center();
-    move_pressed_to(window, centre, cx);
+/// Moves the drag in flight into the strip along `side` of the window, level
+/// with pane `at` (its centre across the edge), and presses Space `level`
+/// times to reach the deeper targets there. Returns the point.
+fn hover_edge(window: &mut Window, side: &str, at: u64, level: usize, cx: &mut gpui_kit::App) -> Point<Pixels> {
+    let strip = window.find(SharedString::from(format!("dock-band-{side}-0"))).bounds();
+    let pane = window.find(pane_id(at)).bounds().center();
+    let target = match side {
+        "top" | "bottom" => point(pane.x, strip.center().y),
+        _ => point(strip.center().x, pane.y),
+    };
+    move_pressed_to(window, target, cx);
     window.render_frame(cx);
-    centre
+    for _ in 0..level {
+        window.press("space", cx);
+        window.render_frame(cx);
+    }
+    target
 }
 
-/// Drags pane `from` onto the band `dock-band-<side>-<depth>` of the pane
-/// `over` and drops it there.
-fn drag_to_band(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle, from: u64, over: u64, side: &str, depth: usize) {
+/// Drags pane `from` into the strip along `side`, `level` presses of Space
+/// deep, and drops it there.
+fn drag_to_edge(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle, from: u64, side: &str, level: usize) {
     cx.update_window(window, |_, window, cx| {
-        start_drag_over(window, from, over, cx);
-        let centre = hover_band(window, side, depth, cx);
-        release_at(window, centre, cx);
+        start_drag_over(window, from, from, cx);
+        let target = hover_edge(window, side, from, level, cx);
+        release_at(window, target, cx);
     })
     .unwrap();
     settle(cx, window);
+}
+
+/// Moves the drag in flight into the gap between panes `before` and `after`
+/// (side by side, or one over the other) and returns the point.
+fn hover_gap(window: &mut Window, before: u64, after: u64, cx: &mut gpui_kit::App) -> Point<Pixels> {
+    let first = window.find(pane_id(before)).bounds();
+    let second = window.find(pane_id(after)).bounds();
+    let target = if second.left() >= first.right() - px(1.) {
+        point((first.right() + second.left()) / 2., first.center().y)
+    } else {
+        point(first.center().x, (first.bottom() + second.top()) / 2.)
+    };
+    move_pressed_to(window, target, cx);
+    window.render_frame(cx);
+    target
 }
 
 #[gpui_kit::test]
 fn dropping_on_the_band_of_two_columns_spans_exactly_those_columns(cx: &mut TestAppContext) {
     let (window, workspace) = three_equal_columns_and_a_tab(cx);
     let before = root_weights(cx, &workspace);
-    // The band just inside the window band, on the bottom of the third
-    // column, is the run "Accounts and Rules": Forecast goes under those two.
-    drag_to_band(cx, window, 4, 4, "bottom", 1);
+    // The bottom strip, level with the third column, one Space deep, is the
+    // run "Accounts and Rules": Forecast goes under those two.
+    drag_to_edge(cx, window, 4, "bottom", 1);
     assert_eq!(grid(cx, &workspace, 3, 3), "123\n123\n144", "the cross-column layout, without touching Today");
     let tree = root(cx, &workspace);
     assert!(about(tree.weights()[0], before[0]), "Today keeps its width: {:?} vs {before:?}", tree.weights());
@@ -824,7 +848,7 @@ fn dropping_on_the_band_of_two_columns_spans_exactly_those_columns(cx: &mut Test
 #[gpui_kit::test]
 fn dropping_on_the_window_band_spans_the_whole_window(cx: &mut TestAppContext) {
     let (window, workspace) = three_equal_columns_and_a_tab(cx);
-    drag_to_band(cx, window, 4, 4, "bottom", 0);
+    drag_to_edge(cx, window, 4, "bottom", 0);
     assert_eq!(grid(cx, &workspace, 3, 3), "123\n123\n444");
     let tree = root(cx, &workspace);
     assert_eq!(tree.axis(), Some(Axis::Vertical));
@@ -841,8 +865,8 @@ fn dropping_on_a_groups_band_divides_only_that_groups_slot(cx: &mut TestAppConte
     let rules = active(cx, &workspace);
     drive(cx, window, &workspace, |workspace, window, cx| workspace.stack_onto(&rules, Route::ForecastPath, window, cx).expect("tab"));
     let before = root_weights(cx, &workspace);
-    // Right of the column: bands are the column (inner) and the window (outer).
-    drag_to_band(cx, window, 4, 4, "right", 1);
+    // The right strip, level with the column: the window, then (Space) the column.
+    drag_to_edge(cx, window, 4, "right", 1);
     let tree = root(cx, &workspace);
     assert_eq!(tree.axis(), Some(Axis::Horizontal));
     assert_eq!(tree.children().len(), 3, "Today, the column, Forecast: {tree:?}");
@@ -855,7 +879,7 @@ fn dropping_on_a_groups_band_divides_only_that_groups_slot(cx: &mut TestAppConte
 #[gpui_kit::test]
 fn the_analysis_shape_is_reachable_by_a_drag_and_a_resize(cx: &mut TestAppContext) {
     let (window, workspace) = three_equal_columns_and_a_tab(cx);
-    drag_to_band(cx, window, 4, 4, "bottom", 1);
+    drag_to_edge(cx, window, 4, "bottom", 1);
     assert_eq!(grid(cx, &workspace, 3, 3), "123\n123\n144");
     // The new column is a vertical split of the 2–3 row over Forecast; a
     // third for the row and two thirds for Forecast is `123/144/144`.
@@ -875,14 +899,14 @@ fn hovering_a_band_shows_the_preview_and_escape_leaves_everything_as_it_was(cx: 
     cx.update_window(window, |_, window, cx| {
         start_drag_over(window, 4, 4, cx);
         assert!(window.try_find("dock-targets").is_some(), "the overlay is up while a pane is dragged");
-        assert!(window.try_find("dock-preview").is_none(), "no preview until a band is hovered");
-        hover_band(window, "bottom", 1, cx);
+        assert!(window.try_find("dock-preview").is_none(), "no preview until a zone is hovered");
+        hover_edge(window, "bottom", 4, 1, cx);
         let preview = window.find("dock-preview").bounds();
         let today = window.find(pane_id(1)).bounds();
         let accounts = window.find(pane_id(2)).bounds();
         assert!(preview.left() >= today.right() - px(2.) && preview.top() >= accounts.center().y, "the preview is the bottom of the 2–3 columns: {preview:?}");
         assert_eq!(window.find("dock-band-label").label(), Some("Dock below these 2 panes"));
-        assert_eq!(window.find("dock-band-bottom-0").label(), Some("Dock along the bottom of the window"));
+        assert_eq!(window.find("dock-band-bottom-1").label(), Some("Dock below these 2 panes"), "the strip itself says what its level does");
         window.press("escape", cx);
         window.render_frame(cx);
         assert!(!cx.has_active_drag());
@@ -898,8 +922,8 @@ fn hovering_a_band_shows_the_preview_and_escape_leaves_everything_as_it_was(cx: 
 }
 
 #[gpui_kit::test]
-fn space_cycles_the_inner_levels_while_the_window_band_stays(cx: &mut TestAppContext) {
-    // Five columns: the middle one has four runs below it, more than fit.
+fn space_walks_the_edge_strip_from_the_window_to_the_groups_that_meet_it(cx: &mut TestAppContext) {
+    // Five columns: below the middle one lie the window, then the runs it is in.
     let mut launch = sample(Route::Today);
     launch.extra = vec![Route::Accounts, Route::Rules, Route::ForecastPath, Route::People];
     let (handle, _app, workspace) = open_workspace(cx, launch);
@@ -908,14 +932,16 @@ fn space_cycles_the_inner_levels_while_the_window_band_stays(cx: &mut TestAppCon
     assert_eq!(grid(cx, &workspace, 5, 1), "12345");
     cx.update_window(window, |_, window, cx| {
         start_drag_over(window, 5, 3, cx);
-        hover_band(window, "bottom", 2, cx);
-        assert_eq!(window.find("dock-band-label").label(), Some("Dock below these 2 panes"), "the innermost band: Rules with Accounts");
-        assert_eq!(window.find("dock-band-bottom-0").label(), Some("Dock along the bottom of the window"));
+        hover_edge(window, "bottom", 3, 0, cx);
+        assert_eq!(window.find("dock-band-label").label(), Some("Dock along the bottom of the window"), "the strip starts as the window's edge");
         window.press("space", cx);
         window.render_frame(cx);
         assert!(cx.has_active_drag(), "Space does not end the drag");
-        assert_eq!(window.find("dock-band-label").label(), Some("Dock below these 3 panes"), "after Space the innermost band is the next run");
-        assert_eq!(window.find("dock-band-bottom-0").label(), Some("Dock along the bottom of the window"), "the window band stays outermost");
+        assert_eq!(window.find("dock-band-label").label(), Some("Dock below these 3 panes"), "then the widest run the middle column is in");
+        assert_eq!(window.find("dock-band-bottom-1").label(), Some("Dock below these 3 panes"));
+        window.press("space", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("dock-band-label").label(), Some("Dock below these 2 panes"), "then a narrower run");
         window.press("escape", cx);
         release_at(window, window.find(pane_id(3)).bounds().center(), cx);
     })
@@ -933,7 +959,7 @@ fn a_band_the_minimum_size_rule_refuses_takes_no_drop(cx: &mut TestAppContext) {
     let labels = history_labels(cx, &workspace);
     cx.update_window(window, |_, window, cx| {
         start_drag_over(window, 4, 4, cx);
-        hover_band(window, "bottom", 0, cx);
+        hover_edge(window, "bottom", 4, 0, cx);
         assert_eq!(window.find("dock-band-bottom-0").label(), Some("Dock along the bottom of the window (not enough room)"));
         assert_eq!(window.find("dock-band-label").label(), Some("Not enough room here"));
         assert!(window.try_find("dock-preview").is_none(), "a refused band previews nothing");
@@ -945,6 +971,56 @@ fn a_band_the_minimum_size_rule_refuses_takes_no_drop(cx: &mut TestAppContext) {
     assert_eq!(layout_json(cx, &workspace), before, "the drop changed nothing");
     assert_eq!(history_labels(cx, &workspace), labels);
     assert_eq!(grid(cx, &workspace, 3, 3), "124\n124\n124");
+}
+
+#[gpui_kit::test]
+fn dropping_into_the_gap_between_two_panes_places_the_pane_between_them(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = three_columns(cx);
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    cx.update_window(window, |_, window, cx| {
+        start_drag_over(window, 3, 1, cx);
+        let target = hover_gap(window, 1, 2, cx);
+        assert_eq!(window.find("dock-band-label").label(), Some("Place between these panes, as a column"));
+        assert!(window.find("dock-preview").visible(), "the preview shows where it lands");
+        release_at(window, target, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(cx.update(|cx| workspace.read(cx).panes_in_order()), vec![order[0].clone(), order[2].clone(), order[1].clone()], "Rules sits between Today and Accounts");
+    assert_eq!(pane_count(cx, &workspace), 3);
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Move pane"));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("dock-targets").is_none(), "the overlay is gone after the drop");
+        let today = window.find(pane_id(1)).bounds();
+        let rules = window.find(pane_id(3)).bounds();
+        let accounts = window.find(pane_id(2)).bounds();
+        assert!(today.right() <= rules.left() && rules.right() <= accounts.left(), "{today:?} {rules:?} {accounts:?}");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_screen_from_the_launcher_dropped_into_a_gap_opens_between_the_panes(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let handle = window.find("launcher-item-rules").bounds().center();
+        let over = window.find(pane_id(1)).bounds().center();
+        press_at(window, handle, cx);
+        move_pressed_to(window, handle + point(px(12.), px(4.)), cx);
+        move_pressed_to(window, over, cx);
+        window.render_frame(cx);
+        let target = hover_gap(window, 1, 2, cx);
+        assert_eq!(window.find("dock-band-label").label(), Some("Place between these panes, as a column"));
+        release_at(window, target, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 3);
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    cx.update(|cx| assert_eq!(workspace.read(cx).pane_route(&order[1], cx), Some(Route::Rules), "Rules opened between Today and Accounts"));
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Open Rules"));
 }
 
 // ----- pane definitions follow the pane; placeholders -------------------------------------
@@ -1187,7 +1263,7 @@ fn a_screen_dragged_from_the_launcher_becomes_a_pane_where_it_is_dropped(cx: &mu
         move_pressed_to(window, over, cx);
         window.render_frame(cx);
         assert!(cx.has_active_drag());
-        assert!(window.try_find("dock-targets").is_some(), "the bands show for a launcher drag too");
+        assert!(window.try_find("dock-targets").is_some(), "the zones show for a launcher drag too");
         let band = window.find("dock-band-bottom-0").bounds().center();
         move_pressed_to(window, band, cx);
         window.render_frame(cx);
@@ -2302,4 +2378,63 @@ fn a_held_tab_widens_the_gaps_and_a_drop_closes_them(cx: &mut TestAppContext) {
     .unwrap();
     settle(cx, window);
     assert!(!cx.update(|cx| workspace.read(cx).skin().is_held()), "and that it was let go");
+}
+
+// ----- a drag from one window into another --------------------------------------------------
+
+#[gpui_kit::test]
+fn a_pane_dragged_from_a_floating_window_into_the_main_window_lands_as_a_tab(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let today = cx.update(|cx| workspace.read(cx).panes_in_order()[0].clone());
+    let accounts = active(cx, &workspace);
+    let floating = drive(cx, window, &workspace, |workspace, window, cx| workspace.detach_pane(&accounts, None, window, cx).expect("detach"));
+    let floating_window = cx.update(|cx| workspace.read(cx).window_handle_of(&floating)).expect("the floating window");
+    // Where the main window's Today pane is, on screen.
+    let (main_origin, today_centre) = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            (window.bounds().origin, window.find(pane_id(1)).bounds().center())
+        })
+        .unwrap();
+    let floating_origin = cx.update_window(floating_window, |_, window, _| window.bounds().origin).unwrap();
+    // In the floating window's own coordinates, that point is outside it.
+    let over_today = main_origin + today_centre - floating_origin;
+    cx.update_window(floating_window, |_, window, cx| {
+        window.render_frame(cx);
+        let handle = window.find(title_id(2)).bounds().center();
+        press_at(window, handle, cx);
+        move_pressed_to(window, handle + point(px(12.), px(4.)), cx);
+        move_pressed_to(window, over_today, cx);
+        window.render_frame(cx);
+        assert!(cx.has_active_drag());
+        assert!(window.try_find("dock-band-label").is_none(), "the source window shows no zones while the pointer is elsewhere");
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let drag = workspace.read(cx).drag_in_flight().expect("a drag in flight");
+        assert_eq!(drag.elsewhere, Some((atlas_workspace::WindowId::main(), Some(today.clone()))), "the drag knows it is over Today in the main window");
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("dock-elsewhere").visible(), "the main window shows where the pane would land");
+        assert_eq!(window.find("dock-elsewhere").label(), Some("Move here, as a tab"));
+    })
+    .unwrap();
+    cx.update_window(floating_window, |_, window, cx| release_at(window, over_today, cx)).unwrap();
+    cx.run_until_parked();
+    settle(cx, window);
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.layout().window_id_of(&accounts), Some(atlas_workspace::WindowId::main()), "Accounts moved into the main window");
+        assert_eq!(workspace.layout().stack_of(&accounts), workspace.layout().stack_of(&today), "as a tab of Today's stack");
+        assert!(workspace.floating_windows().is_empty(), "the emptied floating window closed");
+    });
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Move pane"));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("dock-elsewhere").is_none(), "the highlight is gone");
+        assert!(window.find("screen-accounts").visible(), "the moved pane is the displayed tab");
+    })
+    .unwrap();
 }

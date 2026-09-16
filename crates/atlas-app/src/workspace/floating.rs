@@ -7,8 +7,9 @@
 //! own dock area over the model's tree for that window, and the same drag
 //! bands, commands and dialog layers. There is no difference between a pane
 //! here and one in the main window: they are the same entities, moved by the
-//! same operations, and a pane can be dragged within either window, moved
-//! between them from its menu, or dropped outside the window it is in to
+//! same operations, and a pane can be dragged within either window, dragged
+//! from one window into another (it lands as a tab of the pane it is dropped
+//! on), moved between them from its menu, or dropped outside every window to
 //! open a window of its own.
 //!
 //! The window closes on its own when its last pane leaves (the model drops the
@@ -82,8 +83,7 @@ impl FloatingView {
                         .ghost()
                         .compact()
                         .icon(IconName::PanelLeftClose)
-                        .label("Move panes to the main window")
-                        .tooltip("Every pane here goes back to the main window and this window closes")
+                        .tooltip("Move the panes to the active pane in the main window")
                         .on_click(move |_, window, cx| workspace.update(cx, |workspace, cx| workspace.gather_window(&id, window, cx))),
                 ),
             )
@@ -124,18 +124,18 @@ impl Render for FloatingView {
             .size_full()
             .on_drag_move({
                 let workspace = workspace.clone();
-                move |event: &DragMoveEvent<DragPanel>, _, cx| {
+                move |event: &DragMoveEvent<DragPanel>, window, cx| {
                     let panel = event.drag(cx).panel();
                     let position = event.event.position;
-                    workspace.update(cx, |workspace, cx| workspace.follow_drag(panel, position, cx));
+                    workspace.update(cx, |workspace, cx| workspace.follow_drag(panel, position, window, cx));
                 }
             })
             .on_drag_move({
                 let workspace = workspace.clone();
-                move |event: &DragMoveEvent<AnyDrag>, _, cx| {
+                move |event: &DragMoveEvent<AnyDrag>, window, cx| {
                     let item = event.drag(cx).clone();
                     let position = event.event.position;
-                    workspace.update(cx, |workspace, cx| workspace.follow_launch_drag(&item, position, cx));
+                    workspace.update(cx, |workspace, cx| workspace.follow_launch_drag(&item, position, window, cx));
                 }
             })
             .capture_any_mouse_up({

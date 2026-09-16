@@ -32,12 +32,13 @@
 //! | [`pane`] | [`PaneView`]: one pane — a dock panel rendering one screen, with its own scroll region and in-pane history |
 //! | [`kinds`] | the pane registry: a route as a pane definition (`kind` + `resource`) and back; titles and icons |
 //! | [`mirror`] | reading the engine's dumped layout back into a model tree |
-//! | [`dock_targets`] | the drag-target overlay: bands for docking beside a group, a run of siblings, or the window |
+//! | [`dock_targets`] | the drag-target overlay: the gaps between panes and the strips along the window's edges |
 //! | [`launcher`] | the pane launcher strip under the title bar, and its saved arrangement |
 //! | [`jobs`] | the job centre: long-running work that outlives the pane that started it |
 //! | [`floating`] | a floating window: another root over the same workspace |
 //! | [`session`] | the session file per household: debounced atomic autosave and restore |
 //! | [`skin`] | the dock's look: panes as cards with a gap, tabs with a close button, the room a drag needs |
+//! | [`scaled`] | an element drawn scaled about a point without relayout — the cards while a tab is held |
 //! | [`layouts`] | saved layouts and templates: save, load, presets, manage |
 //! | [`commands`] | the keyboard commands: split, close, next pane, back |
 //!
@@ -58,6 +59,7 @@ pub mod launcher;
 pub mod layouts;
 pub mod mirror;
 pub mod pane;
+pub mod scaled;
 pub mod session;
 pub mod skin;
 pub mod view;

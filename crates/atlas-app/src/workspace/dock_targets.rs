@@ -1,47 +1,44 @@
-//! The drag-target overlay: docking a pane beside a whole group, beside a
-//! run of sibling panes, or at the window's edge.
+//! The drag-target overlay: dropping a pane *between* two panes, or along
+//! the window's edge.
 //!
 //! The dock engine's own drop zones are relative to **one pane**: its centre
-//! (a tab) and its four edges (a split of that pane's slot). Layouts where a
-//! pane spans several columns or rows — `123/123/144`, the plan's example —
-//! need broader targets, and those must be explicit: the workspace never
-//! rearranges unrelated panes on its own. While a pane is being dragged, this
-//! module lays **bands** just inside the edges of the pane under the pointer,
-//! one per broader target the layout offers on that side
-//! ([`atlas_workspace::ops::ancestor_targets`]): the pane's parent group, a
-//! run of its siblings, a larger group, the window. The band nearest the
-//! edge is the broadest target; the pane's own edge zone stays the engine's,
-//! further inside.
+//! (a tab) and its four halves (a split of that pane's slot). Everything
+//! broader is this overlay's, and it is laid where the eye expects it while
+//! a tab is held, when the skin widens the gaps between the cards and pulls
+//! them in from the window's edges ([`super::skin`]):
 //!
-//! | band | what dropping there does |
-//! |---|---|
-//! | `Beside` a split | a new stack beside the whole group, spanning it |
-//! | `BesideRange` | the run of siblings is grouped first, then the pane goes beside that group |
-//! | `WindowEdge` | a new stack along the whole window edge |
+//! | zone | where | what dropping there does |
+//! |---|---|---|
+//! | [`ZoneKind::Gap`] | the gap between two children of a split | the pane lands between them, a new column or row of that split |
+//! | [`ZoneKind::Edge`] | the strip along a window edge, in the room the cards freed | a new stack along the whole edge — or, with `Space`, beside the group or the pane that meets the edge there |
 //!
-//! At most [`MAX_VISIBLE_LEVELS`] bands show per side — the window's edge is
-//! always the outermost — and `Space` while dragging cycles through the
-//! inner levels when more exist than fit. Hovering a band shows the rectangle the dragged
-//! pane would occupy and a label saying what will happen; a band whose move
-//! the model refuses (the minimum-size rule) is drawn muted and says so.
+//! A gap is one split and one divider, so a layout offers exactly as many
+//! gap zones as it has dividers, nested groups included; there is nothing to
+//! stack or cycle. An edge strip starts as the window's edge; `Space` walks
+//! the levels [`atlas_workspace::ops::ancestor_targets`] lists for the pane
+//! that meets the edge under the pointer, and the strip's highlight shrinks
+//! to the span of the group it would dock beside.
 //!
-//! Everything here is geometry over the model and the panes' recorded
-//! rectangles ([`super::pane::PaneBounds`]); the workspace view draws the
-//! result and handles the drops.
+//! Hovering a zone shows the rectangle the dragged pane would occupy and a
+//! label saying what will happen; a zone whose move the model refuses (the
+//! minimum-size rule) is drawn muted and says so.
+//!
+//! Everything here is geometry over the model's rectangles and the area's
+//! bounds; the workspace view draws the result and handles the drops.
 
 use std::collections::HashMap;
 
-use atlas_workspace::{DockTarget, LayoutNode, OpError, PaneId, Rect, Side, WindowId, WorkspaceLayout, ops};
+use atlas_workspace::{DockTarget, LayoutNode, NodeId, OpError, PaneId, Rect, Side, WindowId, WorkspaceLayout, ops};
 use gpui_kit::{Bounds, Pixels, Point, SharedString, point, px, size};
 
 use super::kinds;
 use super::mirror;
 use crate::nav::Route;
 
-/// How thick one band is.
-pub const BAND_THICKNESS: Pixels = px(14.);
-/// How many broader targets are shown on one side at once.
-pub const MAX_VISIBLE_LEVELS: usize = 3;
+/// How much wider than the gap its drop zone is, so the gap is easy to hit.
+const GAP_SLOP: Pixels = px(6.);
+/// The room an edge strip leaves to the corners and to the cards.
+const STRIP_MARGIN: Pixels = px(3.);
 
 /// What is being dragged: a pane already in the layout, or a screen from
 /// the launcher that becomes a pane where it is dropped.
@@ -51,16 +48,19 @@ pub enum Dragged {
     New(Route),
 }
 
-/// A drag as the overlay follows it: what is dragged, where the pointer is,
-/// and how far `Space` has cycled the visible levels.
+/// A drag as the overlay follows it: what is dragged, where the pointer is
+/// (in the window the drag started in), how far `Space` has cycled an edge
+/// strip's levels, and — when the pointer has left that window for another
+/// window of the workspace — which window, and the displayed pane under it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DragInFlight {
     pub dragged: Dragged,
     pub pointer: Point<Pixels>,
     pub level_offset: usize,
+    pub elsewhere: Option<(WindowId, Option<PaneId>)>,
 }
 
-/// What dropping on a band would do, decided by the model on a copy.
+/// What dropping on a zone would do, decided by the model on a copy.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     /// The move is allowed; `preview` is where the pane would sit, as a share
@@ -72,31 +72,54 @@ pub enum Outcome {
     Refused(String),
 }
 
-/// One target band of the overlay.
+/// Where a zone is.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Band {
+pub enum ZoneKind {
+    /// The gap before child `index` of `split` (between `index - 1` and `index`).
+    Gap { split: NodeId, index: usize },
+    /// The strip along `side` of the window, showing level `level` of its
+    /// targets (0 is the window's edge itself).
+    Edge { side: Side, level: usize },
+}
+
+/// One drop zone of the overlay.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Zone {
+    pub kind: ZoneKind,
     pub target: DockTarget,
-    pub side: Side,
-    /// 0 is the band nearest the edge, i.e. the broadest target shown.
-    pub depth: usize,
-    /// Where the band is drawn, in window coordinates.
+    /// Where the zone takes a drop, in window coordinates.
     pub bounds: Bounds<Pixels>,
+    /// Where the zone is drawn: the strip's whole length, or the span of the
+    /// group a cycled level docks beside.
+    pub drawn: Bounds<Pixels>,
     /// What dropping here does, in plain words.
     pub label: String,
     pub outcome: Outcome,
-    /// Whether the pointer is over this band.
+    /// Whether the pointer is over this zone.
     pub hovered: bool,
 }
 
-impl Band {
-    /// The element id tests find the band by: `dock-band-<side>-<depth>`.
+impl Zone {
+    /// The element id tests find the zone by: `dock-band-<side>-<level>` for
+    /// an edge strip, `dock-gap-<split>-<index>` for a gap.
     pub fn element_id(&self) -> SharedString {
-        SharedString::from(format!("dock-band-{}-{}", side_slug(self.side), self.depth))
+        match &self.kind {
+            ZoneKind::Edge { side, level } => SharedString::from(format!("dock-band-{}-{level}", side_slug(*side))),
+            ZoneKind::Gap { split, index } => SharedString::from(format!("dock-gap-{split}-{index}")),
+        }
     }
 
     /// Whether a drop here is accepted at all.
     pub fn accepts_drops(&self) -> bool {
         !matches!(self.outcome, Outcome::Refused(_))
+    }
+
+    /// The side a zone docks on.
+    pub fn side(&self) -> Side {
+        match &self.kind {
+            ZoneKind::Edge { side, .. } => *side,
+            ZoneKind::Gap { .. } => self.target.side().unwrap_or(Side::Right),
+        }
     }
 }
 
@@ -109,60 +132,167 @@ pub fn hovered_pane(root: Option<&LayoutNode>, drawn: &HashMap<PaneId, Bounds<Pi
     hit.first().map(|pane| (*pane).clone())
 }
 
-/// The bands for the pane under the pointer, on all four sides. Empty when
-/// no pane is under the pointer or the layout offers nothing broader than
-/// the pane itself.
-pub fn bands_for(layout: &WorkspaceLayout, window: &WindowId, drawn: &HashMap<PaneId, Bounds<Pixels>>, drag: &DragInFlight) -> Vec<Band> {
+/// The geometry the zones are laid on: the dock area as drawn, the inset the
+/// cards pulled in by, and the gap between them.
+#[derive(Clone, Copy, Debug)]
+pub struct Field {
+    /// The area's bounds, padding included, in window coordinates.
+    pub area: Bounds<Pixels>,
+    /// The padding between the area's edge and the cards.
+    pub inset: Pixels,
+    /// The gap between two cards.
+    pub gap: Pixels,
+}
+
+impl Field {
+    /// The rectangle the cards share: the area less its inset.
+    pub fn content(&self) -> Bounds<Pixels> {
+        Bounds::new(self.area.origin + point(self.inset, self.inset), size((self.area.size.width - self.inset * 2.).max(px(0.)), (self.area.size.height - self.inset * 2.).max(px(0.))))
+    }
+
+    /// A model rectangle (a share of the window) as pixels within the content.
+    pub fn place(&self, rect: Rect) -> Bounds<Pixels> {
+        let content = self.content();
+        Bounds::new(
+            point(content.origin.x + content.size.width * rect.x as f32, content.origin.y + content.size.height * rect.y as f32),
+            size(content.size.width * rect.width as f32, content.size.height * rect.height as f32),
+        )
+    }
+}
+
+/// Every zone of the window for the drag in flight: one per divider of every
+/// split, and one strip per window edge.
+pub fn zones_for(layout: &WorkspaceLayout, window: &WindowId, field: Field, drag: &DragInFlight) -> Vec<Zone> {
     let Some(root) = layout.window(window).and_then(|window| window.root.as_ref()) else {
         return Vec::new();
     };
-    let Some(hovered) = hovered_pane(Some(root), drawn, drag.pointer) else {
-        return Vec::new();
-    };
-    let Some(pane_bounds) = drawn.get(&hovered).copied() else {
-        return Vec::new();
-    };
-    let mut bands = Vec::new();
+    let rects: HashMap<NodeId, Rect> = root.rects().into_iter().collect();
+    let mut zones = Vec::new();
+    gap_zones(layout, window, root, &rects, field, drag, &mut zones);
     for side in Side::all() {
-        // The first level is the pane's own stack, which the engine's edge
-        // zone already offers; the bands are for everything broader.
-        let levels: Vec<DockTarget> = ops::ancestor_targets(root, &hovered, side).into_iter().skip(1).collect();
-        if levels.is_empty() {
-            continue;
-        }
-        // The window's edge is the target people reach for most, so it is
-        // always the outermost band; `Space` cycles through the inner levels
-        // (groups and runs) when more of them exist than fit.
-        let (edges, inner): (Vec<DockTarget>, Vec<DockTarget>) = levels.into_iter().partition(|target| matches!(target, DockTarget::WindowEdge { .. }));
-        let offset = if inner.is_empty() { 0 } else { drag.level_offset % inner.len() };
-        let mut visible: Vec<DockTarget> = inner.iter().skip(offset).take(MAX_VISIBLE_LEVELS - 1).cloned().collect();
-        visible.extend(edges);
-        let shown = visible.len();
-        for (index, target) in visible.iter().enumerate() {
-            // The last of the visible levels is the broadest, and goes nearest the edge.
-            let depth = shown - 1 - index;
-            let bounds = band_bounds(pane_bounds, side, depth);
-            let outcome = outcome_of(layout, window, &drag.dragged, target);
-            let label = describe(root, target, side);
-            bands.push(Band { target: target.clone(), side, depth, bounds, label, outcome, hovered: bounds.contains(&drag.pointer) });
+        if let Some(zone) = edge_zone(layout, window, root, &rects, field, drag, side) {
+            zones.push(zone);
         }
     }
-    bands
+    // One zone takes the pointer: the first hit in tree order (an outer
+    // split's gap before an inner one's), so a T-junction is not two.
+    let mut taken = false;
+    for zone in &mut zones {
+        zone.hovered = !taken && zone.bounds.contains(&drag.pointer);
+        taken |= zone.hovered;
+    }
+    zones
 }
 
-/// The band `depth` levels in from `side` of a pane drawn at `pane`.
-/// Horizontal bands (top and bottom) span the pane's width less the corners
-/// the vertical bands need, and the other way round, so no two bands overlap.
-pub fn band_bounds(pane: Bounds<Pixels>, side: Side, depth: usize) -> Bounds<Pixels> {
-    let inset = BAND_THICKNESS * depth as f32;
-    let corner = BAND_THICKNESS * MAX_VISIBLE_LEVELS as f32;
-    let right = pane.origin.x + pane.size.width;
-    let bottom = pane.origin.y + pane.size.height;
-    match side {
-        Side::Top => Bounds::new(point(pane.origin.x + corner, pane.origin.y + inset), size((pane.size.width - corner * 2.).max(px(0.)), BAND_THICKNESS)),
-        Side::Bottom => Bounds::new(point(pane.origin.x + corner, bottom - inset - BAND_THICKNESS), size((pane.size.width - corner * 2.).max(px(0.)), BAND_THICKNESS)),
-        Side::Left => Bounds::new(point(pane.origin.x + inset, pane.origin.y + corner), size(BAND_THICKNESS, (pane.size.height - corner * 2.).max(px(0.)))),
-        Side::Right => Bounds::new(point(right - inset - BAND_THICKNESS, pane.origin.y + corner), size(BAND_THICKNESS, (pane.size.height - corner * 2.).max(px(0.)))),
+/// The gap zones: the divider before every child but the first, of every
+/// split, walked pre-order.
+fn gap_zones(layout: &WorkspaceLayout, window: &WindowId, root: &LayoutNode, rects: &HashMap<NodeId, Rect>, field: Field, drag: &DragInFlight, out: &mut Vec<Zone>) {
+    let Some(axis) = root.axis() else {
+        return;
+    };
+    let children = root.children();
+    let Some(split_rect) = rects.get(root.id()).copied() else {
+        return;
+    };
+    let split_bounds = field.place(split_rect);
+    let thickness = field.gap + GAP_SLOP * 2.;
+    for index in 1..children.len() {
+        let (Some(before), Some(after)) = (rects.get(children[index - 1].id()), rects.get(children[index].id())) else {
+            continue;
+        };
+        let after_bounds = field.place(*after);
+        // The divider sits where the next child starts; the zone is centred on it.
+        let bounds = match axis {
+            atlas_workspace::Axis::Horizontal => Bounds::new(point(after_bounds.origin.x - thickness / 2., split_bounds.origin.y + STRIP_MARGIN), size(thickness, (split_bounds.size.height - STRIP_MARGIN * 2.).max(px(0.)))),
+            atlas_workspace::Axis::Vertical => Bounds::new(point(split_bounds.origin.x + STRIP_MARGIN, after_bounds.origin.y - thickness / 2.), size((split_bounds.size.width - STRIP_MARGIN * 2.).max(px(0.)), thickness)),
+        };
+        let _ = before;
+        let side = match axis {
+            atlas_workspace::Axis::Horizontal => Side::Right,
+            atlas_workspace::Axis::Vertical => Side::Bottom,
+        };
+        let target = DockTarget::beside(children[index - 1].id().clone(), side);
+        let outcome = outcome_of(layout, window, &drag.dragged, &target);
+        out.push(Zone { kind: ZoneKind::Gap { split: root.id().clone(), index }, target, bounds, drawn: bounds, label: describe_gap(axis), outcome, hovered: false });
+    }
+    for child in children {
+        gap_zones(layout, window, child, rects, field, drag, out);
+    }
+}
+
+/// The strip along `side`, showing the level `Space` has cycled to for the
+/// pane that meets the edge under the pointer.
+fn edge_zone(layout: &WorkspaceLayout, window: &WindowId, root: &LayoutNode, rects: &HashMap<NodeId, Rect>, field: Field, drag: &DragInFlight, side: Side) -> Option<Zone> {
+    let area = field.area;
+    let inset = field.inset;
+    let thickness = (inset - STRIP_MARGIN * 2.).max(px(0.));
+    let strip = match side {
+        Side::Top => Bounds::new(point(area.origin.x + inset, area.origin.y + STRIP_MARGIN), size((area.size.width - inset * 2.).max(px(0.)), thickness)),
+        Side::Bottom => Bounds::new(point(area.origin.x + inset, area.origin.y + area.size.height - STRIP_MARGIN - thickness), size((area.size.width - inset * 2.).max(px(0.)), thickness)),
+        Side::Left => Bounds::new(point(area.origin.x + STRIP_MARGIN, area.origin.y + inset), size(thickness, (area.size.height - inset * 2.).max(px(0.)))),
+        Side::Right => Bounds::new(point(area.origin.x + area.size.width - STRIP_MARGIN - thickness, area.origin.y + inset), size(thickness, (area.size.height - inset * 2.).max(px(0.)))),
+    };
+    // The levels: the window's edge first, then the groups and the pane that
+    // meet the edge where the pointer is, broadest first.
+    let mut levels = vec![DockTarget::edge(side)];
+    if let Some(pane) = pane_at_edge(root, rects, field, side, drag.pointer) {
+        let mut deeper: Vec<DockTarget> = ops::ancestor_targets(root, &pane, side).into_iter().filter(|target| !matches!(target, DockTarget::WindowEdge { .. })).collect();
+        deeper.reverse();
+        levels.extend(deeper);
+    }
+    let level = drag.level_offset % levels.len();
+    let target = levels[level].clone();
+    // The highlight spans what the level docks beside; the window's edge spans it all.
+    let drawn = match target.node().and_then(|node| span_of(root, rects, &target, node)) {
+        Some(span) => {
+            let span = field.place(span);
+            match side {
+                Side::Top | Side::Bottom => Bounds::new(point(span.origin.x, strip.origin.y), size(span.size.width, strip.size.height)),
+                Side::Left | Side::Right => Bounds::new(point(strip.origin.x, span.origin.y), size(strip.size.width, span.size.height)),
+            }
+        }
+        None => strip,
+    };
+    let outcome = outcome_of(layout, window, &drag.dragged, &target);
+    let label = describe(root, &target, side);
+    Some(Zone { kind: ZoneKind::Edge { side, level }, target, bounds: strip, drawn, label, outcome, hovered: false })
+}
+
+/// The pane whose stack meets `side` of the window where the pointer is,
+/// measured across the edge.
+fn pane_at_edge(root: &LayoutNode, rects: &HashMap<NodeId, Rect>, field: Field, side: Side, pointer: Point<Pixels>) -> Option<PaneId> {
+    let content = field.content();
+    if content.size.width <= px(0.) || content.size.height <= px(0.) {
+        return None;
+    }
+    let across = match side {
+        Side::Top | Side::Bottom => f64::from(f32::from((pointer.x - content.origin.x) / content.size.width)),
+        Side::Left | Side::Right => f64::from(f32::from((pointer.y - content.origin.y) / content.size.height)),
+    }
+    .clamp(0.0, 1.0);
+    let touches = |rect: &Rect| match side {
+        Side::Top => rect.y < 1e-6,
+        Side::Bottom => rect.y + rect.height > 1.0 - 1e-6,
+        Side::Left => rect.x < 1e-6,
+        Side::Right => rect.x + rect.width > 1.0 - 1e-6,
+    };
+    let spans = |rect: &Rect| match side {
+        Side::Top | Side::Bottom => rect.x <= across && across <= rect.x + rect.width,
+        Side::Left | Side::Right => rect.y <= across && across <= rect.y + rect.height,
+    };
+    root.stack_rects().into_iter().find(|(id, rect)| touches(rect) && spans(rect) && rects.contains_key(id)).and_then(|(id, _)| root.find(&id).and_then(LayoutNode::active_pane).cloned())
+}
+
+/// The rectangle a target docks beside: the node's, or the run's for a range.
+fn span_of(root: &LayoutNode, rects: &HashMap<NodeId, Rect>, target: &DockTarget, node: &NodeId) -> Option<Rect> {
+    match target {
+        DockTarget::BesideRange { split, from, to, .. } => {
+            let children = root.find(split)?.children();
+            let first = rects.get(children.get(*from)?.id())?;
+            let last = rects.get(children.get(*to)?.id())?;
+            Some(Rect { x: first.x.min(last.x), y: first.y.min(last.y), width: (last.x + last.width).max(first.x + first.width) - first.x.min(last.x), height: (last.y + last.height).max(first.y + first.height) - first.y.min(last.y) })
+        }
+        _ => rects.get(node).copied(),
     }
 }
 
@@ -181,6 +311,14 @@ pub fn outcome_of(layout: &WorkspaceLayout, window: &WindowId, dragged: &Dragged
         }
         Err(OpError::NoOp) => Outcome::Unchanged,
         Err(err) => Outcome::Refused(err.to_string()),
+    }
+}
+
+/// What dropping in a gap does.
+fn describe_gap(axis: atlas_workspace::Axis) -> String {
+    match axis {
+        atlas_workspace::Axis::Horizontal => "Place between these panes, as a column".to_string(),
+        atlas_workspace::Axis::Vertical => "Place between these panes, as a row".to_string(),
     }
 }
 
@@ -229,23 +367,31 @@ mod tests {
     use super::*;
     use atlas_workspace::PaneDefinition;
 
-    /// `1 | 2 | 3` in equal thirds, drawn across a 1200 × 600 window at the origin.
-    fn three_columns() -> (WorkspaceLayout, HashMap<PaneId, Bounds<Pixels>>) {
+    /// `1 | 2 | 3` in equal thirds. The area is 1200 × 600 at the origin, the
+    /// cards pulled in by 24 px with 28 px gaps, so the columns are drawn
+    /// across the 1152 × 552 content.
+    fn three_columns() -> (WorkspaceLayout, HashMap<PaneId, Bounds<Pixels>>, Field) {
         let mut layout = WorkspaceLayout::new("test");
         let window = WindowId::main();
         let one = layout.open_pane(&window, PaneDefinition::new("today"), DockTarget::edge(Side::Right)).unwrap();
         let two = layout.open_pane(&window, PaneDefinition::new("accounts"), DockTarget::WindowEdge { side: Side::Right, share: Some(0.5) }).unwrap();
         let three = layout.open_pane(&window, PaneDefinition::new("rules"), DockTarget::WindowEdge { side: Side::Right, share: Some(1.0 / 3.0) }).unwrap();
+        let field = Field { area: Bounds::new(point(px(0.), px(0.)), size(px(1200.), px(600.))), inset: px(24.), gap: px(28.) };
         let mut drawn = HashMap::new();
-        drawn.insert(one, Bounds::new(point(px(0.), px(0.)), size(px(400.), px(600.))));
-        drawn.insert(two, Bounds::new(point(px(400.), px(0.)), size(px(400.), px(600.))));
-        drawn.insert(three, Bounds::new(point(px(800.), px(0.)), size(px(400.), px(600.))));
-        (layout, drawn)
+        let column = field.content().size.width / 3.;
+        for (index, pane) in [one, two, three].into_iter().enumerate() {
+            drawn.insert(pane, Bounds::new(point(field.content().origin.x + column * index as f32, field.content().origin.y), size(column, field.content().size.height)));
+        }
+        (layout, drawn, field)
+    }
+
+    fn drag_at(x: f32, y: f32) -> DragInFlight {
+        DragInFlight { dragged: Dragged::New(Route::ForecastPath), pointer: point(px(x), px(y)), level_offset: 0, elsewhere: None }
     }
 
     #[test]
     fn the_pane_under_the_pointer_is_found_and_hidden_tabs_are_ignored() {
-        let (mut layout, mut drawn) = three_columns();
+        let (mut layout, mut drawn, _) = three_columns();
         let root = layout.main_window().unwrap().root.clone();
         let panes = layout.main_window().unwrap().panes();
         assert_eq!(hovered_pane(root.as_ref(), &drawn, point(px(900.), px(300.))), Some(panes[2].clone()));
@@ -261,117 +407,98 @@ mod tests {
     }
 
     #[test]
-    fn bands_below_the_third_column_offer_its_neighbour_run_and_the_window() {
-        let (mut layout, mut drawn) = three_columns();
-        let panes = layout.main_window().unwrap().panes();
-        // The dragged pane is a fourth one, tabbed behind pane 3.
-        let stack = layout.stack_of(&panes[2]).unwrap();
-        let four = layout.open_pane(&WindowId::main(), PaneDefinition::new("forecast"), DockTarget::tab(stack)).unwrap();
-        layout.set_active_pane(&panes[2]).unwrap();
-        drawn.insert(four.clone(), drawn[&panes[2]]);
-        let drag = DragInFlight { dragged: Dragged::Pane(four.clone()), pointer: point(px(1000.), px(590.)), level_offset: 0 };
-        let bands = bands_for(&layout, &WindowId::main(), &drawn, &drag);
-        let bottom: Vec<&Band> = bands.iter().filter(|band| band.side == Side::Bottom).collect();
-        assert_eq!(bottom.len(), 2, "{bottom:#?}");
-        // Nearest the edge: the window; inside it: the run of 2 and 3.
-        let window_band = bottom.iter().find(|band| band.depth == 0).unwrap();
-        assert!(matches!(window_band.target, DockTarget::WindowEdge { side: Side::Bottom, .. }));
-        assert_eq!(window_band.label, "Dock along the bottom of the window");
-        assert!(window_band.hovered, "the pointer at y=590 is in the outermost 14 px");
-        let run_band = bottom.iter().find(|band| band.depth == 1).unwrap();
-        assert!(matches!(run_band.target, DockTarget::BesideRange { from: 1, to: 2, side: Side::Bottom, .. }), "{:?}", run_band.target);
-        assert_eq!(run_band.label, "Dock below these 2 panes");
-        assert!(!run_band.hovered);
-        match &run_band.outcome {
+    fn three_columns_offer_two_gaps_and_four_edge_strips() {
+        let (layout, _, field) = three_columns();
+        let zones = zones_for(&layout, &WindowId::main(), field, &drag_at(600., 300.));
+        let gaps: Vec<&Zone> = zones.iter().filter(|zone| matches!(zone.kind, ZoneKind::Gap { .. })).collect();
+        let edges: Vec<&Zone> = zones.iter().filter(|zone| matches!(zone.kind, ZoneKind::Edge { .. })).collect();
+        assert_eq!(gaps.len(), 2, "{zones:#?}");
+        assert_eq!(edges.len(), 4);
+        // The gaps are centred on the dividers, a gap plus slop wide, and take
+        // a Beside on the child before them.
+        let column = field.content().size.width / 3.;
+        let first = gaps[0];
+        assert!((first.bounds.center().x - (field.content().origin.x + column)).abs() < px(1.), "{:?}", first.bounds);
+        assert_eq!(first.bounds.size.width, field.gap + GAP_SLOP * 2.);
+        assert!(matches!(first.target, DockTarget::Beside { side: Side::Right, .. }));
+        assert_eq!(first.label, "Place between these panes, as a column");
+        assert!(first.element_id().starts_with("dock-gap-"));
+        // The strips lie in the inset, along the whole edge.
+        let bottom = edges.iter().find(|zone| zone.side() == Side::Bottom).unwrap();
+        assert_eq!(bottom.element_id(), "dock-band-bottom-0");
+        assert_eq!(bottom.label, "Dock along the bottom of the window");
+        assert!(bottom.bounds.origin.y > field.content().origin.y + field.content().size.height);
+        assert_eq!(bottom.bounds.size.width, field.content().size.width);
+        assert!(!bottom.hovered);
+        // Nothing is hovered from the middle of a pane.
+        assert!(zones.iter().all(|zone| !zone.hovered));
+    }
+
+    #[test]
+    fn the_pointer_in_a_gap_hovers_it_and_a_drop_there_lands_between() {
+        let (layout, _, field) = three_columns();
+        let column = field.content().size.width / 3.;
+        let divider = field.content().origin.x + column * 2.;
+        let zones = zones_for(&layout, &WindowId::main(), field, &drag_at(f32::from(divider), 300.));
+        let hovered: Vec<&Zone> = zones.iter().filter(|zone| zone.hovered).collect();
+        assert_eq!(hovered.len(), 1, "{zones:#?}");
+        assert!(matches!(hovered[0].kind, ZoneKind::Gap { index: 2, .. }), "{:?}", hovered[0].kind);
+        match &hovered[0].outcome {
             Outcome::Allowed { preview } => {
-                assert!((preview.x - 1.0 / 3.0).abs() < 1e-9 && (preview.width - 2.0 / 3.0).abs() < 1e-9, "spans columns 2 and 3: {preview:?}");
-                assert!(preview.y > 0.5, "sits below them: {preview:?}");
+                assert!(preview.x > 1.0 / 3.0 && preview.x + preview.width <= 2.0 / 3.0 + 1e-9, "between the second and third column: {preview:?}");
+                assert!((preview.height - 1.0).abs() < 1e-9, "a full column");
             }
-            other => panic!("expected an allowed move, got {other:?}"),
+            other => panic!("{other:?}"),
         }
-        // Along the row there is no run and the root is the window: one band.
-        let right: Vec<&Band> = bands.iter().filter(|band| band.side == Side::Right).collect();
-        assert_eq!(right.len(), 1);
-        assert!(matches!(right[0].target, DockTarget::WindowEdge { side: Side::Right, .. }));
-        for band in &bands {
-            assert!(band.bounds.size.width >= px(0.) && band.bounds.size.height >= px(0.));
-            assert!(band.element_id().starts_with("dock-band-"));
-        }
+    }
+
+    #[test]
+    fn space_walks_an_edge_strip_from_the_window_to_the_groups_that_meet_it() {
+        // `1 | 2 | 3` with 4 as a tab of 3: the strip below shows the window,
+        // then the 2–3 run, then the 3 (+4) pane as Space is pressed.
+        let (mut layout, _, field) = three_columns();
+        let panes = layout.main_window().unwrap().panes();
+        let stack3 = layout.stack_of(&panes[2]).unwrap();
+        layout.open_pane(&WindowId::main(), PaneDefinition::new("forecast"), DockTarget::tab(stack3)).unwrap();
+        let x = f32::from(field.content().origin.x + field.content().size.width * 5. / 6.);
+        let y = f32::from(field.area.origin.y + field.area.size.height - px(10.));
+        let labels_at = |offset: usize| {
+            let drag = DragInFlight { dragged: Dragged::New(Route::ForecastPath), pointer: point(px(x), px(y)), level_offset: offset, elsewhere: None };
+            let zones = zones_for(&layout, &WindowId::main(), field, &drag);
+            let bottom = zones.into_iter().find(|zone| matches!(zone.kind, ZoneKind::Edge { side: Side::Bottom, .. })).unwrap();
+            assert!(bottom.hovered, "the pointer is in the bottom strip");
+            (bottom.label, bottom.drawn.size.width)
+        };
+        let full = field.content().size.width;
+        assert_eq!(labels_at(0), ("Dock along the bottom of the window".to_string(), full));
+        // A stack of tabs is one pane on screen, so the 2–3 run is "2 panes".
+        let (label, width) = labels_at(1);
+        assert_eq!(label, "Dock below these 2 panes");
+        assert!((width - full * 2. / 3.).abs() < px(1.), "the highlight spans the run: {width:?}");
+        let (label, width) = labels_at(2);
+        assert_eq!(label, "Dock below this pane");
+        assert!((width - full / 3.).abs() < px(1.), "the highlight spans the pane: {width:?}");
+        assert_eq!(labels_at(3).0, "Dock along the bottom of the window", "cycling wraps around");
     }
 
     #[test]
     fn a_refused_move_and_an_unchanged_one_are_reported() {
-        let (mut layout, drawn) = three_columns();
+        let (layout, _, field) = three_columns();
         let panes = layout.main_window().unwrap().panes();
-        // Tight limits: no split may leave a pane under 40 % of the window.
-        layout.set_limits(atlas_workspace::SplitLimits { min_share: 0.4, max_depth: 12 });
-        let drag = DragInFlight { dragged: Dragged::Pane(panes[0].clone()), pointer: point(px(1000.), px(590.)), level_offset: 0 };
-        let bands = bands_for(&layout, &WindowId::main(), &drawn, &drag);
-        let window_band = bands.iter().find(|band| band.side == Side::Bottom && band.depth == 0).unwrap();
-        assert!(matches!(window_band.outcome, Outcome::Refused(_)), "{:?}", window_band.outcome);
-        assert!(!window_band.accepts_drops());
-        // A screen from the launcher is judged the same way, as a new pane.
-        let drag = DragInFlight { dragged: Dragged::New(Route::ForecastPath), pointer: point(px(1000.), px(590.)), level_offset: 0 };
-        let bands = bands_for(&layout, &WindowId::main(), &drawn, &drag);
-        let window_band = bands.iter().find(|band| band.side == Side::Bottom && band.depth == 0).unwrap();
-        assert!(matches!(window_band.outcome, Outcome::Refused(_)));
-        layout.set_limits(atlas_workspace::SplitLimits::default());
-        let bands = bands_for(&layout, &WindowId::main(), &drawn, &drag);
-        let window_band = bands.iter().find(|band| band.side == Side::Bottom && band.depth == 0).unwrap();
-        assert!(matches!(window_band.outcome, Outcome::Allowed { .. }), "{:?}", window_band.outcome);
-        layout.set_limits(atlas_workspace::SplitLimits { min_share: 0.4, max_depth: 12 });
-        // Pane 3 is already at the window's right edge.
-        let drag = DragInFlight { dragged: Dragged::Pane(panes[2].clone()), pointer: point(px(1190.), px(300.)), level_offset: 0 };
-        let bands = bands_for(&layout, &WindowId::main(), &drawn, &drag);
-        let right = bands.iter().find(|band| band.side == Side::Right && band.depth == 0).unwrap();
+        // As many thin columns as the minimum share allows: one more, at
+        // the default share, would squeeze the others below it.
+        let mut crowded = layout.clone();
+        while crowded.open_pane(&WindowId::main(), PaneDefinition::new("today"), DockTarget::WindowEdge { side: Side::Right, share: Some(ops::MIN_SHARE_ARG) }).is_ok() {}
+        let drag = DragInFlight { dragged: Dragged::New(Route::ForecastPath), pointer: point(px(1190.), px(300.)), level_offset: 0, elsewhere: None };
+        let zones = zones_for(&crowded, &WindowId::main(), field, &drag);
+        let right = zones.iter().find(|zone| zone.side() == Side::Right && matches!(zone.kind, ZoneKind::Edge { .. })).unwrap();
+        assert!(matches!(right.outcome, Outcome::Refused(_)), "{:?}", right.outcome);
+        assert!(!right.accepts_drops());
+        // Dragging the third pane to the right edge, where it already is, changes nothing.
+        let drag = DragInFlight { dragged: Dragged::Pane(panes[2].clone()), pointer: point(px(1190.), px(300.)), level_offset: 0, elsewhere: None };
+        let zones = zones_for(&layout, &WindowId::main(), field, &drag);
+        let right = zones.iter().find(|zone| zone.side() == Side::Right && matches!(zone.kind, ZoneKind::Edge { .. })).unwrap();
         assert_eq!(right.outcome, Outcome::Unchanged);
         assert!(right.accepts_drops());
-    }
-
-    #[test]
-    fn space_cycles_the_visible_levels() {
-        let (mut layout, mut drawn) = three_columns();
-        let panes = layout.main_window().unwrap().panes();
-        // Five columns give the middle pane four runs plus the window below it.
-        let four = layout.open_pane(&WindowId::main(), PaneDefinition::new("forecast"), DockTarget::WindowEdge { side: Side::Right, share: Some(0.25) }).unwrap();
-        let five = layout.open_pane(&WindowId::main(), PaneDefinition::new("people"), DockTarget::WindowEdge { side: Side::Right, share: Some(0.2) }).unwrap();
-        drawn.insert(four.clone(), Bounds::new(point(px(1200.), px(0.)), size(px(400.), px(600.))));
-        drawn.insert(five.clone(), Bounds::new(point(px(1600.), px(0.)), size(px(400.), px(600.))));
-        let mut drag = DragInFlight { dragged: Dragged::Pane(five), pointer: point(px(1000.), px(590.)), level_offset: 0 };
-        let first = bands_for(&layout, &WindowId::main(), &drawn, &drag);
-        let labels = |bands: &[Band]| {
-            let mut bottom: Vec<&Band> = bands.iter().filter(|band| band.side == Side::Bottom).collect();
-            bottom.sort_by_key(|band| band.depth);
-            bottom.iter().map(|band| band.label.clone()).collect::<Vec<_>>()
-        };
-        // Pane 3 in the middle of five: runs 2–3, 1–3, 3–4, 3–5 and the window.
-        assert_eq!(labels(&first), ["Dock along the bottom of the window", "Dock below these 3 panes", "Dock below these 2 panes"]);
-        drag.level_offset = 1;
-        let second = bands_for(&layout, &WindowId::main(), &drawn, &drag);
-        assert_eq!(labels(&second), ["Dock along the bottom of the window", "Dock below these 2 panes", "Dock below these 3 panes"], "the window stays outermost; the inner levels moved on");
-        drag.level_offset = 4;
-        assert_eq!(labels(&bands_for(&layout, &WindowId::main(), &drawn, &drag)), labels(&first), "cycling wraps around");
-        assert_eq!(panes.len(), 3);
-    }
-
-    #[test]
-    fn band_rectangles_sit_inside_the_edge_and_leave_the_corners_free() {
-        let pane = Bounds::new(point(px(100.), px(50.)), size(px(400.), px(300.)));
-        let bottom0 = band_bounds(pane, Side::Bottom, 0);
-        assert_eq!(bottom0.origin.y + bottom0.size.height, px(350.));
-        assert_eq!(bottom0.size.height, BAND_THICKNESS);
-        assert_eq!(bottom0.origin.x, px(100.) + BAND_THICKNESS * 3.);
-        let bottom1 = band_bounds(pane, Side::Bottom, 1);
-        assert_eq!(bottom1.origin.y + bottom1.size.height, px(350.) - BAND_THICKNESS);
-        let right0 = band_bounds(pane, Side::Right, 0);
-        assert_eq!(right0.origin.x + right0.size.width, px(500.));
-        assert_eq!(right0.origin.y, px(50.) + BAND_THICKNESS * 3.);
-        let top2 = band_bounds(pane, Side::Top, 2);
-        assert_eq!(top2.origin.y, px(50.) + BAND_THICKNESS * 2.);
-        let left1 = band_bounds(pane, Side::Left, 1);
-        assert_eq!(left1.origin.x, px(100.) + BAND_THICKNESS);
-        // A tiny pane never produces a negative size.
-        let tiny = band_bounds(Bounds::new(point(px(0.), px(0.)), size(px(10.), px(10.))), Side::Top, 0);
-        assert_eq!(tiny.size.width, px(0.));
     }
 }
