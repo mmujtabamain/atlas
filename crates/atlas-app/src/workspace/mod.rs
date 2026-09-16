@@ -17,11 +17,14 @@
 //!   **live projection** the person sees and interacts with: it lays the
 //!   panes out, draws the tab bars and dividers, and handles the drags.
 //!
-//! Every command applies to the model first and then to the area; every edit
-//! that originates in the engine — a divider dragged, a tab chosen or closed,
-//! later a pane dragged elsewhere — is mirrored back into the model from the
-//! engine's own dump, and validated before it is accepted. [`view`] spells
-//! out which model change maps onto which engine operation.
+//! Every command applies to the model first and then to the area. A pane
+//! dropped after a drag is applied to the model first as well — the engine
+//! resolves where it landed, the model decides whether that is allowed and
+//! what the weights become, and the area is rebuilt from the model — while
+//! every other edit that originates in the engine (a divider dragged, a tab
+//! chosen or closed) is mirrored back into the model from the engine's own
+//! dump, and validated before it is accepted. [`view`] spells out which
+//! model change maps onto which engine operation.
 //!
 //! | module | contents |
 //! |---|---|
@@ -31,9 +34,12 @@
 //! | [`mirror`] | reading the engine's dumped layout back into a model tree |
 //! | [`commands`] | the keyboard commands: split, close, next pane, back |
 //!
-//! Drag-and-drop docking, docking beside a whole group, the launcher, floating
-//! windows and persistence build on this and come later; the engine already
-//! supports dragging, so nothing here disables it.
+//! Dragging a pane onto another pane (its centre for a tab, an edge for a
+//! split) works within the window and is transactional: Escape cancels with
+//! nothing changed, a drop that changes nothing leaves no history, and a drop
+//! the minimum-size rule refuses is put back and explained. Docking beside a
+//! whole group or at the window's edges, the launcher, floating windows and
+//! persistence build on this and come later.
 
 pub mod commands;
 pub mod kinds;

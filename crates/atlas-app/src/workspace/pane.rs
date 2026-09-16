@@ -17,17 +17,28 @@
 //! | its focus handle, whether it is the active pane, whether its tab is displayed | its place in the layout (`WorkspaceView` and the model) |
 //! | its scroll position (the scroll region is keyed by the pane's id) | the tab bar, the close and zoom controls (gpui-kit's dock skin) |
 //!
-//! Everything the engine tells the pane — it was displayed, it left the dock —
-//! is passed to the workspace **deferred**: those callbacks arrive while the
-//! dock area, and possibly the workspace that drove the edit, are still being
-//! updated, and gpui refuses a nested update of an entity that is already on
-//! the stack.
+//! The screens were designed for a full-width column, so a pane never squashes
+//! its screen: the body gives the screen at least [`MIN_CONTENT_WIDTH`] and
+//! scrolls sideways when the pane is narrower than that (a wider pane fills
+//! its width as before). The model's `min_share` is the structural minimum of
+//! a slot; this is a rendering rule about what is drawn inside it.
+//!
+//! Dragging a pane is the dock skin's: the title bar (and, in a stack, the
+//! tab) is the only drag handle, and the skin starts the drag only when the
+//! group may be rearranged. The pane's own title element is what the skin
+//! wraps in that handle, so it carries a `pane-title-<n>` id for tests.
+//!
+//! Everything the engine tells the pane — it was displayed, it left the dock,
+//! it joined a tab group — is passed to the workspace **deferred**: those
+//! callbacks arrive while the dock area, and possibly the workspace that
+//! drove the edit, are still being updated, and gpui refuses a nested update
+//! of an entity that is already on the stack.
 
 use atlas_workspace::{PaneId, Side};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent, PanelInfo, PanelState, TabGroup};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::scroll::{Scrollbar, ScrollableElement as _};
+use gpui_kit::component::{ActiveTheme as _, Icon, InteractiveElementExt as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::json;
@@ -44,6 +55,20 @@ pub const PANEL_NAME: &str = "atlas-pane";
 /// How many routes a pane remembers for Back.
 const HISTORY_LIMIT: usize = 32;
 
+/// The least width a pane gives its screen, the pane's own padding included.
+/// A narrower pane scrolls sideways instead of squeezing the screen.
+///
+/// The screens were laid out for a full-width column, and this is what that
+/// layout needs before it breaks: Today's grid of six figures wraps its
+/// `text_xl` monospace values at less than about 1060 px (six cells of a
+/// nine-digit value plus their gutters), the Accounts register's fixed lanes
+/// take 880 px before its flexible lane gets anything, and the Rules
+/// register's control row takes 900 px. Below those widths a flexible lane
+/// shrinks to nothing and its text wraps one character per line, which makes
+/// every row taller than the pane — the rows seem to vanish. A screen
+/// redesigned for narrower columns can lower this.
+pub const MIN_CONTENT_WIDTH: Pixels = px(1080.);
+
 /// One pane: a screen instance inside the workspace.
 pub struct PaneView {
     id: PaneId,
@@ -59,6 +84,8 @@ pub struct PaneView {
     displayed: bool,
     /// The tab group the engine placed the pane in, for selecting its tab.
     group: Option<WeakEntity<TabGroup>>,
+    /// The sideways scroll of the body, kept so it survives a rebuild of the area.
+    horizontal_scroll: ScrollHandle,
     _observe_app: Subscription,
 }
 
@@ -69,7 +96,7 @@ impl PaneView {
         // Every state change of the app is a possible change of what the
         // screen shows; the pane is a cached view, so it has to ask for a frame.
         let _observe_app = cx.observe(&app, |_, _, cx| cx.notify());
-        PaneView { id, route, history: Vec::new(), app, workspace, focus_handle: cx.focus_handle(), active: false, displayed: false, group: None, _observe_app }
+        PaneView { id, route, history: Vec::new(), app, workspace, focus_handle: cx.focus_handle(), active: false, displayed: false, group: None, horizontal_scroll: ScrollHandle::new(), _observe_app }
     }
 
     /// The pane's id in the layout model.
@@ -104,9 +131,20 @@ impl PaneView {
 
     /// The `pane-<n>` element id tests find the pane by.
     pub fn element_id(&self) -> SharedString {
+        SharedString::from(format!("pane-{}", self.id_suffix()))
+    }
+
+    /// The `pane-title-<n>` element id of the pane's title, which is the drag
+    /// handle of a single-pane stack.
+    pub fn title_element_id(&self) -> SharedString {
+        SharedString::from(format!("pane-title-{}", self.id_suffix()))
+    }
+
+    /// The pane's counter when it was minted, else its whole id.
+    fn id_suffix(&self) -> String {
         match self.id.minted_counter() {
-            Some(counter) => SharedString::from(format!("pane-{counter}")),
-            None => SharedString::from(format!("pane-{}", self.id)),
+            Some(counter) => counter.to_string(),
+            None => self.id.to_string(),
         }
     }
 
@@ -189,8 +227,11 @@ impl BasePanel for PaneView {
         }
     }
 
-    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, _: &mut Context<Self>) {
-        self.group = Some(group);
+    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, cx: &mut Context<Self>) {
+        self.group = Some(group.clone());
+        // The workspace listens to every group for drops; it learns of a
+        // group through the panes the engine puts in it.
+        self.tell_workspace(cx, move |workspace, window, cx| workspace.pane_joined_group(group, window, cx));
     }
 
     fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -213,11 +254,15 @@ impl Panel for PaneView {
         Some(kinds::title_of(self.route, self.app.read(cx).household()))
     }
 
+    /// The title element the skin wraps in the drag handle; its id lets a
+    /// test take hold of exactly what a person would.
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let title = kinds::title_of(self.route, self.app.read(cx).household());
         let context = kinds::context_of(self.route);
         h_flex()
+            .id(self.title_element_id())
+            .test_support()
             .min_w_0()
             .gap_2()
             .items_center()
@@ -262,6 +307,14 @@ impl Render for PaneView {
     /// hairline in the focus-ring colour when this is the active pane. The
     /// dock skin draws the pane as a cached view, so this runs only when the
     /// pane (or the app it observes) was notified.
+    ///
+    /// Two scroll regions, one per axis, because the width the screen wraps
+    /// its text at has to be definite: the body scrolls sideways as a plain
+    /// block whose child is `max(the pane's width, MIN_CONTENT_WIDTH)` wide,
+    /// and that child is the vertical scroll region the screen lives in. One
+    /// two-axis scroll area would size its content to the widest unwrapped
+    /// line instead. Each region is locked to its own axis, so a wheel
+    /// scrolls the screen and a sideways swipe scrolls the body.
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let route = self.route;
         let content = self.app.update(cx, |app, cx| app.render_route(route, cx));
@@ -271,6 +324,7 @@ impl Render for PaneView {
         div()
             .id(self.element_id())
             .test_support()
+            .relative()
             .size_full()
             .border_1()
             .border_color(border)
@@ -281,6 +335,15 @@ impl Render for PaneView {
             .capture_any_mouse_down(move |_, window, cx| {
                 let _ = workspace.update(cx, |workspace, cx| workspace.set_active_pane_from_pointer(&id, window, cx));
             })
-            .child(v_flex().id("pane-scroll").size_full().p_6().gap_6().child(content).overflow_y_scrollbar())
+            .child(
+                div()
+                    .id("pane-body")
+                    .size_full()
+                    .track_scroll(&self.horizontal_scroll)
+                    .overflow_x_scroll()
+                    .lock_scroll_axis()
+                    .child(v_flex().id("pane-scroll").size_full().min_w(MIN_CONTENT_WIDTH).p_6().gap_6().child(content).overflow_y_scrollbar()),
+            )
+            .child(div().absolute().inset_0().child(Scrollbar::horizontal(&self.horizontal_scroll).viewport_from_layout()))
     }
 }

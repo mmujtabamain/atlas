@@ -18,8 +18,15 @@
 //!
 //! | engine change | how the model follows |
 //! |---|---|
-//! | `DockEvent::LayoutChanged` | [`WorkspaceView::mirror_from_area`]: dump → [`LayoutNode`] → `WindowLayout::replace_root` → validate; a newly displayed tab becomes the active pane; an echo of the workspace's own edit changes nothing |
+//! | a pane dropped on a tab group (`TabGroupEvent::Drop`, heard through [`WorkspaceView::pane_joined_group`]) | [`WorkspaceView::dock_pane`]: the drop as a [`DockTarget`] → `WorkspaceLayout::move_pane` (transactional: the minimum-size rule, "nothing changed") → `rebuild_area`; a refused drop puts the area back and says why in a toast |
+//! | `DockEvent::LayoutChanged` | [`WorkspaceView::mirror_from_area`]: dump → [`LayoutNode`] → `WindowLayout::replace_root` → validate; a newly displayed tab becomes the active pane; a divider drag is "Resize split" (consecutive drags of one divider share the entry); an echo of the workspace's own edit changes nothing; a rearrangement the drop path did not see is checked against the limits and taken as "Move pane" |
 //! | a pane told `on_removed` | [`WorkspaceView::pane_left`]: closed in the model too, unless the model already closed it |
+//!
+//! Dragging is the engine's: it starts a drag from a tab or a single pane's
+//! title (gpui's own 2 px threshold keeps a click from becoming one), draws
+//! the drop indicator over the centre and the four edge zones, and commits
+//! nothing until the drop. `Escape` during a drag ends it before any of that
+//! happens (a keystroke interceptor installed in [`WorkspaceView::new`]).
 //!
 //! The workspace follows the app rather than being told: it observes
 //! [`AtlasApp`] and starts a fresh layout, scoped to the household, the
@@ -37,13 +44,13 @@ use std::rc::Rc;
 
 use atlas_core::authz::Viewer;
 use atlas_workspace::resolver::{self, Intent, Resolution};
-use atlas_workspace::{Axis, ClosedPane, ClosedPanes, DockTarget, LayoutHistory, LayoutNode, NodeId, OpError, PaneDefinition, PaneId, Scope, Side, WindowId, WorkspaceLayout};
+use atlas_workspace::{Axis, ClosedPane, ClosedPanes, DockTarget, LayoutHistory, LayoutNode, NodeId, OpError, PaneDefinition, PaneId, Scope, Side, SplitLimits, WindowId, WorkspaceLayout, ops};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::dock::{DockArea, DockLayout, DockSkin, PanelId, DockEvent, panel_handle};
+use gpui_kit::component::dock::{DockArea, DockEvent, DockLayout, DockSkin, InsertTarget, PanelId, TabGroup, TabGroupEvent, panel_handle};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::notification::Notification;
+use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Icon, Placement, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     v_flex,
 };
@@ -61,6 +68,24 @@ use crate::nav::{Destination, Route};
 /// Weights that agree within this much are the same layout: the engine
 /// measures slots in whole pixels, and a few pixels of a window are noise.
 const WEIGHT_TOLERANCE: f64 = 0.005;
+
+/// The share a dropped pane takes of the slot it lands beside: half, which
+/// is what the engine's drop indicator shows while the drag is in flight.
+const DROP_SHARE: f64 = 0.5;
+
+/// The history label of a pane moved by dragging (or by any rearrangement the
+/// engine made on its own).
+const MOVE_LABEL: &str = "Move pane";
+
+/// The history label of a divider dragged; consecutive drags of the same
+/// divider share one entry.
+const RESIZE_LABEL: &str = "Resize split";
+
+/// What the person reads when a drop would split a pane below the minimum size.
+pub const REFUSED_SPLIT_MESSAGE: &str = "Not enough room to split here. Drop onto the pane's tabs instead.";
+
+/// The element id of the refusal toast's text, for tests.
+pub const REFUSED_SPLIT_TOAST_ID: &str = "workspace-drop-refused";
 
 /// What the workspace watches on the app: whether there is a household to
 /// show panes for, which one, and who is looking.
@@ -101,6 +126,15 @@ pub struct WorkspaceView {
     focus_handle: FocusHandle,
     /// Renders since creation — how tests see that a frame reused the cache.
     renders: u64,
+    /// The tab groups whose drops are listened to, by the group entity's id.
+    /// Groups are the engine's and come and go with every rebuild; a pane
+    /// reports the group it joined and the entry is made then, and entries
+    /// whose group is gone are dropped the next time one is made.
+    group_watches: HashMap<EntityId, (WeakEntity<TabGroup>, Subscription)>,
+    /// The split whose divider the last history entry recorded, while no
+    /// other change has happened since: another drag of the same divider
+    /// then joins that entry instead of adding one.
+    last_resized_split: Option<NodeId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -116,6 +150,19 @@ impl WorkspaceView {
             DockEvent::DragDrop { .. } => log::info!("workspace: something was dropped on the dock; dropping into the workspace is not wired yet"),
         });
         let app_changes = cx.observe_in(&app, window, |this, _, window, cx| this.follow_household(window, cx));
+        // Escape while a pane (or a divider) is being dragged ends the drag
+        // with nothing changed. An interceptor rather than a binding: gpui
+        // dispatches key bindings before key-down listeners, so a control
+        // inside the pane that binds Escape (an input) would otherwise take
+        // the key first; the interceptor runs before either and only ever
+        // acts while a drag is in flight.
+        let escape_cancels_drag = cx.intercept_keystrokes(|event, window, cx| {
+            if event.keystroke.key == "escape" && event.keystroke.modifiers.number_of_modifiers() == 0 && cx.has_active_drag() {
+                cx.stop_active_drag(window);
+                cx.stop_propagation();
+                log::info!("workspace: drag cancelled with Escape; nothing changed");
+            }
+        });
         let mut this = WorkspaceView {
             window: window.window_handle(),
             app,
@@ -129,7 +176,9 @@ impl WorkspaceView {
             launch_panes: Some(LaunchPanes { extra: launch.extra.clone(), stacked: launch.stacked.clone() }),
             focus_handle: cx.focus_handle(),
             renders: 0,
-            _subscriptions: vec![area_events, app_changes],
+            group_watches: HashMap::new(),
+            last_resized_split: None,
+            _subscriptions: vec![area_events, app_changes, escape_cancels_drag],
         };
         this.follow_household(window, cx);
         this
@@ -165,6 +214,19 @@ impl WorkspaceView {
     /// The undo history of layout changes.
     pub fn history(&self) -> &LayoutHistory {
         &self.history
+    }
+
+    /// Replaces the minimum-size rule drops and splits are checked against.
+    pub fn set_split_limits(&mut self, limits: SplitLimits) {
+        log::info!("workspace: split limits set to {limits:?}");
+        self.layout.set_limits(limits);
+    }
+
+    /// Records one undoable step. Any step but a divider drag ends the run of
+    /// divider drags that share an entry.
+    fn record(&mut self, label: impl Into<String>, before: WorkspaceLayout) {
+        self.last_resized_split = None;
+        self.history.push(label, before);
     }
 
     /// The panes closed recently, newest last.
@@ -346,7 +408,7 @@ impl WorkspaceView {
         let app = self.app.clone();
         let view = cx.new(|cx| PaneView::new(pane.clone(), route, app, workspace, cx));
         self.panes.insert(pane.clone(), view);
-        self.history.push(format!("Open {}", route.title()), before);
+        self.record(format!("Open {}", route.title()), before);
         log::info!("workspace: opened pane {pane} ({}) at {target:?}; {} panes", route.slug(), self.panes.len());
         self.rebuild_area(window, cx);
         self.focus_active(window, cx);
@@ -362,7 +424,7 @@ impl WorkspaceView {
         let title = kinds::route_of(&closed.definition).map(Route::title).unwrap_or("pane");
         log::info!("workspace: closed pane {pane} ({}); {} panes left", closed.definition.kind, self.layout.panes.len());
         self.closed.record(closed);
-        self.history.push(format!("Close {title}"), before);
+        self.record(format!("Close {title}"), before);
         if let Some(view) = self.panes.remove(pane) {
             self.area.update(cx, |area, cx| area.remove_panel(view, window, cx));
         }
@@ -413,7 +475,7 @@ impl WorkspaceView {
     pub fn resize_split(&mut self, split: &NodeId, weights: &[f64], window: &mut Window, cx: &mut Context<Self>) -> Result<(), OpError> {
         let before = self.layout.clone();
         self.layout.resize(split, weights)?;
-        self.history.push("Resize panes", before);
+        self.record(RESIZE_LABEL, before);
         log::info!("workspace: split {split} resized to {weights:?}");
         self.rebuild_area(window, cx);
         Ok(())
@@ -550,7 +612,7 @@ impl WorkspaceView {
                 let title = kinds::route_of(&closed.definition).map(Route::title).unwrap_or("pane");
                 log::info!("workspace: pane {pane} ({}) was closed from its tab; {} panes left", closed.definition.kind, self.layout.panes.len());
                 self.closed.record(closed);
-                self.history.push(format!("Close {title}"), before);
+                self.record(format!("Close {title}"), before);
             }
             Err(err) => log::warn!("workspace: pane {pane} left the dock but could not be closed in the model: {err}"),
         }
@@ -559,6 +621,131 @@ impl WorkspaceView {
         self.focus_active(window, cx);
         self.sync_chrome(cx);
         cx.notify();
+    }
+
+    // ----- drag and drop -----------------------------------------------------------------
+
+    /// The engine put a pane into `group`: from now on the workspace hears
+    /// every drop on that group. The engine resolves a drop — which pane, from
+    /// which group, onto which group, as a tab at which index or on which
+    /// side — and applies it to its own tree; the workspace applies the same
+    /// drop to the model, whose transactional [`WorkspaceLayout::move_pane`]
+    /// decides whether it is allowed and what the weights become, and then
+    /// rebuilds the area from the model. Whatever the engine did to its tree
+    /// in between is never drawn: both happen inside one event flush.
+    pub(crate) fn pane_joined_group(&mut self, group: WeakEntity<TabGroup>, window: &mut Window, cx: &mut Context<Self>) {
+        // Groups the engine has dropped since take their subscriptions with them.
+        self.group_watches.retain(|_, (group, _)| group.upgrade().is_some());
+        let Some(strong) = group.upgrade() else {
+            return;
+        };
+        if self.group_watches.contains_key(&strong.entity_id()) {
+            return;
+        }
+        let subscription = cx.subscribe_in(&strong, window, |this, _, event: &TabGroupEvent, window, cx| {
+            if let TabGroupEvent::Drop { panel, source, target } = event {
+                this.pane_dropped(*panel, *source, *target, window, cx);
+            }
+        });
+        self.group_watches.insert(strong.entity_id(), (group, subscription));
+    }
+
+    /// A pane was dropped somewhere in the area. Resolves the engine's ids to
+    /// the model's — the dragged panel to its pane, the target group to the
+    /// stack of a pane it displays — and moves the pane in the model.
+    fn pane_dropped(&mut self, panel: PanelId, source: gpui_kit::component::dock::NodeId, target: InsertTarget, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.pane_of_panel(panel) else {
+            log::warn!("workspace: a panel that is not one of the workspace's panes was dropped on the dock; ignoring it");
+            return;
+        };
+        let source_stack = self.layout.stack_of(&pane);
+        let (target_group, placement, index, activate) = match target {
+            InsertTarget::Tabs { node, ix, activate } => (node, None, ix, activate),
+            InsertTarget::Split { node, placement, .. } => (node, Some(placement), None, true),
+            InsertTarget::Tile { .. } => {
+                log::warn!("workspace: pane {pane} was dropped on a tiles canvas, which the workspace does not use; ignoring it");
+                return;
+            }
+        };
+        // The dragged pane may already sit in the target group (the engine
+        // has applied its move by now), so the stack is read off another pane.
+        let Some(target_stack) = self.stack_of_group(target_group, &pane, cx) else {
+            log::warn!("workspace: pane {pane} was dropped on a group that displays no other pane; leaving the layout to the mirror");
+            return;
+        };
+        let dock_target = match placement {
+            None => DockTarget::Stack { node: target_stack.clone(), index },
+            Some(placement) => DockTarget::Beside { node: target_stack.clone(), side: side_of(placement), share: Some(DROP_SHARE) },
+        };
+        let same_group = source == target_group;
+        log::info!(
+            "workspace: pane {pane} dropped from stack {} onto stack {target_stack}{} as {}",
+            source_stack.as_ref().map(ToString::to_string).unwrap_or_else(|| "?".into()),
+            if same_group { " (its own)" } else { "" },
+            match placement {
+                None => format!("a tab at {index:?}"),
+                Some(placement) => format!("a split on the {placement}"),
+            }
+        );
+        self.dock_pane(&pane, dock_target, activate, window, cx);
+    }
+
+    /// Moves `pane` to `target` in the model and shows the result — the one
+    /// way a drop becomes a layout change. `activate` false keeps the tab the
+    /// target stack was displaying (a drop past the last tab lands in the
+    /// background). A refused move leaves the model as it was and puts the
+    /// area back to it; a move that changes nothing does the same, because the
+    /// engine may have redistributed sizes while deciding nothing changed.
+    pub fn dock_pane(&mut self, pane: &PaneId, target: DockTarget, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let before = self.layout.clone();
+        let displayed_before = self.layout.main_window().and_then(|main| main.root.as_ref()).and_then(|root| target.node().and_then(|node| root.find(node))).and_then(|stack| stack.active_pane().cloned());
+        match self.layout.move_pane(pane, &WindowId::main(), target.clone()) {
+            Ok(()) => {
+                if !activate
+                    && let Some(displayed) = displayed_before
+                    && displayed != *pane
+                {
+                    let _ = self.layout.set_active_pane(&displayed);
+                }
+                self.record(MOVE_LABEL, before);
+                log::info!(
+                    "workspace: moved pane {pane} to {target:?}; grid:\n{}",
+                    atlas_workspace::grid::render_window(self.layout.main_window().and_then(|main| main.root.as_ref()), 12, 4, |pane| pane.minted_counter().map(|n| char::from_digit((n % 36) as u32, 36).unwrap_or('?')).unwrap_or('?'))
+                );
+                self.rebuild_area(window, cx);
+                self.focus_active(window, cx);
+                self.sync_chrome(cx);
+            }
+            Err(OpError::NoOp) => {
+                log::info!("workspace: pane {pane} dropped back where it was; nothing changed");
+                self.rebuild_area(window, cx);
+            }
+            Err(err @ (OpError::TooSmall { .. } | OpError::TooDeep { .. })) => {
+                log::warn!("workspace: drop of pane {pane} at {target:?} refused: {err}");
+                self.rebuild_area(window, cx);
+                self.focus_active(window, cx);
+                window.push_notification(refused_split_toast(), cx);
+            }
+            Err(err) => {
+                log::warn!("workspace: drop of pane {pane} at {target:?} refused: {err}");
+                self.rebuild_area(window, cx);
+                self.report(&Err::<(), _>(err), window, cx);
+            }
+        }
+    }
+
+    /// The pane behind an engine panel id.
+    fn pane_of_panel(&self, panel: PanelId) -> Option<PaneId> {
+        self.panes.iter().find(|(_, view)| PanelId::from(view.entity_id()) == panel).map(|(pane, _)| pane.clone())
+    }
+
+    /// The model stack shown by the engine group `node`: the stack of a pane
+    /// (other than `except`) whose group that is.
+    fn stack_of_group(&self, node: gpui_kit::component::dock::NodeId, except: &PaneId, cx: &App) -> Option<NodeId> {
+        self.panes.iter().filter(|(pane, _)| *pane != except).find_map(|(pane, view)| {
+            let group = view.read(cx).group()?.upgrade()?;
+            (group.read(cx).node() == node).then(|| self.layout.stack_of(pane)).flatten()
+        })
     }
 
     /// Reads the engine's layout back into the model after an edit the engine
@@ -616,20 +803,34 @@ impl WorkspaceView {
         if !structure_changed && !weights_changed && !active_changed {
             return;
         }
-        let label = if structure_changed {
-            Some("Rearrange panes")
-        } else if weights_changed {
-            Some("Resize panes")
-        } else {
-            None
-        };
+        // A rearrangement the engine made without a drop the workspace saw
+        // (drops are applied to the model first, see `dock_pane`) is judged
+        // by the model's minimum-size rule like any other split.
+        if structure_changed
+            && let Err(err) = ops::check_limits(current_root, new_root, self.layout.limits())
+        {
+            log::warn!("workspace: the dock's rearrangement is refused ({err}); putting the area back");
+            self.rebuild_area(window, cx);
+            window.push_notification(refused_split_toast(), cx);
+            return;
+        }
+        // Divider drags of one split, one after another, are one undo step:
+        // the entry keeps the layout from before the first drag.
+        let resized = if structure_changed { Vec::new() } else { mirror::resized_splits(current_root, new_root, WEIGHT_TOLERANCE) };
+        let joins_previous_resize = !structure_changed && weights_changed && matches!((&resized[..], &self.last_resized_split), ([split], Some(last)) if split == last) && self.history.undo_label() == Some(RESIZE_LABEL);
         log::info!(
-            "workspace: mirrored the dock's layout (structure changed: {structure_changed}, weights changed: {weights_changed}, active changed: {active_changed}); grid:\n{}",
+            "workspace: mirrored the dock's layout (structure changed: {structure_changed}, weights changed: {weights_changed}, active changed: {active_changed}, resized splits: {resized:?}); grid:\n{}",
             atlas_workspace::grid::render_window(new_root, 12, 4, |pane| pane.minted_counter().map(|n| char::from_digit((n % 36) as u32, 36).unwrap_or('?')).unwrap_or('?'))
         );
         let previous = std::mem::replace(&mut self.layout, candidate);
-        if let Some(label) = label {
-            self.history.push(label, previous);
+        if structure_changed {
+            self.record(MOVE_LABEL, previous);
+        } else if weights_changed && !joins_previous_resize {
+            self.record(RESIZE_LABEL, previous);
+            self.last_resized_split = match resized.as_slice() {
+                [split] => Some(split.clone()),
+                _ => None,
+            };
         }
         for (pane, definition) in departed {
             log::info!("workspace: pane {pane} ({}) was closed from its tab", definition.kind);
@@ -831,6 +1032,24 @@ impl WorkspaceView {
                 })
             }))
     }
+}
+
+/// The model's side for the engine's placement of a drop zone.
+fn side_of(placement: Placement) -> Side {
+    match placement {
+        Placement::Left => Side::Left,
+        Placement::Right => Side::Right,
+        Placement::Top => Side::Top,
+        Placement::Bottom => Side::Bottom,
+    }
+}
+
+/// The toast shown when a drop would split a pane below the minimum size.
+/// The text is its own observed element so a test can read it.
+fn refused_split_toast() -> Notification {
+    Notification::new().with_type(NotificationType::Warning).content(|_, _, _| {
+        div().id(REFUSED_SPLIT_TOAST_ID).test_support().text_sm().aria_label(REFUSED_SPLIT_MESSAGE).child(REFUSED_SPLIT_MESSAGE).into_any_element()
+    })
 }
 
 impl Render for WorkspaceView {

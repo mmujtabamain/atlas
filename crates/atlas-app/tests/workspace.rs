@@ -6,18 +6,25 @@
 //! (`atlas_workspace::grid::render_numbered`: panes numbered in reading
 //! order, one character per cell), the screen through the `screen-<slug>`
 //! ids every screen root carries, and the panes through their `pane-<n>` ids.
+//!
+//! Drags are real pointer sequences on the pane titles (`pane-title-<n>`),
+//! the drag handle of a single-pane stack, dropped on the engine's zones of
+//! another pane: its centre for a tab, an edge for a split.
 
 mod common;
 
 use atlas_app::nav::Route;
+use atlas_app::workspace::pane::MIN_CONTENT_WIDTH;
+use atlas_app::workspace::view::{REFUSED_SPLIT_MESSAGE, REFUSED_SPLIT_TOAST_ID};
 use atlas_app::workspace::{WorkspaceView, kinds};
 use atlas_app::{AtlasApp, Launch};
 use atlas_workspace::grid::render_numbered;
 use atlas_workspace::resolver::Intent;
-use atlas_workspace::{PaneId, Side};
+use atlas_workspace::{Axis, LayoutNode, PaneId, Side, SplitLimits};
 use common::*;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext as _, Entity, TestAppContext, point, px};
+use gpui_kit::{AppContext as _, Bounds, Entity, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, SharedString, TestAppContext, Window, point, px};
 
 /// The model's picture of the main window, `cols` × `rows` cells.
 fn grid(cx: &mut TestAppContext, workspace: &Entity<WorkspaceView>, cols: usize, rows: usize) -> String {
@@ -53,6 +60,106 @@ fn today_and_accounts(cx: &mut TestAppContext) -> (gpui_kit::AnyWindowHandle, En
     let window: gpui_kit::AnyWindowHandle = handle.into();
     drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Right, Route::Accounts, window, cx).expect("split"));
     (window, app, workspace)
+}
+
+/// `1|2|3`: Today, Accounts and Rules in one row (Rules split off Accounts,
+/// so the columns are 0.65, 0.2275 and 0.1225 of the width).
+fn three_columns(cx: &mut TestAppContext) -> (gpui_kit::AnyWindowHandle, Entity<AtlasApp>, Entity<WorkspaceView>) {
+    let (window, app, workspace) = today_and_accounts(cx);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Right, Route::Rules, window, cx).expect("split"));
+    assert_eq!(grid(cx, &workspace, 8, 1), "11111223");
+    (window, app, workspace)
+}
+
+/// Lets deferred work and the dock's events settle, then draws a frame.
+fn settle(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle) {
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+}
+
+/// The model as the JSON it is saved as — the byte-identical yardstick.
+fn layout_json(cx: &mut TestAppContext, workspace: &Entity<WorkspaceView>) -> String {
+    cx.update(|cx| serde_json::to_string(workspace.read(cx).layout()).expect("layout serializes"))
+}
+
+/// The history's undo labels, oldest first.
+fn history_labels(cx: &mut TestAppContext, workspace: &Entity<WorkspaceView>) -> Vec<String> {
+    cx.update(|cx| workspace.read(cx).history().labels().into_iter().map(str::to_owned).collect())
+}
+
+/// The main window's tree.
+fn root(cx: &mut TestAppContext, workspace: &Entity<WorkspaceView>) -> LayoutNode {
+    cx.update(|cx| workspace.read(cx).layout().main_window().and_then(|window| window.root.clone()).expect("a tree"))
+}
+
+fn pane_id(n: u64) -> SharedString {
+    SharedString::from(format!("pane-{n}"))
+}
+
+fn title_id(n: u64) -> SharedString {
+    SharedString::from(format!("pane-title-{n}"))
+}
+
+/// Where inside a pane a drop lands: the engine's centre zone (a tab of that
+/// pane's stack) or one of its four edge zones (a split on that side).
+#[derive(Clone, Copy, Debug)]
+enum Zone {
+    Centre,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// A point well inside `zone` of `bounds` (the zones start 35 % in from each edge).
+fn zone_point(bounds: Bounds<Pixels>, zone: Zone) -> Point<Pixels> {
+    let centre = bounds.center();
+    match zone {
+        Zone::Centre => centre,
+        Zone::Left => point(bounds.left() + bounds.size.width * 0.1, centre.y),
+        Zone::Right => point(bounds.left() + bounds.size.width * 0.9, centre.y),
+        Zone::Top => point(centre.x, bounds.top() + bounds.size.height * 0.1),
+        Zone::Bottom => point(centre.x, bounds.top() + bounds.size.height * 0.9),
+    }
+}
+
+/// Drags pane `from`'s title onto `zone` of pane `onto` — press, move in
+/// steps, release — and lets the drop settle.
+fn drag_pane(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle, from: u64, onto: u64, zone: Zone) {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let handle = window.find(title_id(from)).bounds().center();
+        let target = zone_point(window.find(pane_id(onto)).bounds(), zone);
+        window.drag(handle, target, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+}
+
+fn press_at(window: &mut Window, position: Point<Pixels>, cx: &mut gpui_kit::App) {
+    window.dispatch_event(MouseMoveEvent { position, pressed_button: None, modifiers: Default::default() }.to_platform_input(), cx);
+    window.render_frame(cx);
+    window.dispatch_event(MouseDownEvent { button: MouseButton::Left, position, modifiers: Default::default(), click_count: 1, first_mouse: false }.to_platform_input(), cx);
+    window.render_frame(cx);
+}
+
+fn move_pressed_to(window: &mut Window, position: Point<Pixels>, cx: &mut gpui_kit::App) {
+    window.dispatch_event(MouseMoveEvent { position, pressed_button: Some(MouseButton::Left), modifiers: Default::default() }.to_platform_input(), cx);
+    window.render_frame(cx);
+}
+
+fn release_at(window: &mut Window, position: Point<Pixels>, cx: &mut gpui_kit::App) {
+    window.dispatch_event(MouseUpEvent { button: MouseButton::Left, position, modifiers: Default::default(), click_count: 1 }.to_platform_input(), cx);
+    window.render_frame(cx);
+}
+
+/// The weights of the main window's root split.
+fn root_weights(cx: &mut TestAppContext, workspace: &Entity<WorkspaceView>) -> Vec<f64> {
+    root(cx, workspace).weights().to_vec()
+}
+
+fn about(actual: f64, expected: f64) -> bool {
+    (actual - expected).abs() < 1e-6
 }
 
 #[gpui_kit::test]
@@ -347,6 +454,277 @@ fn a_pane_removed_by_the_engine_leaves_the_model_too(cx: &mut TestAppContext) {
         assert_eq!(workspace.active_route(cx), Some(Route::Today), "the remaining pane is active");
         assert_eq!(app.read(cx).route(), Route::Today, "and the chrome follows");
     });
+}
+
+// ----- panes never squash their screen ---------------------------------------------------
+
+#[gpui_kit::test]
+fn a_narrow_pane_gives_its_screen_the_minimum_width_and_scrolls_sideways(cx: &mut TestAppContext) {
+    let (handle, _app, workspace) = open_workspace(cx, sample(Route::Today));
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    // The pane's padding and hairline border, on both sides.
+    let inset = px(50.);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let pane = window.find("pane-1").bounds();
+        let screen = window.find("screen-today").bounds();
+        assert!(pane.size.width > MIN_CONTENT_WIDTH, "the whole column is wider than the minimum: {pane:?}");
+        assert!((screen.size.width - (pane.size.width - inset)).abs() < px(4.), "a pane wider than the minimum gives its screen the whole width: {pane:?} {screen:?}");
+    })
+    .unwrap();
+
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Right, Route::Accounts, window, cx).expect("split"));
+    cx.update_window(window, |_, window, cx| {
+        let pane = window.find("pane-2").bounds();
+        let screen = window.find("screen-accounts").bounds();
+        assert!(pane.size.width < MIN_CONTENT_WIDTH, "the Accounts pane is narrower than the minimum: {pane:?}");
+        assert!((screen.size.width - (MIN_CONTENT_WIDTH - inset)).abs() < px(4.), "the screen keeps the minimum width instead of shrinking with the pane: {screen:?}");
+        assert!(screen.size.width > pane.size.width, "so it is wider than the pane and clipped at its edge");
+        assert!(screen.left() >= pane.left(), "and starts at the pane's left edge before any scrolling: {pane:?} {screen:?}");
+        // A sideways wheel over the pane reveals what is clipped on the right.
+        window.scroll("pane-2", ScrollDelta::Pixels(point(px(-200.), px(0.))), cx);
+        let scrolled = window.find("screen-accounts").bounds();
+        assert!((screen.left() - scrolled.left() - px(200.)).abs() < px(1.), "the screen moved left by the wheel's delta: {screen:?} -> {scrolled:?}");
+        assert!((scrolled.size.width - screen.size.width).abs() < px(1.), "without changing width");
+    })
+    .unwrap();
+}
+
+// ----- drag and drop -----------------------------------------------------------------------
+
+#[gpui_kit::test]
+fn dropping_a_pane_on_the_centre_of_another_stacks_them(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    let (today, accounts) = (order[0].clone(), order[1].clone());
+    drag_pane(cx, window, 2, 1, Zone::Centre);
+
+    let tree = root(cx, &workspace);
+    assert!(tree.is_stack(), "one stack holds both panes: {tree:?}");
+    assert_eq!(tree.stack_panes(), [today.clone(), accounts.clone()]);
+    assert_eq!(active(cx, &workspace), accounts, "the dragged pane is the active one");
+    assert_eq!(grid(cx, &workspace, 2, 1), "22", "and the one on show");
+    assert_eq!(pane_count(cx, &workspace), 2);
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.layout().stack_of(&today), workspace.layout().stack_of(&accounts));
+        assert_eq!(workspace.pane_route(&today, cx), Some(Route::Today), "the hidden tab's pane keeps its screen");
+        assert_eq!(workspace.pane_route(&accounts, cx), Some(Route::Accounts));
+        assert!(workspace.layout().validate().is_empty());
+    });
+    cx.update_window(window, |_, window, _| {
+        assert!(window.find("screen-accounts").visible(), "the dragged pane's screen is on show");
+        assert!(window.try_find("screen-today").is_none(), "Today is behind its tab");
+    })
+    .unwrap();
+    assert_eq!(history_labels(cx, &workspace), ["Open Today", "Open Accounts", "Move pane"]);
+}
+
+#[gpui_kit::test]
+fn dropping_a_pane_on_an_edge_splits_there_and_undo_restores_the_layout_exactly(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = three_columns(cx);
+    let before = layout_json(cx, &workspace);
+    let weights_before = root_weights(cx, &workspace);
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+
+    // Rules (3) onto the left edge of Today (1): 3|1|2.
+    drag_pane(cx, window, 3, 1, Zone::Left);
+    assert_eq!(grid(cx, &workspace, 3, 1), "123", "numbered in reading order: Rules is now first");
+    let panes = cx.update(|cx| workspace.read(cx).panes_in_order());
+    assert_eq!(panes, [order[2].clone(), order[0].clone(), order[1].clone()]);
+    assert_eq!(active(cx, &workspace), order[2], "the moved pane is the active one");
+    let weights = root_weights(cx, &workspace);
+    assert!(about(weights[2], weights_before[1]), "Accounts, which the drop did not touch, keeps its width: {weights:?} vs {weights_before:?}");
+    assert!(about(weights[0], weights[1]), "Rules and Today share the slot Today had plus the one Rules left: {weights:?}");
+    cx.update_window(window, |_, window, _| {
+        let rules = window.find("pane-3").bounds();
+        let today = window.find("pane-1").bounds();
+        assert!(rules.right() <= today.left(), "Rules is drawn left of Today: {rules:?} {today:?}");
+        assert!(window.find("screen-rules").visible() && window.find("screen-today").visible() && window.find("screen-accounts").visible());
+    })
+    .unwrap();
+    assert_eq!(history_labels(cx, &workspace), ["Open Today", "Open Accounts", "Open Rules", "Move pane"]);
+
+    let undone = drive(cx, window, &workspace, |workspace, window, cx| workspace.undo(window, cx));
+    assert!(undone);
+    assert_eq!(layout_json(cx, &workspace), before, "undo restores the layout byte for byte");
+    assert_eq!(grid(cx, &workspace, 8, 1), "11111223");
+    cx.update_window(window, |_, window, _| {
+        let today = window.find("pane-1").bounds();
+        let rules = window.find("pane-3").bounds();
+        assert!(today.right() <= rules.left(), "and the screen follows: {today:?} {rules:?}");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn dropping_a_pane_below_another_wraps_that_pane_in_a_column_and_leaves_the_rest_alone(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = three_columns(cx);
+    let weights_before = root_weights(cx, &workspace);
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    let (today, accounts, rules) = (order[0].clone(), order[1].clone(), order[2].clone());
+
+    // Rules (3) onto the bottom edge of Today (1): horizontal[vertical[1, 3], 2].
+    drag_pane(cx, window, 3, 1, Zone::Bottom);
+    let tree = root(cx, &workspace);
+    assert_eq!(tree.axis(), Some(Axis::Horizontal), "{tree:?}");
+    assert_eq!(tree.children().len(), 2);
+    let column = &tree.children()[0];
+    assert_eq!(column.axis(), Some(Axis::Vertical));
+    assert_eq!(column.panes(), [today.clone(), rules.clone()]);
+    assert!(about(column.weights()[0], 0.5) && about(column.weights()[1], 0.5), "the dropped pane takes half, as the indicator showed: {:?}", column.weights());
+    assert_eq!(tree.children()[1].stack_panes(), [accounts.clone()]);
+    assert!(about(tree.weights()[1], weights_before[1]), "Accounts keeps its weight: {:?} vs {weights_before:?}", tree.weights());
+    assert!(about(tree.weights()[0], weights_before[0] + weights_before[2]), "the column has Today's slot plus the one Rules left");
+    cx.update_window(window, |_, window, _| {
+        let today = window.find("pane-1").bounds();
+        let rules = window.find("pane-3").bounds();
+        let accounts = window.find("pane-2").bounds();
+        assert!(rules.top() >= today.bottom(), "Rules is drawn under Today: {today:?} {rules:?}");
+        assert!(accounts.left() >= today.right() && accounts.left() >= rules.right(), "Accounts stays to the right of both");
+    })
+    .unwrap();
+    cx.update(|cx| assert!(workspace.read(cx).layout().validate().is_empty()));
+}
+
+#[gpui_kit::test]
+fn escape_cancels_a_drag_with_nothing_changed(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let before = layout_json(cx, &workspace);
+    let labels = history_labels(cx, &workspace);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let handle = window.find(title_id(2)).bounds().center();
+        let target = zone_point(window.find(pane_id(1)).bounds(), Zone::Right);
+        press_at(window, handle, cx);
+        move_pressed_to(window, handle + point(px(12.), px(4.)), cx);
+        move_pressed_to(window, target, cx);
+        assert!(cx.has_active_drag(), "the title started a drag");
+        window.press("escape", cx);
+        assert!(!cx.has_active_drag(), "Escape ended it");
+        release_at(window, target, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(layout_json(cx, &workspace), before, "nothing about the layout changed");
+    assert_eq!(history_labels(cx, &workspace), labels, "and nothing was recorded");
+    assert_eq!(grid(cx, &workspace, 2, 1), "12");
+    cx.update_window(window, |_, window, cx| {
+        assert!(window.notifications(cx).is_empty(), "no toast either");
+        assert!(window.find("screen-today").visible() && window.find("screen-accounts").visible());
+        // The pane body is not a drag handle: pressing and moving inside a
+        // screen selects and scrolls, it never picks the pane up. (In the
+        // active pane, so the press changes nothing else either.)
+        let inside = window.find(pane_id(2)).bounds().origin + point(px(8.), px(8.));
+        press_at(window, inside, cx);
+        move_pressed_to(window, inside + point(px(60.), px(40.)), cx);
+        assert!(!cx.has_active_drag(), "a press in the body does not start a drag");
+        release_at(window, inside + point(px(60.), px(40.)), cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(layout_json(cx, &workspace), before);
+}
+
+#[gpui_kit::test]
+fn dropping_a_pane_back_where_it_was_records_nothing(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let before = layout_json(cx, &workspace);
+    let labels = history_labels(cx, &workspace);
+    // Accounts already sits on Today's right; dropping it there is the layout
+    // it came from. The engine halves Today's slot while working that out and
+    // the model puts it back, so the weights are the old ones too.
+    drag_pane(cx, window, 2, 1, Zone::Right);
+    assert_eq!(layout_json(cx, &workspace), before, "the layout is byte for byte what it was");
+    assert_eq!(history_labels(cx, &workspace), labels, "and no step was recorded");
+    cx.update_window(window, |_, window, cx| {
+        assert!(window.notifications(cx).is_empty());
+        let today = window.find("pane-1").bounds();
+        let accounts = window.find("pane-2").bounds();
+        assert!(accounts.left() >= today.right());
+        assert!((today.size.width / (today.size.width + accounts.size.width) - 0.65).abs() < 0.02, "the screen shows the old widths: {today:?} {accounts:?}");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn dragging_a_divider_resizes_the_split_as_one_undo_step_per_run(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let before = root_weights(cx, &workspace);
+    let labels_before = history_labels(cx, &workspace);
+    let divider_drag = |cx: &mut TestAppContext, distance: f32| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let accounts = window.find("pane-2").bounds();
+            // The divider's grab area straddles the slot edge, 4 px to its left.
+            let from = point(accounts.left() - px(2.), accounts.center().y);
+            window.drag(from, from + point(px(distance), px(0.)), cx);
+        })
+        .unwrap();
+        settle(cx, window);
+    };
+
+    divider_drag(cx, 150.);
+    let after_first = root_weights(cx, &workspace);
+    assert!(after_first[0] > before[0] + 0.05, "Today grew by the drag: {before:?} -> {after_first:?}");
+    assert!(about(after_first[0] + after_first[1], 1.0));
+    let mut expected = labels_before.clone();
+    expected.push("Resize split".to_owned());
+    assert_eq!(history_labels(cx, &workspace), expected, "one entry for the drag");
+
+    divider_drag(cx, 100.);
+    let after_second = root_weights(cx, &workspace);
+    assert!(after_second[0] > after_first[0] + 0.03, "the second drag moved it further: {after_first:?} -> {after_second:?}");
+    assert_eq!(history_labels(cx, &workspace), expected, "a second drag of the same divider joins the entry");
+
+    let undone = drive(cx, window, &workspace, |workspace, window, cx| workspace.undo(window, cx));
+    assert!(undone);
+    let restored = root_weights(cx, &workspace);
+    assert!(about(restored[0], before[0]) && about(restored[1], before[1]), "undo goes back to before the first drag: {restored:?} vs {before:?}");
+    cx.update(|cx| assert!(workspace.read(cx).layout().validate().is_empty()));
+}
+
+#[gpui_kit::test]
+fn a_drop_that_would_squeeze_a_pane_below_the_minimum_is_refused_with_a_toast(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    cx.update(|cx| workspace.update(cx, |workspace, _| workspace.set_split_limits(SplitLimits { min_share: 0.6, max_depth: 12 })));
+    let before = layout_json(cx, &workspace);
+    let labels = history_labels(cx, &workspace);
+
+    // Accounts under Today would give Today half the height: below 0.6.
+    drag_pane(cx, window, 2, 1, Zone::Bottom);
+    assert_eq!(layout_json(cx, &workspace), before, "the layout is exactly what it was");
+    assert_eq!(history_labels(cx, &workspace), labels, "nothing was recorded");
+    assert_eq!(grid(cx, &workspace, 2, 1), "12");
+    cx.update_window(window, |_, window, cx| {
+        let toast = window.find(REFUSED_SPLIT_TOAST_ID);
+        assert_eq!(toast.label(), Some(REFUSED_SPLIT_MESSAGE), "the toast says why and what to do instead");
+        assert_eq!(window.notifications(cx).len(), 1);
+        let today = window.find("pane-1").bounds();
+        let accounts = window.find("pane-2").bounds();
+        assert!(accounts.left() >= today.right(), "the screen shows the layout from before the drop: {today:?} {accounts:?}");
+        assert!(window.find("screen-today").visible() && window.find("screen-accounts").visible());
+    })
+    .unwrap();
+
+    // With room for it, the same kind of drop goes through: Accounts above
+    // Today, and no new toast. (The dismissed one may still be on its way out.)
+    dismiss_toasts(cx, window);
+    let toasts_after_dismissal = cx.update_window(window, |_, window, cx| window.notifications(cx).len()).unwrap();
+    cx.update(|cx| workspace.update(cx, |workspace, _| workspace.set_split_limits(SplitLimits::default())));
+    drag_pane(cx, window, 2, 1, Zone::Top);
+    let tree = root(cx, &workspace);
+    assert_eq!(tree.axis(), Some(Axis::Vertical), "{tree:?}");
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    assert_eq!(cx.update(|cx| workspace.read(cx).pane_route(&order[0], cx)), Some(Route::Accounts), "Accounts is now the top pane");
+    assert_eq!(grid(cx, &workspace, 1, 2), "1\n2");
+    cx.update_window(window, |_, window, cx| {
+        assert!(window.notifications(cx).len() <= toasts_after_dismissal, "no toast for a drop that was allowed");
+        let accounts = window.find("pane-2").bounds();
+        let today = window.find("pane-1").bounds();
+        assert!(today.top() >= accounts.bottom(), "Today is drawn under Accounts: {accounts:?} {today:?}");
+    })
+    .unwrap();
 }
 
 #[test]

@@ -185,6 +185,30 @@ pub fn structure_differs(a: Option<&LayoutNode>, b: Option<&LayoutNode>) -> bool
     !trees_match(a, b, f64::INFINITY)
 }
 
+/// The splits whose weights differ between two trees of the same structure,
+/// by the id they carry in `b`, pre-order. Empty when the structures differ:
+/// then the question has no answer.
+pub fn resized_splits(a: Option<&LayoutNode>, b: Option<&LayoutNode>, tolerance: f64) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    if let (Some(a), Some(b)) = (a, b)
+        && !structure_differs(Some(a), Some(b))
+    {
+        collect_resized(a, b, tolerance, &mut out);
+    }
+    out
+}
+
+fn collect_resized(a: &LayoutNode, b: &LayoutNode, tolerance: f64, out: &mut Vec<NodeId>) {
+    if let (LayoutNode::Split { weights: wa, children: ca, .. }, LayoutNode::Split { id, weights: wb, children: cb, .. }) = (a, b) {
+        if wa.len() != wb.len() || wa.iter().zip(wb).any(|(a, b)| (a - b).abs() > tolerance) {
+            out.push(id.clone());
+        }
+        for (child_a, child_b) in ca.iter().zip(cb) {
+            collect_resized(child_a, child_b, tolerance, out);
+        }
+    }
+}
+
 /// The active pane of every stack in the tree.
 pub fn displayed_panes(root: Option<&LayoutNode>) -> HashSet<PaneId> {
     let mut out = HashSet::new();
@@ -322,6 +346,31 @@ mod tests {
         let mut tiles = PanelState::new("Tiles");
         tiles.info = PanelInfo::tiles(Vec::new());
         assert_eq!(layout_node_from_state(&tiles, None, &mut ids), Err(MirrorError::TilesUnsupported));
+    }
+
+    #[test]
+    fn resized_splits_names_the_split_whose_weights_moved() {
+        let before = LayoutNode::split(
+            NodeId::new("row"),
+            Axis::Horizontal,
+            vec![
+                LayoutNode::single(NodeId::new("s1"), PaneId::new("a")),
+                LayoutNode::split(NodeId::new("column"), Axis::Vertical, vec![LayoutNode::single(NodeId::new("s2"), PaneId::new("b")), LayoutNode::single(NodeId::new("s3"), PaneId::new("c"))], vec![0.5, 0.5]),
+            ],
+            vec![0.5, 0.5],
+        );
+        let mut inner_moved = before.clone();
+        if let LayoutNode::Split { children, .. } = &mut inner_moved
+            && let LayoutNode::Split { weights, .. } = &mut children[1]
+        {
+            *weights = vec![0.3, 0.7];
+        }
+        assert_eq!(resized_splits(Some(&before), Some(&inner_moved), 0.005), [NodeId::new("column")]);
+        assert!(resized_splits(Some(&before), Some(&before), 0.005).is_empty());
+        // A different structure is not a resize at all.
+        let stacked = LayoutNode::stack(NodeId::new("s"), vec![PaneId::new("a"), PaneId::new("b"), PaneId::new("c")]);
+        assert!(resized_splits(Some(&before), Some(&stacked), 0.005).is_empty());
+        assert!(resized_splits(None, Some(&before), 0.005).is_empty());
     }
 
     #[test]
