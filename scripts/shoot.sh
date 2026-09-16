@@ -42,7 +42,7 @@ height_of() {
   esac
 }
 
-# Every workspace screen the sidebar and its tabs reach, for the sample's owner.
+# Every screen the launcher and its tabs reach, each as the one pane, for the sample's owner.
 SCREENS="today accounts earmarks funding upcoming series actuals people companies forecast assumptions derive sensitivity purchase scenarios compare extraction rules rule-activity taxes tax-packs policies grants audit settings"
 for theme in light dark; do
   for screen in $SCREENS; do
