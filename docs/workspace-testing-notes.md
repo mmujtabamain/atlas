@@ -285,3 +285,38 @@ viewer · meanings · theme · settings`; the workspace uses the full width. `La
 **Known / fragile.** The strip's `…` menu holds only the unpinned screens; automatic overflow by
 width is not implemented. Icons on tabs and launcher come from the full Lucide set
 (`AllAssets`), so the test-support windows load them too.
+
+---
+
+## 7. Background jobs — (commit fe1315c)
+
+**Claims.** `workspace/jobs.rs`: `JobCenter` (an entity owned by `AtlasApp`, `app.jobs()`) over
+the model's `JobBoard`; `start(title, source, associated route, cancellable, runner)` returns a
+`JobTicket { id, cancelled flag }`; `progress/complete/fail/cancel/retry/clear_finished`;
+`fail` reports through `alerting`; every end emits `JobEvent::Finished` which the shell turns
+into a toast (summary / "<title> failed: <error>" / cancelled). The shell's `jobs` button
+appears only while jobs exist, labelled `N running` / `N failed` / `Done`, and its menu lists
+jobs (click → `workspace.open(associated route)`), `Retry: …`, `Cancel: …`, `Clear finished
+jobs`. The save (`lifecycle.rs`) is a job with a retry runner; `run_sensitivity` computes
+`AssumptionsModel` in `background_spawn`, installs it through `Lazy::set` unless
+`app.edits` moved, ignores a second run while one is running, and the Run button reads
+"Recomputing…" meanwhile (`sensitivity_running`).
+
+**Verify.**
+
+1. `tests/workspace.rs`: `a_sensitivity_run_outlives_the_pane_that_started_it`,
+   `a_second_run_while_one_is_running_is_ignored_and_an_edit_supersedes_the_result`;
+   `jobs.rs` unit tests (completion, retry through the runner, cancel flag, clear).
+2. Save job: with a real household file (`real_data_new_household_entry_save_and_reopen`
+   drives one), the jobs list shows "Save to <path> · done"; make the path unwritable and check
+   the failure toast, the alerting report and that *Retry* re-runs the save.
+3. Viewer/household change while a sensitivity job runs: the result must not be installed for
+   the wrong household (the `edits` guard covers edits; check `replace_household` bumps `edits`
+   or otherwise invalidates — if not, this is a gap).
+4. Cancel: no current job is cancellable (both are short); the flag path is unit-tested only.
+5. The indicator's menu entry is disabled for a job without an associated screen (the save).
+
+**Known / fragile.** `KEEP_FINISHED` is 8; `finished()` prunes, so a job may vanish from the
+list right after finishing if many finished ones are kept. Progress is a single "computing"
+step for the sensitivity job (no sub-steps). The jobs menu re-reads the centre when opened; it
+does not live-update while open.
