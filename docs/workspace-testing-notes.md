@@ -399,3 +399,66 @@ start/close and on the main window's close box; it notes every window's frame fi
 **Known / fragile.** Writes happen ~750 ms after the first change, not the last; `Autosave::due`
 is not consulted (real-time clocks and the test executor's fake clock disagree). The
 `explicit_screen` flag is set by `Launch::parse` only; tests set it directly.
+
+---
+
+## 10. Saved layouts, templates and presets — (commits 87d6bb2, 2d7b534)
+
+**Claims.** Model: `presets.rs` — `Preset::{Focus, Compare, MainInspector, Analysis, Review}`
+(`all()`, `label()`, `description()`, `template()`), `LayoutTemplate::arrange(existing, ids,
+is_kind)` fills slots by kind first, then by position, and mints new panes for slots nothing
+matches; `WorkspaceLayout::apply_template(window, template, is_kind)` (existing panes keep their
+ids), `import_window(source, window, frame)` (re-minted ids, the window appended as floating).
+`saved.rs` — `SavedLayouts` under `<data dir>/layouts/` (`layout-NNNN.json` /
+`template-NNNN.json`, `SavedKind` orders layouts before templates). App: `workspace/layouts.rs`
+— `LayoutStore { dir, store, current }`, `WorkspaceView::{saved_layouts, current_layout_name,
+can_save_layouts, save_layout, prompt_save_layout_as(as_template), save_layout_as,
+save_template, load_saved_layout, open_saved_layout_in_new_window, apply_preset,
+apply_template, rename/duplicate/delete_saved_layout, open_manage_layouts}`. The Layout menu
+(`layout-menu`, label `Layout: <name>` while a saved layout is on show): Save layout / Save
+layout as… / Save as template… / one entry per saved item (Load X, Arrange as X) / Manage
+layouts… / the five presets / Undo / Redo / Reset layout; without a data directory the save
+entries are absent. Loading and arranging are one history step each (`Load layout X`, `Arrange
+as X`); a duplicate name is refused with a toast; `reset_layout` clears the current name.
+
+A screen family's retained controls (search fields, filters, tables) are one set on `AtlasApp`,
+and one set cannot be drawn in two gpui windows at once (each window invalidates the other's
+frame — an endless ping-pong). `WorkspaceView::shown_elsewhere(pane, route)` therefore gives
+the *displayed* pane of a family to one window — the main window over any floating one, an
+earlier floating window over a later one — and the losing pane renders `pane-elsewhere`
+("<Family> is on show in the main window", `pane-show-elsewhere` → `show_pane_in_its_window`,
+`pane-close`). Two panes of one family in *one* window are fine. `apply_active_flags` notifies
+every pane on a layout change so the placeholder appears and disappears without other input.
+
+**Verify.**
+
+1. `tests/workspace.rs`: `a_layout_is_saved_loaded_back_and_managed`,
+   `a_preset_arranges_the_open_panes_and_a_template_adds_the_screens_it_names`,
+   `a_saved_layout_naming_a_deleted_record_loads_with_a_placeholder_in_its_place`,
+   `a_screen_shown_in_two_windows_yields_to_the_main_window`; model tests in `presets.rs`.
+2. Save as… with an empty name (the dialog refuses), with the name of an existing entry (toast
+   "already exists", nothing written), with a name that needs escaping in JSON.
+3. Save a layout while a floating window is open → both windows are in the entry; Load it with
+   no floating window open → the window opens; Load with a *different* floating window open →
+   that one closes (the model is replaced).
+4. Save a layout in household A, open household B → the entry is not offered (scope), Manage
+   shows only B's.
+5. Templates across households: a template saved in A, arranged in B → the same shape, B's
+   screens; a slot naming a screen the viewer cannot see (Sharing for a non-owner) → the
+   unavailable placeholder.
+6. Delete the layout on show → the title button drops the name; Rename it → the button follows.
+7. Open a saved layout in a new window whose panes include a family the main window shows →
+   the floating pane is the `pane-elsewhere` placeholder; Close pane there; Show it there raises
+   the main window and activates its pane; close the main window's pane → the floating one
+   shows the screen again.
+8. Presets with fewer panes than slots (Review with one pane open) → the missing slots are new
+   Today panes? — no: slots without a kind take the panes in order and open nothing; check that
+   `Arrange as Review` with one pane gives one pane and a `NoOp`-free history entry.
+9. Manage → Duplicate → the copy is "<name> copy"; Duplicate twice → "<name> copy 2".
+10. The layouts directory unwritable → the save entries stay, saving reports through alerting.
+
+**Known / fragile.** Menu items are addressed by index in tests (gpui-component gives them no
+ids); the reset test counts on the menu shape without saved entries. `open_saved_layout_in_new_window`
+opens the saved layout's *main* window as a floating window; its floating windows are not
+imported. The one-family-per-window rule is the honest limit of app-owned controls; per-pane
+controls would lift it.
