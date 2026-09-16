@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// What a saved entry holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SavedKind {
     /// A complete workspace, resources included; household-bound when scoped.
