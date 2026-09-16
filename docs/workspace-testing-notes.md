@@ -246,3 +246,42 @@ view's removal notice is ignored.
 checks existence only (rules carry no disclosure). Detail screens also have their own "not
 available to this viewer" copy for the in-screen case; the pane-level placeholder takes
 precedence because it is checked before the screen renders.
+
+---
+
+## 6. Header and pane launcher — (commits 73c9c6b, de7428f)
+
+**Claims.** `workspace/launcher.rs`: `LauncherConfig { pinned, hidden }` (slugs of home routes)
+loaded from `<data_dir>/launcher.json`, repaired on load (unknown slugs dropped, missing screens
+appended), saved atomically on every change; `LauncherView` is a cached view (snapshot =
+active destination + config) with `launcher-<slug>` buttons inside `launcher-item-<slug>` drag
+handles (`AnyDrag(LaunchDrag { route, destination })`), `launcher-add` (+ menu) and
+`launcher-more` (… menu: hidden screens, pin, restore). Right-click menu is launcher-owned
+(`OpenMenu`, dismissed → dropped) because gpui-kit's `context_menu` leaks its entity through an
+`Rc` cycle. `WorkspaceView::item_dropped_on_dock` turns `DockEvent::DragDrop` into a new pane;
+the bands accept `AnyDrag` too (`Dragged::New`); `reset_layout` is one undo step. Shell: no
+sidebar; title bar leading `app · household ▾ · sample · Layout ▾`, trailing `file state · Save ·
+viewer · meanings · theme · settings`; the workspace uses the full width. `Launch.data_dir`
+(`--data-dir`, `ATLAS_DATA_DIR`, else the per-user app dir; `None` for launches built in code).
+
+**Verify.**
+
+1. `tests/workspace.rs`: Shift-click instance, menu → Open right, launcher drag onto a pane edge
+   and onto the window band, reorder/unpin/pin/restore + file round-trip, Settings + Reset +
+   undo; `tests/ui.rs`: `launcher_and_workspace_tabs_navigate`,
+   `shell_reuses_cached_views_between_frames` (launcher cached, hover re-renders only it).
+2. Semantics: a launcher click never navigates a pane in place (the old sidebar did) — it focuses
+   or opens. Check with two panes: click the screen the *inactive* pane shows → it becomes
+   active, no new pane.
+3. Right-click menu: every item's action, focus returns after dismiss, Escape closes it, no
+   leaked `PopupMenu` at test exit (the harness checks).
+4. `launcher.json`: corrupt file → default + warning; a slug from a future version → dropped;
+   `--data-dir` pointing at a read-only location → save warns, app keeps running.
+5. Drag from the launcher onto the *launcher* item itself (no-op), onto the `+`/`…` buttons
+   (nothing), release over the title bar (nothing, overlay gone).
+6. Narrow window: the strip has no overflow measurement; items past the window's width are
+   clipped rather than moved into `…` (known limitation — unpin to make room).
+
+**Known / fragile.** The strip's `…` menu holds only the unpinned screens; automatic overflow by
+width is not implemented. Icons on tabs and launcher come from the full Lucide set
+(`AllAssets`), so the test-support windows load them too.
