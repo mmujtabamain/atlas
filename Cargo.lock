@@ -514,6 +514,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-workspace"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

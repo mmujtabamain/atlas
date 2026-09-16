@@ -29,3 +29,6 @@
 # Experiment builds with a different profile (never the product).
 /target-opt
 /target-rel
+
+# Separate target dir used to build/test atlas-workspace alone on the 2 GiB box.
+/target-ws
