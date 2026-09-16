@@ -30,10 +30,23 @@
 //! flattened by normalization, so the group's children scale by `1−s` and
 //! keep their ratios — that is what "spanning the group" means.
 //!
+//! Moving a pane ([`move_pane`]) is a removal followed by an insert, with
+//! one rule about the space the pane leaves behind. When the pane was alone
+//! in its stack, its slot in the parent split is freed; if the pane is moved
+//! **beside** a node inside one of its former siblings — the neighbour it is
+//! dropped next to, or something inside that neighbour's group — that
+//! sibling's slot takes the freed weight before the insert divides it, so
+//! the other siblings keep exactly the weights they had: moving 3 to the
+//! right of 1 in `[1|2|3]` gives `[1|3|2]` with 2 as wide as before, and
+//! moving 3 below 1 gives `[[1/3]|2]` with 2 untouched. A pane moved anywhere
+//! else (into a stack as a tab, beside the split itself, to a window edge,
+//! into another group) leaves its weight to the remaining siblings in
+//! proportion, so they keep their ratio.
+//!
 //! A minimum-size rule ([`SplitLimits`]) rejects a split that would leave any
 //! pane's rectangle narrower or shorter than `min_share` of the window, or
-//! nest splits deeper than `max_depth`. Centre (tab) docking is never
-//! rejected, so a pane can always be placed somewhere.
+//! nest splits deeper than `max_depth` ([`check_limits`]). Centre (tab)
+//! docking is never rejected, so a pane can always be placed somewhere.
 
 use crate::ids::{IdSource, NodeId, PaneId, WindowId};
 use crate::layout::{Axis, LayoutNode, Rect, Side, effective_weights};
@@ -238,7 +251,7 @@ pub fn insert(root: &mut Option<LayoutNode>, ids: &mut IdSource, pane: &PaneId, 
     let mut work_ids = ids.clone();
     insert_into(&mut work, &mut work_ids, pane, target)?;
     if target.splits() {
-        check_limits(root, &work, limits)?;
+        check_limits(root.as_ref(), work.as_ref(), limits)?;
     }
     *root = work;
     *ids = work_ids;
@@ -261,6 +274,10 @@ pub fn remove(root: &mut Option<LayoutNode>, pane: &PaneId) -> Result<Removed, O
 /// so the caller records no history entry for it. If the removal collapsed
 /// the target node away (the target was the split `[A|B]` and A is the pane
 /// being moved) the target is re-aimed at the node that replaced it.
+///
+/// A pane that was alone in its stack and lands beside a node inside one of
+/// its former siblings hands its freed slot to that sibling first (see the
+/// module docs), so the siblings it did not touch keep their weights.
 pub fn move_pane(root: &mut Option<LayoutNode>, ids: &mut IdSource, pane: &PaneId, target: &DockTarget, limits: &SplitLimits) -> Result<(), OpError> {
     let tree = root.as_ref().ok_or_else(|| OpError::UnknownPane(pane.clone()))?;
     let source_stack = tree.find_stack_of(pane).ok_or_else(|| OpError::UnknownPane(pane.clone()))?;
@@ -280,16 +297,20 @@ pub fn move_pane(root: &mut Option<LayoutNode>, ids: &mut IdSource, pane: &PaneI
         return reorder_in_stack(root, pane, *index);
     }
 
+    let handover = slot_handover(tree, &source_stack, target);
     let mut work = root.clone();
     let mut work_ids = ids.clone();
     let removed = remove_from(&mut work, pane)?;
+    if let Some(handover) = &handover {
+        hand_over_slot(&mut work, handover);
+    }
     let aimed = match target.node() {
         Some(node) => target.with_node(removed.report.resolve(node)),
         None => target.clone(),
     };
     insert_into(&mut work, &mut work_ids, pane, &aimed)?;
     if aimed.splits() {
-        check_limits(root, &work, limits)?;
+        check_limits(root.as_ref(), work.as_ref(), limits)?;
     }
     if work == *root {
         return Err(OpError::NoOp);
@@ -298,6 +319,67 @@ pub fn move_pane(root: &mut Option<LayoutNode>, ids: &mut IdSource, pane: &PaneI
     *root = work;
     *ids = work_ids;
     Ok(())
+}
+
+/// The slot a moved pane frees, and the former sibling that takes it: the
+/// parent split, its children's weights before the move, and the sibling.
+#[derive(Clone, Debug, PartialEq)]
+struct SlotHandover {
+    /// The split the pane's stack was a direct child of.
+    parent: NodeId,
+    /// Every child of that split with its share, in order, before the move.
+    shares: Vec<(NodeId, f64)>,
+    /// The child the freed share goes to.
+    to: NodeId,
+    /// The share the pane's stack held.
+    freed: f64,
+}
+
+/// Decides whether moving `pane` (alone in `source_stack`) to `target` hands
+/// its slot to a former sibling: only for a *beside* target that names a node
+/// inside another child of the same parent split. `None` means the freed
+/// weight is shared in proportion, which is what normalization does anyway.
+fn slot_handover(tree: &LayoutNode, source_stack: &NodeId, target: &DockTarget) -> Option<SlotHandover> {
+    let DockTarget::Beside { node: target_node, .. } = target else {
+        return None;
+    };
+    let alone = tree.find(source_stack).map(LayoutNode::stack_panes).is_some_and(|panes| panes.len() == 1);
+    if !alone {
+        return None;
+    }
+    let (parent_id, index) = tree.position_of(source_stack)?;
+    let parent = tree.find(&parent_id)?;
+    let children = parent.children();
+    let shares_list = effective_weights(parent.weights(), children.len());
+    let sibling = children.iter().enumerate().find(|(position, child)| *position != index && child.find(target_node).is_some())?;
+    Some(SlotHandover {
+        parent: parent_id,
+        shares: children.iter().zip(&shares_list).map(|(child, share)| (child.id().clone(), *share)).collect(),
+        to: sibling.1.id().clone(),
+        freed: shares_list[index],
+    })
+}
+
+/// Applies a [`SlotHandover`] to the tree the pane was just removed from:
+/// the parent's surviving children get their old shares back and the chosen
+/// sibling gets the freed share on top. A parent that collapsed into that
+/// sibling (it had two children) already handed everything over.
+fn hand_over_slot(root: &mut Option<LayoutNode>, handover: &SlotHandover) {
+    let Some(LayoutNode::Split { children, weights, .. }) = root.as_mut().and_then(|tree| tree.find_mut(&handover.parent)) else {
+        return;
+    };
+    let mut restored = Vec::with_capacity(children.len());
+    for child in children.iter() {
+        let Some((_, share)) = handover.shares.iter().find(|(id, _)| id == child.id()) else {
+            // A child this move did not create is unknown here only if the
+            // tree changed shape in a way the rule does not describe; the
+            // proportional weights normalization left are the honest answer.
+            return;
+        };
+        let bonus = if child.id() == &handover.to { handover.freed } else { 0.0 };
+        restored.push(share + bonus);
+    }
+    *weights = effective_weights(&restored, children.len());
 }
 
 /// Merges `pane` into the stack that holds `onto`, as its last tab.
@@ -628,11 +710,15 @@ fn at_edge_of(tree: &LayoutNode, group: &NodeId, stack: &NodeId, side: Side) -> 
     edge_child.map(LayoutNode::id) == Some(stack)
 }
 
-/// Applies the minimum-size rule to the tree after a split. A pane that was
-/// already below the limit before the operation and did not shrink further
-/// is tolerated, so a layout loaded from a file with tiny panes can still be
-/// changed elsewhere.
-fn check_limits(before: &Option<LayoutNode>, after: &Option<LayoutNode>, limits: &SplitLimits) -> Result<(), OpError> {
+/// Applies the minimum-size rule to `after`, the tree a split produced from
+/// `before`: [`OpError::TooDeep`] when splits nest deeper than the limit,
+/// [`OpError::TooSmall`] when a stack's rectangle is narrower or shorter than
+/// `min_share` of the window. A stack that was already below the limit in
+/// `before` and did not shrink further is tolerated, so a layout loaded from
+/// a file with tiny panes can still be changed elsewhere; with no `before`
+/// nothing is tolerated. The UI runs this on a tree the dock engine built on
+/// its own before it accepts it.
+pub fn check_limits(before: Option<&LayoutNode>, after: Option<&LayoutNode>, limits: &SplitLimits) -> Result<(), OpError> {
     let Some(after_tree) = after else {
         return Ok(());
     };
@@ -641,7 +727,6 @@ fn check_limits(before: &Option<LayoutNode>, after: &Option<LayoutNode>, limits:
         return Err(OpError::TooDeep { max_depth: limits.max_depth, depth });
     }
     let before_sides: HashMap<NodeId, f64> = before
-        .as_ref()
         .map(|tree| tree.stack_rects().into_iter().map(|(id, rect)| (id, rect.min_side())).collect())
         .unwrap_or_default();
     for (id, rect) in after_tree.stack_rects() {
@@ -911,6 +996,105 @@ mod tests {
         assert_eq!(report.resolve(&NodeId::new("lonely")), NodeId::new("a"));
         assert_eq!(report.resolve(&NodeId::new("inner")), NodeId::new("outer"));
         assert!(report.dropped.contains(&NodeId::new("empty")));
+    }
+
+    /// `[1 | 2 | 3]` in equal thirds, through the operations.
+    fn equal_thirds() -> (Option<LayoutNode>, IdSource) {
+        let mut root = None;
+        let mut ids = IdSource::new();
+        let limits = SplitLimits::default();
+        insert(&mut root, &mut ids, &pane(1), &DockTarget::edge(Side::Right), &limits).unwrap();
+        insert(&mut root, &mut ids, &pane(2), &DockTarget::WindowEdge { side: Side::Right, share: Some(0.5) }, &limits).unwrap();
+        insert(&mut root, &mut ids, &pane(3), &DockTarget::WindowEdge { side: Side::Right, share: Some(1.0 / 3.0) }, &limits).unwrap();
+        (root, ids)
+    }
+
+    fn close_to(actual: &[f64], expected: &[f64]) -> bool {
+        actual.len() == expected.len() && actual.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-9)
+    }
+
+    #[test]
+    fn a_pane_moved_beside_a_neighbour_hands_its_slot_to_that_neighbour() {
+        // 3 to the right of 1: 1's slot grows by 3's and is divided; 2 keeps
+        // its width and only changes place in the order.
+        let (mut root, mut ids) = equal_thirds();
+        let stack1 = root.as_ref().unwrap().find_stack_of(&pane(1)).unwrap();
+        let stack2 = root.as_ref().unwrap().find_stack_of(&pane(2)).unwrap();
+        move_pane(&mut root, &mut ids, &pane(3), &DockTarget::Beside { node: stack1.clone(), side: Side::Right, share: Some(0.5) }, &SplitLimits::default()).unwrap();
+        let tree = root.as_ref().unwrap();
+        assert_eq!(tree.panes(), [pane(1), pane(3), pane(2)]);
+        assert!(close_to(tree.weights(), &[1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]), "{:?}", tree.weights());
+        assert_eq!(tree.children()[2].id(), &stack2, "2's stack is the same node");
+
+        // 3 below 1: 1's slot grows by 3's and is divided vertically; 2 is untouched.
+        let (mut root, mut ids) = equal_thirds();
+        let stack1 = root.as_ref().unwrap().find_stack_of(&pane(1)).unwrap();
+        move_pane(&mut root, &mut ids, &pane(3), &DockTarget::Beside { node: stack1, side: Side::Bottom, share: Some(0.5) }, &SplitLimits::default()).unwrap();
+        let tree = root.as_ref().unwrap();
+        assert_eq!(tree.axis(), Some(Axis::Horizontal));
+        assert!(close_to(tree.weights(), &[2.0 / 3.0, 1.0 / 3.0]), "{:?}", tree.weights());
+        let column = &tree.children()[0];
+        assert_eq!(column.axis(), Some(Axis::Vertical));
+        assert_eq!(column.panes(), [pane(1), pane(3)]);
+        assert!(close_to(column.weights(), &[0.5, 0.5]));
+        assert_eq!(tree.children()[1].stack_panes(), [pane(2)]);
+
+        // 1 to the right of 3: the neighbour on the far side takes 1's slot;
+        // 2, in between, keeps its width.
+        let (mut root, mut ids) = equal_thirds();
+        let stack3 = root.as_ref().unwrap().find_stack_of(&pane(3)).unwrap();
+        move_pane(&mut root, &mut ids, &pane(1), &DockTarget::Beside { node: stack3, side: Side::Right, share: Some(0.5) }, &SplitLimits::default()).unwrap();
+        let tree = root.as_ref().unwrap();
+        assert_eq!(tree.panes(), [pane(2), pane(3), pane(1)]);
+        assert!(close_to(tree.weights(), &[1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]), "{:?}", tree.weights());
+    }
+
+    #[test]
+    fn a_pane_moved_anywhere_else_leaves_its_slot_to_the_siblings_in_proportion() {
+        // [1 | 2 | 3] with 1 twice as wide as 2: 3 into 1's stack as a tab
+        // leaves 1 and 2 sharing 3's third at 2:1.
+        let (mut root, mut ids) = equal_thirds();
+        let root_id = root.as_ref().unwrap().id().clone();
+        resize(&mut root, &root_id, &[0.5, 0.25, 0.25]).unwrap();
+        let stack1 = root.as_ref().unwrap().find_stack_of(&pane(1)).unwrap();
+        move_pane(&mut root, &mut ids, &pane(3), &DockTarget::tab(stack1), &SplitLimits::default()).unwrap();
+        let tree = root.as_ref().unwrap();
+        assert!(close_to(tree.weights(), &[2.0 / 3.0, 1.0 / 3.0]), "{:?}", tree.weights());
+
+        // Beside the split itself (ancestor docking) is not "beside a
+        // sibling": the survivors keep their ratio.
+        let (mut root, mut ids) = equal_thirds();
+        let root_id = root.as_ref().unwrap().id().clone();
+        resize(&mut root, &root_id, &[0.5, 0.25, 0.25]).unwrap();
+        move_pane(&mut root, &mut ids, &pane(3), &DockTarget::Beside { node: root_id, side: Side::Bottom, share: Some(0.25) }, &SplitLimits::default()).unwrap();
+        let tree = root.as_ref().unwrap();
+        assert_eq!(tree.axis(), Some(Axis::Vertical));
+        let row = &tree.children()[0];
+        assert!(close_to(row.weights(), &[2.0 / 3.0, 1.0 / 3.0]), "{:?}", row.weights());
+
+        // A pane that is not alone frees nothing.
+        let (mut root, mut ids) = equal_thirds();
+        let stack1 = root.as_ref().unwrap().find_stack_of(&pane(1)).unwrap();
+        let stack2 = root.as_ref().unwrap().find_stack_of(&pane(2)).unwrap();
+        move_pane(&mut root, &mut ids, &pane(3), &DockTarget::tab(stack1.clone()), &SplitLimits::default()).unwrap();
+        let before = root.as_ref().unwrap().weights().to_vec();
+        move_pane(&mut root, &mut ids, &pane(3), &DockTarget::Beside { node: stack2, side: Side::Right, share: Some(0.5) }, &SplitLimits::default()).unwrap();
+        let tree = root.as_ref().unwrap();
+        assert!(close_to(&tree.weights()[..1], &before[..1]), "1's stack keeps its slot: {:?} vs {before:?}", tree.weights());
+    }
+
+    #[test]
+    fn check_limits_refuses_slivers_and_depth_but_tolerates_what_was_already_small() {
+        let (root, _) = equal_thirds();
+        let limits = SplitLimits { min_share: 0.4, max_depth: 12 };
+        let err = check_limits(None, root.as_ref(), &limits).unwrap_err();
+        assert!(matches!(err, OpError::TooSmall { smallest, .. } if (smallest - 1.0 / 3.0).abs() < 1e-9), "{err:?}");
+        // The same tree, judged against itself: nothing shrank, so nothing is refused.
+        assert_eq!(check_limits(root.as_ref(), root.as_ref(), &limits), Ok(()));
+        assert_eq!(check_limits(None, root.as_ref(), &SplitLimits::default()), Ok(()));
+        let shallow = SplitLimits { min_share: 0.0, max_depth: 0 };
+        assert!(matches!(check_limits(None, root.as_ref(), &shallow), Err(OpError::TooDeep { depth: 1, max_depth: 0 })));
+        assert_eq!(check_limits(None, None, &shallow), Ok(()));
     }
 
     #[test]
