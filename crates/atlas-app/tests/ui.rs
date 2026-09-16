@@ -5,35 +5,18 @@
 //! `main-sidebar` scope. The groups follow `Destination::GROUPS`: Today is
 //! `0-0-0`, Accounts is `1-0-0`, Rules & taxes is `2-0-0`.
 
+mod common;
+
 use atlas_app::launch::Start;
 use atlas_app::nav::{Destination, Route};
-use atlas_app::{AtlasApp, Launch, Shell};
+use atlas_app::Launch;
 use atlas_core::fixtures;
 use atlas_core::ids::ObjectRef;
 use atlas_core::Disclosure;
-use gpui_kit::component::{Root, WindowExt as _};
+use common::*;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext as _, Entity, Modifiers, MouseMoveEvent, PlatformInput, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px, size};
-
-/// gpui-kit dialogs fade in over 250 ms of wall-clock time (not test time) and
-/// do not take pointer input until the animation has finished, so a test must
-/// let real time pass before clicking a dialog button.
-fn let_dialog_settle() {
-    std::thread::sleep(std::time::Duration::from_millis(400));
-}
-
-/// Dismisses the result toasts and waits for them to leave. They sit in the
-/// top-right corner — over the trailing commands of every workspace — and keep
-/// their hitbox while they animate out.
-fn dismiss_toasts(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle) {
-    cx.update_window(window, |_, window, cx| {
-        window.render_frame(cx);
-        window.clear_notifications(cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let_dialog_settle();
-}
+use gpui_kit::{AppContext as _, Modifiers, MouseMoveEvent, PlatformInput, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px};
 
 /// Scrolls the main column down by `pixels` from an on-screen anchor.
 fn scroll_by(window: &mut gpui_kit::Window, anchor: &'static str, pixels: f32, cx: &mut gpui_kit::App) {
@@ -47,46 +30,6 @@ fn scroll_to_and_click(window: &mut gpui_kit::Window, anchor: &'static str, id: 
         scroll_by(window, anchor, 900., cx);
     }
     window.click(id, cx);
-}
-
-/// Asserts the element exists in this frame, whether or not it is scrolled
-/// into view.
-fn present(window: &gpui_kit::Window, id: &'static str) -> bool {
-    window.try_find(id).is_some()
-}
-
-/// The sample household, a chosen viewer and a starting route: what almost
-/// every test opens.
-fn sample(route: Route) -> Launch {
-    Launch { start: Start::Sample, viewer: Some('a'), route, ..Launch::default() }
-}
-
-fn open_app(cx: &mut TestAppContext, launch: Launch) -> (gpui_kit::WindowHandle<Root>, Entity<AtlasApp>) {
-    let (handle, shell) = open_shell(cx, launch);
-    let app = cx.update(|cx| shell.read(cx).app().clone());
-    (handle, app)
-}
-
-/// Opens the window and returns the root view (the shell around the content).
-fn open_shell(cx: &mut TestAppContext, launch: Launch) -> (gpui_kit::WindowHandle<Root>, Entity<Shell>) {
-    cx.update(gpui_kit::init);
-    let mut shell_view = None;
-    // Tall enough that a rebuilt workspace fits without scrolling; the real
-    // window scrolls, and one test drives that deliberately.
-    let handle = cx.open_window(size(px(1600.), px(2400.)), |window, cx| {
-        let shell = cx.new(|cx| Shell::new(&launch, window, cx));
-        shell_view = Some(shell.clone());
-        Root::new(shell, window, cx)
-    });
-    (handle, shell_view.expect("view created"))
-}
-
-/// Navigates through the app's own API (the sidebar and tabs are covered by
-/// their own tests) and draws the resulting frame.
-fn go(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle, app: &Entity<AtlasApp>, route: Route) {
-    cx.update(|cx| app.update(cx, |app, cx| app.navigate(route, cx)));
-    cx.run_until_parked();
-    cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
 }
 
 // ----- Shell and first experience -------------------------------------------------
@@ -1224,25 +1167,29 @@ fn move_pointer_to(window: &mut gpui_kit::Window, scope: Option<&'static str>, i
 
 #[gpui_kit::test]
 fn shell_reuses_cached_views_between_frames(cx: &mut TestAppContext) {
-    // The sidebar and the content are separate cached views. A frame
+    // The sidebar and the content — the pane workspace — are separate cached
+    // views, and each pane is a cached view inside the workspace. A frame
     // re-renders only the views that were notified; the rest reuse their
     // previous layout and paint. `render_frame` refreshes the window (which
     // bypasses every cache), so the frames under test are drawn directly, and
     // a frame's figures are read once the next frame has closed it.
     let (handle, shell) = open_shell(cx, sample(Route::Today));
-    let (app, sidebar) = cx.update(|cx| {
+    let (app, sidebar, workspace) = cx.update(|cx| {
         let shell = shell.read(cx);
-        (shell.app().clone(), shell.sidebar().clone())
+        (shell.app().clone(), shell.sidebar().clone(), shell.workspace().clone())
     });
     let window: gpui_kit::AnyWindowHandle = handle.into();
 
-    // Nothing changed between two frames: both cached views are reused.
+    // Nothing changed between two frames: every cached view is reused.
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         let renders = sidebar.read(cx).renders();
         assert!(renders >= 1, "the first frame rendered the sidebar");
+        let workspace_renders = workspace.read(cx).renders();
+        assert!(workspace_renders >= 1, "the first frame rendered the workspace");
         window.draw(cx).clear(cx);
         assert_eq!(sidebar.read(cx).renders(), renders, "an unchanged frame reuses the sidebar");
+        assert_eq!(workspace.read(cx).renders(), workspace_renders, "an unchanged frame reuses the workspace");
         window.draw(cx).clear(cx);
         let last = app.read(cx).perf().last().expect("the previous frame is closed");
         assert_eq!(last.content_render, None, "an unchanged frame reuses the content: {last:?}");
@@ -1254,12 +1201,15 @@ fn shell_reuses_cached_views_between_frames(cx: &mut TestAppContext) {
     })
     .unwrap();
 
-    // Hovering a sidebar item re-renders the sidebar, not the screen.
+    // Hovering a sidebar item re-renders the sidebar, not the workspace or
+    // the screen inside it.
     cx.update_window(window, |_, window, cx| {
         let renders = sidebar.read(cx).renders();
+        let workspace_renders = workspace.read(cx).renders();
         move_pointer_to(window, Some("main-sidebar"), "0-0-1", cx);
         window.draw(cx).clear(cx);
         assert_eq!(sidebar.read(cx).renders(), renders + 1, "the hover re-renders the sidebar");
+        assert_eq!(workspace.read(cx).renders(), workspace_renders, "a sidebar hover leaves the workspace cached");
         window.draw(cx).clear(cx);
         let last = app.read(cx).perf().last().unwrap();
         assert_eq!(last.content_render, None, "a sidebar hover does not rebuild the screen: {last:?}");
@@ -1396,7 +1346,7 @@ fn long_registers_scroll_without_losing_the_header(cx: &mut TestAppContext) {
 /// that does not see the wrap, so the height is short by however many lines
 /// the value actually took — the sentence is cut mid-word and every row below
 /// it is clipped out of the screen entirely. Settings was losing the log
-/// location and the frame-time readout, and the nine launch options rendered
+/// location and the frame-time readout, and the ten launch options rendered
 /// as an empty box. All of them are facts the screen is required to state.
 #[gpui_kit::test]
 fn settings_states_the_facts_below_a_wrapping_value(cx: &mut TestAppContext) {
@@ -1421,7 +1371,7 @@ fn settings_states_the_facts_below_a_wrapping_value(cx: &mut TestAppContext) {
 
         // The launch options are a fact list inside an accordion, which is
         // where the loss was total: the box drew with nothing in it.
-        for index in 0..9 {
+        for index in 0..10 {
             let id: &'static str = &*Box::leak(format!("settings-launch-facts-row-{index}").into_boxed_str());
             assert!(present(window, id), "launch option {index} renders");
         }

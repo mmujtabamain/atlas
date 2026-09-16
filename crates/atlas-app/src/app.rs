@@ -1,7 +1,13 @@
-//! `AtlasApp`: the content view. It owns the household, the viewer, the
-//! current route and the derived screen models; screens are pure rendering
-//! over those models. The window's root view — title bar, sidebar, status bar —
-//! is [`crate::shell::Shell`], which embeds this view cached.
+//! `AtlasApp`: the household, the viewer, the derived screen models and every
+//! screen's state; screens are pure rendering over those models. While a
+//! household is open the screens show inside the panes of
+//! [`crate::workspace::WorkspaceView`], each pane calling
+//! [`AtlasApp::render_route`] for its own route, and `route()` answers with
+//! the active pane's route (the sidebar highlight and the frame label follow
+//! it). Before that — Welcome, the viewer gate — this view is the content
+//! itself. The window's root view — title bar, sidebar, status bar — is
+//! [`crate::shell::Shell`], which embeds whichever of the two is the content,
+//! cached.
 
 use atlas_core::authz::Viewer;
 use atlas_core::fixtures;
@@ -252,6 +258,14 @@ pub struct AtlasApp {
     pub(crate) grids: Grids,
     /// Frame timing behind the status-bar FPS counter and the `perf:` log lines.
     pub(crate) perf: crate::perf::FrameMeter,
+    /// Counts the households this view has shown: `replace_household` bumps
+    /// it, so the workspace can tell a new household (fresh layout) from the
+    /// same household saved under a new name (layout kept).
+    pub(crate) household_generation: u64,
+    /// The pane workspace that shows the screens while a household is open;
+    /// `navigate` and `go_back` act on its active pane. Attached by the shell
+    /// once both views exist; absent, this view renders the route itself.
+    pub(crate) workspace: Option<WeakEntity<crate::workspace::WorkspaceView>>,
     pub(crate) _subscriptions: Vec<Subscription>,
 }
 
@@ -675,6 +689,8 @@ impl AtlasApp {
             entry_forms,
             grids,
             perf: crate::perf::FrameMeter::new(),
+            household_generation: 1,
+            workspace: None,
             _subscriptions: Vec::new(),
         };
         app.subscribe_controls(_window, _cx);
@@ -1827,8 +1843,38 @@ impl AtlasApp {
         self.selected_account
     }
 
-    /// Opens `route`, remembering where it came from for "Back to …".
+    /// Attaches the pane workspace that shows the screens. From then on
+    /// `navigate` and `go_back` act on its active pane and `route()` answers
+    /// with that pane's route.
+    pub fn attach_workspace(&mut self, workspace: WeakEntity<crate::workspace::WorkspaceView>) {
+        self.workspace = Some(workspace);
+    }
+
+    /// The workspace, while a household is open and the viewer is chosen —
+    /// the only time the workspace shows panes.
+    fn usable_workspace(&self) -> Option<Entity<crate::workspace::WorkspaceView>> {
+        if !self.opened || self.viewer_pending {
+            return None;
+        }
+        self.workspace.as_ref().and_then(WeakEntity::upgrade)
+    }
+
+    /// Opens `route` in the active pane, which remembers where it came from
+    /// for "Back to …". Without a workspace (this view rendering the route
+    /// itself) the view keeps that history.
     pub fn navigate(&mut self, route: Route, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.usable_workspace() {
+            if self.route != route {
+                log::info!("navigate: {} → {} (active pane)", self.route.slug(), route.slug());
+            }
+            // The chrome (sidebar highlight, frame label) follows at once; the
+            // workspace only changes the pane and never calls back into this
+            // view, which is being updated right now.
+            self.route = route;
+            workspace.update(cx, |workspace, cx| workspace.navigate_active(route, cx));
+            cx.notify();
+            return;
+        }
         if self.route != route {
             log::info!("navigate: {} → {}", self.route.slug(), route.slug());
             if self.route != Route::Welcome {
@@ -1842,14 +1888,55 @@ impl AtlasApp {
         }
     }
 
-    /// Returns to the previous route, or to the current route's parent.
+    /// Returns to the previous route of the active pane, or to the current
+    /// route's parent.
     pub fn go_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.usable_workspace() {
+            if let Some(target) = workspace.update(cx, |workspace, cx| workspace.back_active(cx)) {
+                log::info!("navigate: back {} → {} (active pane)", self.route.slug(), target.slug());
+                self.route = target;
+                cx.notify();
+            }
+            return;
+        }
         let target = self.history.pop().unwrap_or_else(|| self.route.parent());
         log::info!("navigate: back {} → {}", self.route.slug(), target.slug());
         self.route = target;
         cx.notify();
     }
 
+    /// The workspace's word on what the active pane shows: the sidebar
+    /// highlight and the frame label follow it. Called by the workspace when
+    /// the active pane or its route changed on its side (a click in another
+    /// pane, in-pane Back from the pane's menu, a closed pane).
+    pub fn set_route_for_chrome(&mut self, route: Route, cx: &mut Context<Self>) {
+        if self.route != route {
+            log::debug!("chrome route: {} → {}", self.route.slug(), route.slug());
+            self.route = route;
+            cx.notify();
+        }
+    }
+
+    /// How many households this view has shown so far; changes whenever a
+    /// household is replaced (new, open, sample), not when it is saved.
+    pub fn household_generation(&self) -> u64 {
+        self.household_generation
+    }
+
+    /// A stable name for the household on show, which scopes its workspace:
+    /// the file's identity, `sample` for the fictitious sample, `unsaved` for
+    /// a household that has no file yet.
+    pub fn household_identity(&self) -> String {
+        if self.is_sample {
+            return "sample".to_string();
+        }
+        match &self.file {
+            Some(file) => file.identity(),
+            None => "unsaved".to_string(),
+        }
+    }
+
+    /// The route on show: the active pane's while a workspace is attached.
     pub fn route(&self) -> Route {
         self.route
     }
@@ -1996,10 +2083,17 @@ impl AtlasApp {
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let started = std::time::Instant::now();
         let element = self.render_section(cx);
-        self.perf.record_content(started.elapsed());
+        // Welcome and the gate are content too; a route booked its own time.
+        if !self.opened || self.viewer_pending || self.route == Route::Welcome {
+            self.perf.add_content(started.elapsed());
+        }
         element
     }
 
+    /// Welcome and the viewer gate — what this view shows on its own while
+    /// no household is open or nobody has said who is looking. With a
+    /// household usable the shell shows the workspace instead; this view then
+    /// renders the route itself only when no workspace is attached.
     fn render_section(&self, cx: &mut Context<Self>) -> AnyElement {
         if !self.opened || self.route == Route::Welcome {
             return crate::screens::welcome::render(self, cx);
@@ -2007,7 +2101,23 @@ impl AtlasApp {
         if self.viewer_pending {
             return crate::screens::welcome::render_gate(self, cx);
         }
-        match self.route {
+        self.render_route(self.route, cx)
+    }
+
+    /// One screen, for one pane: the route's screen over the derived model it
+    /// reads, or the failure state when the engine could not compute that
+    /// model. Panes call this with their own route, so the same state renders
+    /// as many screens as there are panes. The time spent is booked to this
+    /// frame's `content` figure (summed over the panes that rendered).
+    pub fn render_route(&self, route: Route, cx: &mut Context<Self>) -> AnyElement {
+        let started = std::time::Instant::now();
+        let element = self.render_route_inner(route, cx);
+        self.perf.add_content(started.elapsed());
+        element
+    }
+
+    fn render_route_inner(&self, route: Route, cx: &mut Context<Self>) -> AnyElement {
+        match route {
             Route::Welcome => crate::screens::welcome::render(self, cx),
             Route::Settings => crate::screens::settings::render(self, cx),
             // Bridge: every route not rebuilt yet renders through the previous
@@ -2017,7 +2127,7 @@ impl AtlasApp {
                 Err(err) => self.render_engine_failure(Route::Today, "today's figures", err, cx),
             },
             Route::People | Route::Person(_) | Route::Companies | Route::Company(_) | Route::Accounts | Route::Account(_) => match self.entities_result() {
-                Ok(models) => match self.route {
+                Ok(models) => match route {
                     Route::People => crate::screens::people::render_list(self, models, &self.household, cx),
                     Route::Person(id) => crate::screens::people::render_detail(self, id, models, &self.household, cx),
                     Route::Companies => crate::screens::companies::render_list(self, models, &self.household, cx),
@@ -2025,7 +2135,7 @@ impl AtlasApp {
                     Route::Account(id) => crate::screens::accounts::render_detail(self, id, models, &self.household, cx),
                     _ => crate::screens::accounts::render_list(self, models, &self.household, cx),
                 },
-                Err(err) => self.render_engine_failure(self.route, "this screen", err, cx),
+                Err(err) => self.render_engine_failure(route, "this screen", err, cx),
             },
             Route::Earmarks => match self.liquidity_result() {
                 Ok(model) => crate::screens::earmarks::render(self, model, &self.household, cx),
@@ -2036,55 +2146,55 @@ impl AtlasApp {
                 Err(err) => self.render_engine_failure(Route::Funding, "the funding order", err, cx),
             },
             Route::Upcoming | Route::Series | Route::SeriesDetail(_) | Route::Actuals => match self.timeline_result() {
-                Ok(model) => match self.route {
+                Ok(model) => match route {
                     Route::Series => crate::screens::activity::render_series(self, model, &self.household, cx),
                     Route::SeriesDetail(id) => crate::screens::activity::render_series_detail(self, id, model, &self.household, cx),
                     Route::Actuals => crate::screens::activity::render_actuals(self, model, &self.household, cx),
                     _ => crate::screens::activity::render_upcoming(self, model, &self.household, cx),
                 },
-                Err(err) => self.render_engine_failure(self.route, "the planned movements", err, cx),
+                Err(err) => self.render_engine_failure(route, "the planned movements", err, cx),
             },
             Route::ForecastPath => match self.projection_result() {
                 Ok(model) => crate::screens::forecast::render_path(self, model, &self.household, cx),
                 Err(err) => self.render_engine_failure(Route::ForecastPath, "this forecast", err, cx),
             },
             Route::Assumptions | Route::Derive | Route::Sensitivity => match self.assumptions_result() {
-                Ok(model) => match self.route {
+                Ok(model) => match route {
                     Route::Derive => crate::screens::assumptions::render_derive(self, model, &self.household, cx),
                     Route::Sensitivity => crate::screens::assumptions::render_sensitivity(self, model, &self.household, cx),
                     _ => crate::screens::assumptions::render_register(self, model, &self.household, cx),
                 },
-                Err(err) => self.render_engine_failure(self.route, "the assumptions", err, cx),
+                Err(err) => self.render_engine_failure(route, "the assumptions", err, cx),
             },
             Route::Taxes | Route::TaxPacks | Route::Extraction => match self.taxes_result() {
-                Ok(model) => match self.route {
+                Ok(model) => match route {
                     Route::Extraction => crate::screens::extraction::render(self, model, cx),
                     Route::TaxPacks => crate::screens::taxes::render_packs(self, model, cx),
                     _ => crate::screens::taxes::render_taxes(self, model, &self.household, cx),
                 },
-                Err(err) => self.render_engine_failure(self.route, "the tax assessment", err, cx),
+                Err(err) => self.render_engine_failure(route, "the tax assessment", err, cx),
             },
             Route::Rules | Route::Rule(_) | Route::CreateRule | Route::RuleActivity => match self.rules_result() {
-                Ok(model) => match self.route {
+                Ok(model) => match route {
                     Route::Rule(id) => crate::screens::rules::render_detail(self, id, model, &self.household, cx),
                     Route::CreateRule => crate::screens::rules::render_create(self, &self.household, cx),
                     Route::RuleActivity => crate::screens::rules::render_activity(self, model, &self.household, cx),
                     _ => crate::screens::rules::render_register(self, model, &self.household, cx),
                 },
-                Err(err) => self.render_engine_failure(self.route, "the rules", err, cx),
+                Err(err) => self.render_engine_failure(route, "the rules", err, cx),
             },
             Route::Scenarios | Route::ScenarioCompare => match self.scenarios_result() {
-                Ok(model) => match self.route {
+                Ok(model) => match route {
                     Route::ScenarioCompare => crate::screens::scenarios::render_comparison(self, model, &self.household, cx),
                     _ => crate::screens::scenarios::render_list(self, model, &self.household, cx),
                 },
-                Err(err) => self.render_engine_failure(self.route, "the scenarios", err, cx),
+                Err(err) => self.render_engine_failure(route, "the scenarios", err, cx),
             },
             Route::Purchase => crate::screens::decisions::render_purchase(self, &self.household, cx),
             Route::PurchaseResult => crate::screens::decisions::render_result(self, &self.household, cx),
             Route::Policies | Route::Grants | Route::Audit => {
                 let model = self.privacy();
-                match self.route {
+                match route {
                     Route::Grants => crate::screens::sharing::render_grants(self, model, &self.household, cx),
                     Route::Audit => crate::screens::sharing::render_audit(self, model, cx),
                     _ => crate::screens::sharing::render_policies(self, model, &self.household, cx),

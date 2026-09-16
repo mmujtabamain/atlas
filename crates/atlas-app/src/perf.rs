@@ -329,6 +329,13 @@ impl FrameMeter {
         self.content_render.set(Some(render));
     }
 
+    /// Adds one screen's render time to this frame's content figure: a frame
+    /// with several panes renders several screens, and the figure is their sum.
+    pub fn add_content(&self, render: Duration) {
+        let so_far = self.content_render.get().unwrap_or(Duration::ZERO);
+        self.content_render.set(Some(so_far + render));
+    }
+
     /// Last thing in `render`: the element tree is built.
     pub fn end_build(&mut self) {
         if let Some(started) = self.started {

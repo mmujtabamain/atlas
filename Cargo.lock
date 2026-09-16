@@ -473,6 +473,7 @@ dependencies = [
  "anyhow",
  "atlas-core",
  "atlas-store",
+ "atlas-workspace",
  "chrono",
  "env_filter",
  "gpui-kit",

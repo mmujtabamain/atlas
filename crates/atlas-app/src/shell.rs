@@ -14,7 +14,8 @@
 //! |---|---|---|
 //! | [`Shell`] (root) | always renders | title bar + status bar, ~40 nodes |
 //! | [`SidebarView`] | hover/click on the sidebar; the app, when what the sidebar shows changed | cached |
-//! | [`AtlasApp`] (content) | hover/scroll/click inside the screen; every state change | cached |
+//! | [`WorkspaceView`] (content while a household is usable) | a pane inside it; every layout change | cached; each pane is a cached view of its own inside gpui-kit's dock |
+//! | [`AtlasApp`] (content before that: Welcome, the viewer gate) | hover/scroll/click inside the screen; every state change | cached |
 //!
 //! The sidebar does not simply observe the content view — a scroll tick
 //! notifies the content view too, and re-rendering the sidebar on every tick
@@ -53,6 +54,7 @@ use gpui_kit::*;
 use crate::app::AtlasApp;
 use crate::launch::Launch;
 use crate::nav::{Destination, Route};
+use crate::workspace::{WorkspaceView, commands};
 
 /// Width of the sidebar column: gpui-kit's `w_64` expanded, its icon width collapsed.
 pub fn sidebar_width(collapsed: bool) -> Pixels {
@@ -92,19 +94,30 @@ impl FileChrome {
 pub struct Shell {
     app: Entity<AtlasApp>,
     sidebar: Entity<SidebarView>,
+    workspace: Entity<WorkspaceView>,
 }
 
 impl Shell {
-    /// Creates the content view and the shell around it.
+    /// Creates the content view, the workspace that shows its screens as
+    /// panes, and the shell around them.
     pub fn new(launch: &Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let app = cx.new(|cx| AtlasApp::new(launch, window, cx));
         let sidebar = cx.new(|cx| SidebarView::new(app.clone(), cx));
-        Shell { app, sidebar }
+        commands::bind_keys(cx);
+        let workspace = cx.new(|cx| WorkspaceView::new(app.clone(), launch, window, cx));
+        app.update(cx, |app, _| app.attach_workspace(workspace.downgrade()));
+        Shell { app, sidebar, workspace }
     }
 
     /// The content view: the household, the derived models, every screen.
     pub fn app(&self) -> &Entity<AtlasApp> {
         &self.app
+    }
+
+    /// The pane workspace: the content column while a household is open and
+    /// the viewer is chosen.
+    pub fn workspace(&self) -> &Entity<WorkspaceView> {
+        &self.workspace
     }
 
     /// The sidebar view (tests check that it is reused between frames).
@@ -267,6 +280,11 @@ impl Render for Shell {
         // purpose: with an auto width taffy sizes the whole screen from its
         // content on every pass of every ancestor (docs/perf.md §2).
         let content_width = window.viewport_size().width - sidebar_width;
+        let content_style = StyleRefinement::default().w(content_width).h_full().flex_none();
+        // The workspace shows the screens as panes once there is a household
+        // and someone looking; before that the content view shows Welcome or
+        // the viewer gate itself.
+        let content: AnyElement = if show_sidebar { self.workspace.clone().cached(content_style).into_any_element() } else { self.app.clone().cached(content_style).into_any_element() };
         let tree = v_flex()
             .size_full()
             .bg(cx.theme().background)
@@ -284,7 +302,7 @@ impl Render for Shell {
                     // Cached views are laid out from the style given here (their
                     // contents are not measured), so both get a definite size.
                     .when(show_sidebar, |this| this.child(self.sidebar.clone().cached(StyleRefinement::default().w(sidebar_width).h_full().flex_none())))
-                    .child(self.app.clone().cached(StyleRefinement::default().w(content_width).h_full().flex_none())),
+                    .child(content),
             )
             .child(self.render_status_bar(&file, cx))
             .children(Root::render_dialog_layer(window, cx))

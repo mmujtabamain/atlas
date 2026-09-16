@@ -25,6 +25,7 @@
 //! | [`logging`] | stderr + `logs.log` logger with timestamps and per-sink filters |
 //! | [`perf`] | frame meter (FPS counter, per-frame and summary perf log lines), engine timing |
 //! | [`launch`] | command-line options and theme selection |
+//! | [`workspace`] | the pane workspace: `WorkspaceView` (the content column), `PaneView`, the pane registry, its commands |
 
 pub mod actions;
 pub mod alerting;
@@ -49,7 +50,9 @@ pub mod scenario_entry;
 pub mod screens;
 pub mod shell;
 pub mod widgets;
+pub mod workspace;
 
 pub use app::AtlasApp;
 pub use launch::Launch;
 pub use shell::Shell;
+pub use workspace::WorkspaceView;

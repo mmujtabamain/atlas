@@ -160,6 +160,7 @@ impl AtlasApp {
         self.file = file;
         self.dirty = false;
         self.opened = true;
+        self.household_generation += 1;
         self.is_sample = is_sample;
         self.lock_holder = None;
         self.startup_notice = None;
