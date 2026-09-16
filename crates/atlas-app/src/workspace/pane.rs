@@ -105,6 +105,11 @@ pub struct PaneView {
     route: Route,
     /// Set when the pane cannot show a screen and shows a placeholder instead.
     placeholder: Option<Placeholder>,
+    /// The screen panicked while it was rendered: the message, kept until
+    /// the person asks for another try. One pane's failure stays that pane's.
+    failed: Option<String>,
+    /// Test support: the next render fails as a broken screen would.
+    fail_next_render: bool,
     /// Routes shown before the current one, oldest first (in-pane Back).
     history: Vec<Route>,
     app: Entity<AtlasApp>,
@@ -130,7 +135,27 @@ impl PaneView {
         // Every state change of the app is a possible change of what the
         // screen shows; the pane is a cached view, so it has to ask for a frame.
         let _observe_app = cx.observe(&app, |_, _, cx| cx.notify());
-        PaneView { id, route, placeholder: None, history: Vec::new(), app, workspace, focus_handle: cx.focus_handle(), active: false, displayed: false, group: None, horizontal_scroll: ScrollHandle::new(), bounds, _observe_app }
+        PaneView { id, route, placeholder: None, failed: None, fail_next_render: false, history: Vec::new(), app, workspace, focus_handle: cx.focus_handle(), active: false, displayed: false, group: None, horizontal_scroll: ScrollHandle::new(), bounds, _observe_app }
+    }
+
+    /// Makes the next render fail the way a screen with a bug would, so the
+    /// error boundary can be exercised without a broken screen.
+    pub fn fail_next_render(&mut self, cx: &mut Context<Self>) {
+        self.fail_next_render = true;
+        cx.notify();
+    }
+
+    /// The message of the failure the pane shows, if its screen failed.
+    pub fn failure(&self) -> Option<&str> {
+        self.failed.as_deref()
+    }
+
+    /// Shows the screen again after a failure.
+    pub fn retry(&mut self, cx: &mut Context<Self>) {
+        if self.failed.take().is_some() {
+            log::info!("pane {}: trying {} again after a failure", self.id, self.route.slug());
+            cx.notify();
+        }
     }
 
     /// A pane for a definition of a kind this build does not know: it keeps
@@ -367,6 +392,78 @@ impl Panel for PaneView {
 }
 
 impl PaneView {
+    /// The screen, behind the pane's error boundary: a panic inside the
+    /// screen's render is caught here, reported, and turned into a notice in
+    /// this pane alone — the rest of the workspace keeps working.
+    fn render_screen(&mut self, route: Route, cx: &mut Context<Self>) -> AnyElement {
+        let fail = std::mem::take(&mut self.fail_next_render);
+        let rendered = self.app.update(cx, |app, cx| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if fail {
+                    panic!("the screen failed on purpose");
+                }
+                app.render_route(route, cx)
+            }))
+        });
+        match rendered {
+            Ok(element) => element,
+            Err(payload) => {
+                let message = panic_message(payload.as_ref());
+                log::error!("pane {}: {} failed while rendering: {message}", self.id, route.slug());
+                crate::alerting::report(crate::alerting::Level::Error, format!("screen {} failed while rendering in pane {}: {message}", route.slug(), self.id));
+                self.failed = Some(message.clone());
+                self.render_failed(route, message, cx)
+            }
+        }
+    }
+
+    /// The notice for a screen that failed: what failed, the message, and the
+    /// ways on — another try, another screen, or closing the pane.
+    fn render_failed(&self, route: Route, message: String, cx: &mut Context<Self>) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let retry = cx.entity().downgrade();
+        let pane = self.id.clone();
+        let workspace = self.workspace.clone();
+        let close_workspace = self.workspace.clone();
+        let close_pane = self.id.clone();
+        v_flex()
+            .id("pane-failed")
+            .test_support()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_6()
+            .child(Icon::new(gpui_kit::assets::IconName::TriangleAlert).large().text_color(cx.theme().danger))
+            .child(div().text_lg().font_weight(FontWeight::MEDIUM).child(format!("{} ran into a problem", route.title())))
+            .child(div().text_sm().text_color(muted).max_w(px(480.)).text_center().child("The screen could not be drawn. The rest of the workspace is unaffected; the details are in the log and have been reported."))
+            .child(div().id("pane-failed-message").test_support().text_xs().font_family("monospace").text_color(muted).max_w(px(560.)).text_center().child(message))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .pt_2()
+                    .child(Button::new("pane-retry").primary().icon(gpui_kit::assets::IconName::RotateCcw).label("Try again").on_click(move |_, _, cx| {
+                        let _ = retry.update(cx, |pane, cx| pane.retry(cx));
+                    }))
+                    .child(Button::new("pane-replace").outline().icon(gpui_kit::assets::IconName::Replace).label("Replace pane").dropdown_menu(move |menu, _, _| {
+                        Destination::GROUPS.iter().flat_map(|group| group.iter()).chain(std::iter::once(&Destination::Settings)).fold(menu, |menu, destination| {
+                            let destination = *destination;
+                            let workspace = workspace.clone();
+                            let pane = pane.clone();
+                            menu.item(PopupMenuItem::new(destination.label()).icon(destination.icon()).on_click(move |_, window, cx| {
+                                let _ = workspace.update(cx, |workspace, cx| workspace.replace_pane_content(&pane, destination.home(), window, cx));
+                            }))
+                        })
+                    }))
+                    .child(Button::new("pane-close").outline().label("Close pane").on_click(move |_, window, cx| {
+                        let _ = close_workspace.update(cx, |workspace, cx| {
+                            let _ = workspace.close_pane(&close_pane, window, cx);
+                        });
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// The placeholder for a screen family that another window is showing:
     /// the way to that window, or closing this pane.
     fn render_shown_elsewhere(&self, route: Route, in_window: atlas_workspace::WindowId, other: PaneId, cx: &mut Context<Self>) -> AnyElement {
@@ -490,16 +587,17 @@ impl Render for PaneView {
                     (app.household().clone(), app.viewer())
                 };
                 let elsewhere = self.workspace.upgrade().and_then(|workspace| workspace.read(cx).shown_elsewhere(&self.id, route, cx));
-                match (elsewhere, kinds::availability(route, &household, viewer)) {
-                    (Some((window, other)), _) => self.render_shown_elsewhere(route, window, other, cx),
-                    (None, Ok(())) => self.app.update(cx, |app, cx| app.render_route(route, cx)),
-                    (None, Err(reason)) => self.render_placeholder("pane-unavailable", kinds::icon_of(route), format!("{} unavailable", route.title()), format!("{reason} Replace the pane with another screen, or close it."), cx),
+                match (elsewhere, kinds::availability(route, &household, viewer), self.failed.clone()) {
+                    (Some((window, other)), _, _) => self.render_shown_elsewhere(route, window, other, cx),
+                    (None, Ok(()), Some(message)) => self.render_failed(route, message, cx),
+                    (None, Ok(()), None) => self.render_screen(route, cx),
+                    (None, Err(reason), _) => self.render_placeholder("pane-unavailable", kinds::icon_of(route), format!("{} unavailable", route.title()), format!("{reason} Replace the pane with another screen, or close it."), cx),
                 }
             }
         };
         // A placeholder is a short notice, not a screen: it fits the pane's
         // width instead of asking for a screen's.
-        let showing_placeholder = self.placeholder.is_some() || {
+        let showing_placeholder = self.placeholder.is_some() || self.failed.is_some() || {
             let app = self.app.read(cx);
             kinds::availability(route, app.household(), app.viewer()).is_err() || self.workspace.upgrade().is_some_and(|workspace| workspace.read(cx).shown_elsewhere(&self.id, route, cx).is_some())
         };
@@ -546,4 +644,9 @@ impl Render for PaneView {
             .child(div().absolute().inset_0().child(Scrollbar::horizontal(&self.horizontal_scroll).viewport_from_layout()))
             .child(recorder)
     }
+}
+
+/// The text of a panic payload: what `panic!` was given, or a stand-in.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| payload.downcast_ref::<String>().cloned()).unwrap_or_else(|| "a failure without a message".to_string())
 }

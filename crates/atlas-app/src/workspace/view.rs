@@ -2079,6 +2079,11 @@ impl WorkspaceView {
     /// the workspace commands reach it.
     pub(crate) fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(active) = self.active_pane() else {
+            // No pane, but the workspace's keys — redo, reopen — still have
+            // to reach it: the workspace itself takes the focus.
+            if window.window_handle() == self.window {
+                window.focus(&self.focus_handle, cx);
+            }
             return;
         };
         if let Some(view) = self.panes.get(&active) {

@@ -2043,3 +2043,190 @@ fn a_pane_is_duplicated_beside_itself_with_its_state(cx: &mut TestAppContext) {
     drive(cx, window, &workspace, |workspace, window, cx| assert!(workspace.undo(window, cx)));
     assert_eq!(pane_count(cx, &workspace), 2);
 }
+
+// ----- hardening: error boundary, interrupted drags, keyboard-only, off-screen frames -------
+
+#[gpui_kit::test]
+fn a_screen_that_fails_to_render_is_contained_in_its_pane(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let accounts = active(cx, &workspace);
+    let pane = cx.update(|cx| workspace.read(cx).pane(&accounts).cloned()).expect("the pane view");
+    cx.update(|cx| pane.update(cx, |pane, cx| pane.fail_next_render(cx)));
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("pane-failed").visible(), "the failure is a notice in the pane");
+        assert!(window.find("pane-failed-message").visible());
+        assert!(window.try_find("screen-accounts").is_none(), "the failed screen is not drawn");
+        assert!(window.find("screen-today").visible(), "the other pane is untouched");
+        assert!(window.find("pane-retry").visible() && window.find("pane-replace").visible() && window.find("pane-close").visible());
+    })
+    .unwrap();
+    assert_eq!(cx.update(|cx| pane.read(cx).failure().map(str::to_owned)), Some("the screen failed on purpose".to_string()));
+    assert_eq!(pane_count(cx, &workspace), 2, "the layout did not change");
+    // The workspace still works around it.
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Bottom, Route::Rules, window, cx).expect("split"));
+    assert_eq!(pane_count(cx, &workspace), 3);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-rules").visible() && window.find("pane-failed").visible());
+        // Try again: the screen is drawn once more.
+        window.click("pane-retry", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("pane-failed").is_none());
+        assert!(window.find("screen-accounts").visible(), "the screen is back");
+    })
+    .unwrap();
+    assert_eq!(cx.update(|cx| pane.read(cx).failure().map(str::to_owned)), None);
+}
+
+#[gpui_kit::test]
+fn an_undo_during_a_drag_leaves_a_consistent_workspace(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = three_columns(cx);
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    cx.update_window(window, |_, window, cx| {
+        start_drag_over(window, 3, 1, cx);
+        // The layout changes under the drag: the last split is undone.
+        window.press("ctrl-z", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 2, "the undo went through");
+    let labels_after_undo = history_labels(cx, &workspace);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("dock-band-label").is_none_or(|label| !label.visible()), "no stale overlay");
+        // Releasing the pointer now must not resurrect the pane or panic.
+        let somewhere = window.find(pane_id(1)).bounds().center();
+        release_at(window, somewhere, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 2);
+    assert_eq!(cx.update(|cx| workspace.read(cx).panes_in_order()), vec![order[0].clone(), order[1].clone()]);
+    assert_eq!(history_labels(cx, &workspace), labels_after_undo, "the release recorded nothing");
+    assert!(cx.update(|cx| workspace.read(cx).layout().validate()).is_empty(), "a valid layout");
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-today").visible() && window.find("screen-accounts").visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_keyboard_only_session_builds_and_takes_apart_a_layout(cx: &mut TestAppContext) {
+    let (handle, _app, workspace) = open_workspace(cx, sample(Route::Today));
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 1);
+    let key = |cx: &mut TestAppContext, keys: &str| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(keys, cx);
+        })
+        .unwrap();
+        settle(cx, window);
+    };
+    key(cx, "ctrl-\\");
+    assert_eq!(grid(cx, &workspace, 2, 1), "12", "split right");
+    key(cx, "ctrl-shift-\\");
+    assert_eq!(grid(cx, &workspace, 2, 2), "12\n13", "split below the active (right) pane");
+    key(cx, "ctrl-alt-left");
+    assert_eq!(active(cx, &workspace), cx.update(|cx| workspace.read(cx).panes_in_order()[0].clone()), "focus went left");
+    key(cx, "ctrl-alt-shift-up");
+    assert_eq!(grid(cx, &workspace, 2, 3), "11\n22\n33", "the left pane moved to the top edge, and the column below it flattened");
+    key(cx, "ctrl-shift-enter");
+    assert!(cx.update(|cx| workspace.read(cx).is_zoomed(&atlas_workspace::WindowId::main(), cx)), "zoomed");
+    key(cx, "ctrl-shift-enter");
+    assert!(!cx.update(|cx| workspace.read(cx).is_zoomed(&atlas_workspace::WindowId::main(), cx)));
+    key(cx, "ctrl-w");
+    assert_eq!(pane_count(cx, &workspace), 2, "closed the active pane");
+    key(cx, "ctrl-shift-t");
+    assert_eq!(pane_count(cx, &workspace), 3, "reopened it");
+    key(cx, "ctrl-alt-]");
+    key(cx, "ctrl-shift-d");
+    assert_eq!(pane_count(cx, &workspace), 4, "duplicated the next pane");
+    key(cx, "ctrl-shift-n");
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2, "detached the copy into a floating window");
+    // The floating window has the focus now; its keys work the same. One
+    // undo there closes it, and the focus comes back to the main window.
+    let floating = cx.update(|cx| workspace.read(cx).floating_windows())[0].clone();
+    let floating_window = cx.update(|cx| workspace.read(cx).window_handle_of(&floating)).expect("the floating window");
+    cx.update_window(floating_window, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-z", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1, "the floating window closed with its undo");
+    // Undo all the way back: past the first pane, to the empty workspace.
+    while cx.update(|cx| workspace.read(cx).history().can_undo()) {
+        key(cx, "ctrl-z");
+    }
+    cx.run_until_parked();
+    assert_eq!(pane_count(cx, &workspace), 0, "even the first pane's opening is a step");
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("workspace-add-pane").visible(), "the empty state offers a pane");
+        window.press("ctrl-shift-z", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 1, "redo brings the first pane back");
+    assert!(cx.update(|cx| workspace.read(cx).layout().validate()).is_empty(), "a valid layout");
+}
+
+#[gpui_kit::test]
+fn a_floating_window_saved_off_every_display_is_restored_within_one(cx: &mut TestAppContext) {
+    let dir = test_data_dir("offscreen");
+    let mut launch = sample(Route::Today);
+    launch.data_dir = Some(dir.clone());
+    let (handle, _app, workspace) = open_workspace(cx, launch.clone());
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Right, Route::Accounts, window, cx).expect("split"));
+    let accounts = active(cx, &workspace);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.detach_pane(&accounts, None, window, cx).expect("detach"));
+    let_autosave_run(cx);
+    // Move the saved frame far off any display, as a monitor that was
+    // unplugged would leave it.
+    let sessions = dir.join("sessions");
+    let file = std::fs::read_dir(&sessions).expect("sessions dir").flatten().map(|entry| entry.path()).find(|path| path.extension().is_some_and(|ext| ext == "json")).expect("the session file");
+    let mut document: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let windows = document["windows"].as_array_mut().expect("windows");
+    let floating = windows.iter_mut().find(|window| window["role"] == "floating").expect("the floating window");
+    floating["frame"] = serde_json::json!({ "x": 99_999.0, "y": 99_999.0, "width": 900.0, "height": 700.0 });
+    std::fs::write(&file, serde_json::to_string_pretty(&document).unwrap()).unwrap();
+    // Close the first workspace's windows so only the restored ones remain.
+    cx.update(|cx| {
+        for handle in cx.windows() {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+    });
+    cx.run_until_parked();
+    let (handle2, _app2, workspace2) = open_workspace(cx, launch);
+    let window2: gpui_kit::AnyWindowHandle = handle2.into();
+    settle(cx, window2);
+    cx.run_until_parked();
+    let floating = cx.update(|cx| workspace2.read(cx).floating_windows())[0].clone();
+    let displays: Vec<Bounds<Pixels>> = cx.update(|cx| cx.displays().iter().map(|display| display.bounds()).collect());
+    assert!(!displays.is_empty());
+    let frame = cx.update(|cx| workspace2.read(cx).layout().window(&floating).and_then(|window| window.frame)).expect("a frame");
+    assert!(displays.iter().any(|display| {
+        let (x0, y0) = (f64::from(f32::from(display.origin.x)), f64::from(f32::from(display.origin.y)));
+        let (x1, y1) = (x0 + f64::from(f32::from(display.size.width)), y0 + f64::from(f32::from(display.size.height)));
+        frame.x >= x0 && frame.y >= y0 && frame.x + frame.width <= x1 + 0.5 && frame.y + frame.height <= y1 + 0.5
+    }), "the restored frame {frame:?} lies within a display {displays:?}");
+    let handle = cx.update(|cx| workspace2.read(cx).window_handle_of(&floating)).expect("the floating window");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-accounts").visible(), "and shows its pane");
+    })
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
