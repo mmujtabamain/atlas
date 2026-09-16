@@ -20,9 +20,24 @@
 //! and the element ids use; a detail route's slug names the kind of record and
 //! the resource says which one. `Welcome` is not a pane (it is the screen shown
 //! while there is no household) and never round-trips.
+//!
+//! A pane's definition **follows the pane**: when a pane drills from Accounts
+//! into one account, the workspace replaces the pane's definition with the
+//! account's, so a saved layout reopens on that account and "open account X"
+//! finds the pane that already shows it. The pane's own state that a layout
+//! keeps ([`view_state_of`] / [`history_from`]) is its Back history, as
+//! definitions again; scroll positions are not kept.
+//!
+//! A definition that this build cannot show — an unknown kind from a newer
+//! version, a record that was deleted or that the viewer may not see
+//! ([`availability`]) — is not dropped from the layout: the pane shows a
+//! placeholder offering to replace or close it, and the rest of the layout
+//! loads as saved.
 
-use atlas_core::ids::{AccountId, CompanyId, PersonId, RuleId, SeriesId};
+use atlas_core::authz::Viewer;
+use atlas_core::ids::{AccountId, CompanyId, ObjectRef, PersonId, RuleId, SeriesId};
 use atlas_core::model::Household;
+use atlas_core::Disclosure;
 use atlas_workspace::PaneDefinition;
 use gpui_kit::SharedString;
 use gpui_kit::assets::IconName;
@@ -94,6 +109,82 @@ pub fn icon_of(route: Route) -> IconName {
     route.destination().map(Destination::icon).unwrap_or(IconName::Wallet)
 }
 
+/// Whether the record a detail route names exists and may be shown to
+/// `viewer`; the reason when not, in the words the placeholder shows. Routes
+/// without a record are always available.
+pub fn availability(route: Route, household: &Household, viewer: Viewer) -> Result<(), String> {
+    let visible = |object: ObjectRef| !matches!(household.disclosure_for(viewer, object), Disclosure::Hidden);
+    let (exists, allowed, what) = match route {
+        Route::Account(id) => (household.account(id).is_some(), visible(ObjectRef::Account(id)), "account"),
+        Route::SeriesDetail(id) => (household.series_by_id(id).is_some(), visible(ObjectRef::Series(id)), "series"),
+        Route::Person(id) => (household.person(id).is_some(), visible(ObjectRef::Person(id)), "person"),
+        Route::Company(id) => (household.company(id).is_some(), visible(ObjectRef::Company(id)), "company"),
+        Route::Rule(id) => (household.rule(id).is_some(), true, "rule"),
+        _ => return Ok(()),
+    };
+    if !exists {
+        return Err(format!("This {what} no longer exists in the household."));
+    }
+    if !allowed {
+        return Err(format!("This {what} is not shared with the person looking."));
+    }
+    Ok(())
+}
+
+/// A pane's Back history as the state a layout keeps for it.
+pub fn view_state_of(history: &[Route]) -> Value {
+    let entries: Vec<Value> = history
+        .iter()
+        .map(|route| {
+            let definition = definition_of(*route);
+            match definition.resource {
+                Some(resource) => json!({ "kind": definition.kind, "resource": resource }),
+                None => json!({ "kind": definition.kind }),
+            }
+        })
+        .collect();
+    json!({ "history": entries })
+}
+
+/// The Back history a layout kept for a pane; entries this build cannot read
+/// are skipped.
+pub fn history_from(view_state: &Value) -> Vec<Route> {
+    view_state
+        .get("history")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let kind = entry.get("kind")?.as_str()?;
+                    let mut definition = PaneDefinition::new(kind);
+                    if let Some(resource) = entry.get("resource") {
+                        definition = definition.with_resource(resource.clone());
+                    }
+                    route_of(&definition)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A readable name for a pane kind this build does not know (`tax-review` →
+/// `Tax review`), for the placeholder's title.
+pub fn label_of_unknown_kind(kind: &str) -> String {
+    let words: Vec<String> = kind.split(['-', '_']).filter(|word| !word.is_empty()).map(str::to_string).collect();
+    match words.split_first() {
+        Some((first, rest)) => {
+            let mut label = first.chars().take(1).flat_map(char::to_uppercase).collect::<String>() + first.chars().skip(1).collect::<String>().as_str();
+            for word in rest {
+                label.push(' ');
+                label.push_str(word);
+            }
+            label
+        }
+        None => "Unknown pane".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +219,39 @@ mod tests {
         // A detail kind without its record, and a kind this build does not know, are not panes.
         assert_eq!(route_of(&PaneDefinition::new("account")), None);
         assert_eq!(route_of(&PaneDefinition::new("no-such-screen")), None);
+    }
+
+    #[test]
+    fn availability_names_missing_and_hidden_records() {
+        let household = atlas_core::fixtures::plan_household();
+        let viewer_a = Viewer::person(household.people[0].id);
+        assert_eq!(availability(Route::Today, &household, viewer_a), Ok(()));
+        assert_eq!(availability(Route::Account(household.accounts[0].id), &household, viewer_a), Ok(()));
+        let gone = availability(Route::Account(AccountId::new(9_999)), &household, viewer_a).unwrap_err();
+        assert!(gone.contains("no longer exists"), "{gone}");
+        let missing_rule = availability(Route::Rule(RuleId::new(9_999)), &household, viewer_a).unwrap_err();
+        assert!(missing_rule.contains("rule"), "{missing_rule}");
+        // A record the other person may not see is unavailable to them.
+        let viewer_b = Viewer::person(household.people[1].id);
+        let hidden = household.accounts.iter().find(|account| matches!(household.disclosure_for(viewer_b, ObjectRef::Account(account.id)), Disclosure::Hidden));
+        if let Some(account) = hidden {
+            let reason = availability(Route::Account(account.id), &household, viewer_b).unwrap_err();
+            assert!(reason.contains("not shared"), "{reason}");
+        }
+    }
+
+    #[test]
+    fn history_round_trips_through_the_view_state_and_skips_what_it_cannot_read() {
+        let history = [Route::Accounts, Route::Account(AccountId::new(3)), Route::Today];
+        let state = view_state_of(&history);
+        assert_eq!(state["history"][1]["kind"], "account");
+        assert_eq!(state["history"][1]["resource"]["accountId"], 3);
+        assert_eq!(history_from(&state), history);
+        let mixed = json!({ "history": [{ "kind": "today" }, { "kind": "never-heard-of" }, { "kind": "account" }] });
+        assert_eq!(history_from(&mixed), vec![Route::Today], "unknown kinds and a record-less detail are skipped");
+        assert!(history_from(&json!({})).is_empty());
+        assert_eq!(label_of_unknown_kind("tax-review"), "Tax review");
+        assert_eq!(label_of_unknown_kind(""), "Unknown pane");
     }
 
     #[test]

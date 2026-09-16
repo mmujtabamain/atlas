@@ -34,6 +34,14 @@
 //! [`WorkspaceView::dock_pane`] like any other. `Space` cycles the levels a
 //! side offers when there are more than fit.
 //!
+//! A pane's definition in the model follows what the pane shows: every
+//! in-pane navigation ([`WorkspaceView::navigate_active`], Back, a viewer
+//! reset) ends in [`WorkspaceView::sync_pane_definition`], which writes the
+//! pane's current route and Back history into the model. That is what a saved
+//! layout reopens on and what the resolver's "is this already open?" reads.
+//! A definition this build cannot show is kept and shown as a placeholder
+//! (see [`super::pane`]) rather than dropped.
+//!
 //! The workspace follows the app rather than being told: it observes
 //! [`AtlasApp`] and starts a fresh layout, scoped to the household, the
 //! moment a household is open **and** someone has said who is looking; it
@@ -382,12 +390,16 @@ impl WorkspaceView {
     /// screen of its destination, as the single content view used to.
     fn reset_panes_for_viewer(&mut self, cx: &mut Context<Self>) {
         log::info!("workspace: viewer changed; every pane returns to its destination's home screen");
-        for view in self.panes.values() {
-            view.update(cx, |pane, cx| {
-                let route = pane.route();
-                let home = route.destination().map(Destination::home).unwrap_or(route);
-                pane.reset_to(home, cx);
-            });
+        let panes: Vec<PaneId> = self.panes.keys().cloned().collect();
+        for pane in panes {
+            if let Some(view) = self.panes.get(&pane).cloned() {
+                view.update(cx, |pane, cx| {
+                    let route = pane.route();
+                    let home = route.destination().map(Destination::home).unwrap_or(route);
+                    pane.reset_to(home, cx);
+                });
+            }
+            self.sync_pane_definition(&pane, cx);
         }
         self.sync_chrome(cx);
     }
@@ -542,9 +554,18 @@ impl WorkspaceView {
         true
     }
 
-    /// Installs a whole layout (undo, redo, later a saved layout): pane views
-    /// are created for panes the layout has and this view does not, dropped
-    /// for the reverse, then the area is rebuilt.
+    /// Installs a whole layout — undo, redo, a saved or restored layout — as
+    /// the workspace's own: pane views are created for panes the layout has
+    /// and this view does not, dropped for the reverse, then the area is
+    /// rebuilt. The layout is recorded as one undoable step under `label`.
+    pub fn load_layout(&mut self, layout: WorkspaceLayout, label: impl Into<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let before = self.layout.clone();
+        self.install_layout(layout, window, cx);
+        self.record(label, before);
+    }
+
+    /// Installs a whole layout without recording history (undo and redo do
+    /// their own bookkeeping).
     fn install_layout(&mut self, layout: WorkspaceLayout, window: &mut Window, cx: &mut Context<Self>) {
         self.layout = layout;
         self.sync_pane_entities(cx);
@@ -553,27 +574,82 @@ impl WorkspaceView {
         self.sync_chrome(cx);
     }
 
-    /// One pane view per pane definition, no more and no fewer. A definition
-    /// this build cannot show (an unknown kind) is closed in the model.
+    /// One pane view per pane definition, no more and no fewer. A pane the
+    /// layout has and this view does not is rebuilt from its definition, Back
+    /// history included; a definition of a kind this build does not know gets
+    /// a placeholder pane so the layout loads whole and the person decides.
     fn sync_pane_entities(&mut self, cx: &mut Context<Self>) {
-        let wanted: HashSet<PaneId> = self.layout.panes.keys().cloned().collect();
-        self.panes.retain(|pane, _| wanted.contains(pane));
+        // A view stays only while it shows what the model says the pane is:
+        // a layout that was loaded may name another screen for the same id.
+        let layout = &self.layout;
+        self.panes.retain(|pane, view| {
+            let Some(definition) = layout.pane(pane) else {
+                return false;
+            };
+            let view = view.read(cx);
+            match (view.placeholder(), kinds::route_of(definition)) {
+                (None, Some(route)) => view.route() == route,
+                (Some(super::pane::Placeholder::Unsupported { kind }), None) => *kind == definition.kind,
+                _ => false,
+            }
+        });
         let missing: Vec<(PaneId, PaneDefinition)> = self.layout.panes.iter().filter(|(pane, _)| !self.panes.contains_key(*pane)).map(|(pane, definition)| (pane.clone(), definition.clone())).collect();
         for (pane, definition) in missing {
-            match kinds::route_of(&definition) {
+            let workspace = cx.weak_entity();
+            let app = self.app.clone();
+            let bounds = self.pane_bounds.clone();
+            let view = match kinds::route_of(&definition) {
                 Some(route) => {
-                    let workspace = cx.weak_entity();
-                    let app = self.app.clone();
-                    let bounds = self.pane_bounds.clone();
-                    let view = cx.new(|cx| PaneView::new(pane.clone(), route, app, workspace, bounds, cx));
-                    self.panes.insert(pane, view);
+                    let view_state = definition.view_state.clone();
+                    cx.new(|cx| {
+                        let mut view = PaneView::new(pane.clone(), route, app, workspace, bounds, cx);
+                        view.restore_view_state(&view_state);
+                        view
+                    })
                 }
                 None => {
-                    log::error!("workspace: pane {pane} shows {:?}, which this build cannot open; closing it", definition.kind);
-                    let _ = self.layout.close_pane(&pane);
+                    let kind = definition.kind.clone();
+                    cx.new(|cx| PaneView::unsupported(pane.clone(), kind, app, workspace, bounds, cx))
                 }
-            }
+            };
+            self.panes.insert(pane, view);
         }
+    }
+
+    /// Writes what `pane` shows — its route and Back history — into the
+    /// model, so the layout that is saved and the resolver's answers follow
+    /// the pane. A placeholder pane keeps the definition it could not show.
+    fn sync_pane_definition(&mut self, pane: &PaneId, cx: &App) {
+        let Some(view) = self.panes.get(pane) else {
+            return;
+        };
+        let view = view.read(cx);
+        if view.placeholder().is_some() {
+            return;
+        }
+        let definition = kinds::definition_of(view.route()).with_view_state(view.view_state());
+        if self.layout.pane(pane) == Some(&definition) {
+            return;
+        }
+        if let Err(err) = self.layout.replace_pane(pane, definition) {
+            log::warn!("workspace: pane {pane} shows {} but its definition could not be updated: {err}", view.route().slug());
+        }
+    }
+
+    /// Replaces what `pane` shows — a placeholder, or a screen — with
+    /// `route`, in the pane and in the model.
+    pub(crate) fn replace_pane_content(&mut self, pane: &PaneId, route: Route, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.panes.get(pane).cloned() else {
+            return;
+        };
+        let before = self.layout.clone();
+        view.update(cx, |view, cx| view.become_screen(route, cx));
+        self.sync_pane_definition(pane, cx);
+        self.record(format!("Replace pane with {}", route.title()), before);
+        log::info!("workspace: pane {pane} replaced with {}", route.slug());
+        let _ = self.set_active_pane(pane, window, cx);
+        self.sync_chrome(cx);
+        cx.notify();
     }
 
     // ----- in-pane navigation (called by the app) -----------------------------------
@@ -583,7 +659,12 @@ impl WorkspaceView {
     /// the app that calls this holds no window.
     pub fn navigate_active(&mut self, route: Route, cx: &mut Context<Self>) {
         match self.active_pane().and_then(|active| self.panes.get(&active).cloned()) {
-            Some(view) => view.update(cx, |pane, cx| pane.show(route, cx)),
+            Some(view) => {
+                view.update(cx, |pane, cx| pane.show(route, cx));
+                if let Some(active) = self.active_pane() {
+                    self.sync_pane_definition(&active, cx);
+                }
+            }
             None => {
                 log::info!("workspace: no pane to navigate; opening {} in a new one", route.slug());
                 let this = cx.weak_entity();
@@ -602,8 +683,11 @@ impl WorkspaceView {
     /// The active pane returns to the route it showed before (or its parent).
     /// Returns the route now on show, or `None` when there is no pane.
     pub fn back_active(&mut self, cx: &mut Context<Self>) -> Option<Route> {
-        let view = self.active_pane().and_then(|active| self.panes.get(&active).cloned())?;
-        Some(view.update(cx, |pane, cx| pane.back(cx)))
+        let active = self.active_pane()?;
+        let view = self.panes.get(&active).cloned()?;
+        let route = view.update(cx, |pane, cx| pane.back(cx));
+        self.sync_pane_definition(&active, cx);
+        Some(route)
     }
 
     // ----- what the panes and the engine report -------------------------------------
@@ -637,13 +721,24 @@ impl WorkspaceView {
                 pane.back(cx);
             });
         }
+        self.sync_pane_definition(pane, cx);
         self.sync_chrome(cx);
     }
 
     /// The engine removed `pane` (its tab's close button, the skin's Close):
     /// the model follows, unless the model closed it first (the workspace's
-    /// own `close_pane`, a rebuild that no longer includes it).
-    pub(crate) fn pane_left(&mut self, pane: &PaneId, window: &mut Window, cx: &mut Context<Self>) {
+    /// own `close_pane`, a rebuild that no longer includes it). `view` is the
+    /// pane view that left: a notice from a view this workspace has since
+    /// replaced (a loaded layout gave the pane another definition) is stale
+    /// and changes nothing.
+    pub(crate) fn pane_left(&mut self, pane: &PaneId, view: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        match self.panes.get(pane) {
+            Some(current) if current.entity_id() != view => {
+                log::debug!("workspace: pane {pane}'s previous view left the dock; its current view stays");
+                return;
+            }
+            _ => {}
+        }
         if self.layout.pane(pane).is_none() {
             self.panes.remove(pane);
             return;

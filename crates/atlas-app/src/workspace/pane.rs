@@ -28,6 +28,13 @@
 //! group may be rearranged. The pane's own title element is what the skin
 //! wraps in that handle, so it carries a `pane-title-<n>` id for tests.
 //!
+//! A pane whose definition cannot be shown does not vanish from the layout:
+//! a kind this build does not know ([`PaneView::unsupported`]) or a record
+//! that no longer exists or is not shared with the person looking
+//! ([`kinds::availability`]) shows a **placeholder** in the pane's place —
+//! what it was, why it cannot be shown, and buttons to replace the pane with
+//! another screen or to close it — while every other pane loads as saved.
+//!
 //! Every frame the pane records where it was drawn into the workspace's
 //! shared [`PaneBounds`] map; the drag-target overlay reads those rectangles
 //! to place its bands beside groups and the window (see
@@ -46,7 +53,8 @@ use std::rc::Rc;
 
 use atlas_workspace::{PaneId, Side};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent, PanelInfo, PanelState, TabGroup};
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::scroll::{Scrollbar, ScrollableElement as _};
 use gpui_kit::component::{ActiveTheme as _, Icon, InteractiveElementExt as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -56,7 +64,7 @@ use serde_json::json;
 use super::kinds;
 use super::view::WorkspaceView;
 use crate::app::AtlasApp;
-use crate::nav::Route;
+use crate::nav::{Destination, Route};
 
 /// The dock's name for every pane, written into persisted layouts. Never
 /// change it once layouts have been saved.
@@ -83,10 +91,20 @@ pub const MIN_CONTENT_WIDTH: Pixels = px(1080.);
 /// Shared between the workspace and its panes.
 pub type PaneBounds = Rc<RefCell<HashMap<PaneId, Bounds<Pixels>>>>;
 
+/// Why a pane shows a placeholder instead of a screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Placeholder {
+    /// The layout names a pane kind this build does not know — a newer
+    /// version's screen, or one that was removed.
+    Unsupported { kind: String },
+}
+
 /// One pane: a screen instance inside the workspace.
 pub struct PaneView {
     id: PaneId,
     route: Route,
+    /// Set when the pane cannot show a screen and shows a placeholder instead.
+    placeholder: Option<Placeholder>,
     /// Routes shown before the current one, oldest first (in-pane Back).
     history: Vec<Route>,
     app: Entity<AtlasApp>,
@@ -112,7 +130,42 @@ impl PaneView {
         // Every state change of the app is a possible change of what the
         // screen shows; the pane is a cached view, so it has to ask for a frame.
         let _observe_app = cx.observe(&app, |_, _, cx| cx.notify());
-        PaneView { id, route, history: Vec::new(), app, workspace, focus_handle: cx.focus_handle(), active: false, displayed: false, group: None, horizontal_scroll: ScrollHandle::new(), bounds, _observe_app }
+        PaneView { id, route, placeholder: None, history: Vec::new(), app, workspace, focus_handle: cx.focus_handle(), active: false, displayed: false, group: None, horizontal_scroll: ScrollHandle::new(), bounds, _observe_app }
+    }
+
+    /// A pane for a definition of a kind this build does not know: it keeps
+    /// the pane's place in the layout and shows the placeholder.
+    pub fn unsupported(id: PaneId, kind: String, app: Entity<AtlasApp>, workspace: WeakEntity<WorkspaceView>, bounds: PaneBounds, cx: &mut Context<Self>) -> Self {
+        log::warn!("pane {id}: kind {kind:?} is not one this build can show; showing a placeholder");
+        let mut pane = PaneView::new(id, Route::Today, app, workspace, bounds, cx);
+        pane.placeholder = Some(Placeholder::Unsupported { kind });
+        pane
+    }
+
+    /// The placeholder on show, if the pane cannot show a screen.
+    pub fn placeholder(&self) -> Option<&Placeholder> {
+        self.placeholder.as_ref()
+    }
+
+    /// The pane's own state a layout keeps: its Back history.
+    pub fn view_state(&self) -> serde_json::Value {
+        kinds::view_state_of(&self.history)
+    }
+
+    /// Takes the Back history a layout kept for this pane.
+    pub(crate) fn restore_view_state(&mut self, view_state: &serde_json::Value) {
+        self.history = kinds::history_from(view_state);
+        self.history.truncate(HISTORY_LIMIT);
+    }
+
+    /// Replaces whatever the pane showed — a screen or a placeholder — with
+    /// `route`, forgetting the history that led to the old content.
+    pub(crate) fn become_screen(&mut self, route: Route, cx: &mut Context<Self>) {
+        log::info!("pane {}: replaced with {}", self.id, route.slug());
+        self.placeholder = None;
+        self.history.clear();
+        self.route = route;
+        cx.notify();
     }
 
     /// The pane's id in the layout model.
@@ -255,7 +308,8 @@ impl BasePanel for PaneView {
         self.group = None;
         self.displayed = false;
         let id = self.id.clone();
-        self.tell_workspace(cx, move |workspace, window, cx| workspace.pane_left(&id, window, cx));
+        let view = cx.entity_id();
+        self.tell_workspace(cx, move |workspace, window, cx| workspace.pane_left(&id, view, window, cx));
     }
 
     fn dump(&self, _: &App) -> PanelState {
@@ -276,15 +330,17 @@ impl Panel for PaneView {
     /// test take hold of exactly what a person would.
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let title = kinds::title_of(self.route, self.app.read(cx).household());
-        let context = kinds::context_of(self.route);
+        let (icon, title, context) = match &self.placeholder {
+            Some(Placeholder::Unsupported { kind }) => (gpui_kit::assets::IconName::CircleQuestionMark, SharedString::from(kinds::label_of_unknown_kind(kind)), Some("Cannot be shown")),
+            None => (kinds::icon_of(self.route), kinds::title_of(self.route, self.app.read(cx).household()), kinds::context_of(self.route)),
+        };
         h_flex()
             .id(self.title_element_id())
             .test_support()
             .min_w_0()
             .gap_2()
             .items_center()
-            .child(Icon::new(kinds::icon_of(self.route)).small())
+            .child(Icon::new(icon).small())
             .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
             .when_some(context, |this, context| this.child(div().text_xs().text_color(muted).whitespace_nowrap().child(context)))
     }
@@ -302,6 +358,49 @@ impl Panel for PaneView {
 }
 
 impl PaneView {
+    /// The placeholder a pane shows in place of a screen it cannot show: what
+    /// it was, why, and the two ways out — another screen, or closing it.
+    fn render_placeholder(&self, id: &'static str, icon: gpui_kit::assets::IconName, title: String, reason: String, cx: &mut Context<Self>) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let pane = self.id.clone();
+        let workspace = self.workspace.clone();
+        let close_workspace = self.workspace.clone();
+        let close_pane = self.id.clone();
+        v_flex()
+            .id(id)
+            .test_support()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_6()
+            .child(Icon::new(icon).large().text_color(muted))
+            .child(div().text_lg().font_weight(FontWeight::MEDIUM).child(title))
+            .child(div().text_sm().text_color(muted).max_w(px(480.)).text_center().child(reason))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .pt_2()
+                    .child(Button::new("pane-replace").primary().icon(gpui_kit::assets::IconName::Replace).label("Replace pane").dropdown_menu(move |menu, _, _| {
+                        let destinations = Destination::GROUPS.iter().flat_map(|group| group.iter()).chain(std::iter::once(&Destination::Settings));
+                        destinations.fold(menu, |menu, destination| {
+                            let destination = *destination;
+                            let workspace = workspace.clone();
+                            let pane = pane.clone();
+                            menu.item(PopupMenuItem::new(destination.label()).icon(destination.icon()).on_click(move |_, window, cx| {
+                                let _ = workspace.update(cx, |workspace, cx| workspace.replace_pane_content(&pane, destination.home(), window, cx));
+                            }))
+                        })
+                    }))
+                    .child(Button::new("pane-close").outline().label("Close pane").on_click(move |_, window, cx| {
+                        let _ = close_workspace.update(cx, |workspace, cx| {
+                            let _ = workspace.close_pane(&close_pane, window, cx);
+                        });
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// A menu handler that runs `f` on the workspace for this pane.
     fn pane_command(&self, f: impl Fn(&mut WorkspaceView, &PaneId, &mut Window, &mut Context<WorkspaceView>) + 'static) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
         let workspace = self.workspace.clone();
@@ -335,7 +434,29 @@ impl Render for PaneView {
     /// scrolls the screen and a sideways swipe scrolls the body.
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let route = self.route;
-        let content = self.app.update(cx, |app, cx| app.render_route(route, cx));
+        let content = match &self.placeholder {
+            Some(Placeholder::Unsupported { kind }) => {
+                let kind = kind.clone();
+                self.render_placeholder("pane-unsupported", gpui_kit::assets::IconName::CircleQuestionMark, format!("{} cannot be shown", kinds::label_of_unknown_kind(&kind)), format!("This layout has a pane of kind “{kind}”, which this version of Atlas Financer does not have. Replace it with another screen, or close it."), cx)
+            }
+            None => {
+                let (household, viewer) = {
+                    let app = self.app.read(cx);
+                    (app.household().clone(), app.viewer())
+                };
+                match kinds::availability(route, &household, viewer) {
+                    Ok(()) => self.app.update(cx, |app, cx| app.render_route(route, cx)),
+                    Err(reason) => self.render_placeholder("pane-unavailable", kinds::icon_of(route), format!("{} unavailable", route.title()), format!("{reason} Replace the pane with another screen, or close it."), cx),
+                }
+            }
+        };
+        // A placeholder is a short notice, not a screen: it fits the pane's
+        // width instead of asking for a screen's.
+        let showing_placeholder = self.placeholder.is_some() || {
+            let app = self.app.read(cx);
+            kinds::availability(route, app.household(), app.viewer()).is_err()
+        };
+        let min_width = if showing_placeholder { px(0.) } else { MIN_CONTENT_WIDTH };
         let border = if self.active { cx.theme().ring } else { transparent_black() };
         let id = self.id.clone();
         let workspace = self.workspace.clone();
@@ -373,7 +494,7 @@ impl Render for PaneView {
                     .track_scroll(&self.horizontal_scroll)
                     .overflow_x_scroll()
                     .lock_scroll_axis()
-                    .child(v_flex().id("pane-scroll").size_full().min_w(MIN_CONTENT_WIDTH).p_6().gap_6().child(content).overflow_y_scrollbar()),
+                    .child(v_flex().id("pane-scroll").size_full().min_w(min_width).p_6().gap_6().child(content).overflow_y_scrollbar()),
             )
             .child(div().absolute().inset_0().child(Scrollbar::horizontal(&self.horizontal_scroll).viewport_from_layout()))
             .child(recorder)

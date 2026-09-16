@@ -936,6 +936,155 @@ fn a_band_the_minimum_size_rule_refuses_takes_no_drop(cx: &mut TestAppContext) {
     assert_eq!(grid(cx, &workspace, 3, 3), "124\n124\n124");
 }
 
+// ----- pane definitions follow the pane; placeholders -------------------------------------
+
+/// The route the app's navigation opens in the active pane, driven the way a
+/// breadcrumb or a row click does it.
+fn navigate(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle, app: &Entity<AtlasApp>, route: Route) {
+    cx.update(|cx| app.update(cx, |app, cx| app.navigate(route, cx)));
+    settle(cx, window);
+}
+
+#[gpui_kit::test]
+fn a_pane_that_drills_into_a_record_is_found_by_the_resolver(cx: &mut TestAppContext) {
+    let (window, app, workspace) = today_and_accounts(cx);
+    let accounts_pane = active(cx, &workspace);
+    let account = cx.update(|cx| app.read(cx).household().accounts[0].id);
+    navigate(cx, window, &app, Route::Account(account));
+    cx.update(|cx| {
+        let layout = workspace.read(cx).layout();
+        let definition = layout.pane(&accounts_pane).expect("the pane is still in the model");
+        assert_eq!(definition.kind, "account", "the definition follows the pane into the record");
+        assert_eq!(definition.resource, Some(serde_json::json!({ "accountId": account.raw() })));
+        assert_eq!(definition.view_state["history"][0]["kind"], "accounts", "and remembers where it came from");
+        assert_eq!(workspace.read(cx).pane_route(&accounts_pane, cx), Some(Route::Account(account)));
+    });
+    // "Open this account" now finds the pane that shows it…
+    let found = drive(cx, window, &workspace, |workspace, window, cx| workspace.open(Route::Account(account), Intent::Open, window, cx).expect("open"));
+    assert_eq!(found, accounts_pane);
+    assert_eq!(pane_count(cx, &workspace), 2);
+    // …while "open Accounts" no longer does, since no pane shows the register.
+    let opened = drive(cx, window, &workspace, |workspace, window, cx| workspace.open(Route::Accounts, Intent::Open, window, cx).expect("open"));
+    assert_ne!(opened, accounts_pane);
+    assert_eq!(pane_count(cx, &workspace), 3);
+    cx.update(|cx| {
+        let layout = workspace.read(cx).layout();
+        assert_eq!(layout.stack_of(&opened), layout.stack_of(&accounts_pane), "a plain open lands as a tab of the active stack");
+    });
+    cx.update_window(window, |_, window, _| {
+        assert!(window.find("screen-accounts").visible(), "the new tab is displayed");
+        assert!(window.try_find("screen-account").is_none(), "the record's pane is behind it");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn back_history_survives_a_closed_pane_being_restored(cx: &mut TestAppContext) {
+    let (window, app, workspace) = today_and_accounts(cx);
+    let accounts_pane = active(cx, &workspace);
+    let account = cx.update(|cx| app.read(cx).household().accounts[0].id);
+    navigate(cx, window, &app, Route::Account(account));
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.close_pane(&accounts_pane, window, cx).expect("close"));
+    assert_eq!(pane_count(cx, &workspace), 1);
+    // Undo rebuilds the pane from its definition: the record, and the history.
+    drive(cx, window, &workspace, |workspace, window, cx| assert!(workspace.undo(window, cx)));
+    assert_eq!(pane_count(cx, &workspace), 2);
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.pane_route(&accounts_pane, cx), Some(Route::Account(account)));
+        let view = workspace.pane(&accounts_pane).expect("a view").read(cx);
+        assert_eq!(view.history(), &[Route::Accounts], "Back still leads to the register");
+        assert_eq!(workspace.active_pane(), Some(accounts_pane.clone()));
+    });
+    let back = drive(cx, window, &workspace, |workspace, _, cx| workspace.back_active(cx));
+    assert_eq!(back, Some(Route::Accounts));
+    cx.update(|cx| assert_eq!(workspace.read(cx).layout().pane(&accounts_pane).map(|definition| definition.kind.clone()), Some("accounts".to_string())));
+}
+
+#[gpui_kit::test]
+fn an_unknown_pane_kind_shows_a_placeholder_that_can_be_replaced_or_closed(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let accounts_pane = active(cx, &workspace);
+    // A layout from a newer version: one pane of a kind this build has never heard of.
+    let mut layout = cx.update(|cx| workspace.read(cx).layout().clone());
+    layout.replace_pane(&accounts_pane, atlas_workspace::PaneDefinition::new("tax-review")).expect("replace");
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.load_layout(layout, "Load a newer layout", window, cx));
+    assert_eq!(pane_count(cx, &workspace), 2, "the pane keeps its place");
+    cx.update(|cx| {
+        let layout = workspace.read(cx).layout();
+        assert_eq!(layout.pane(&accounts_pane).map(|definition| definition.kind.as_str()), Some("tax-review"), "the definition is kept, not dropped");
+        assert!(workspace.read(cx).pane(&accounts_pane).unwrap().read(cx).placeholder().is_some());
+    });
+    cx.update_window(window, |_, window, cx| {
+        assert!(window.find("pane-unsupported").visible(), "the placeholder stands in for the screen");
+        assert!(window.find("screen-today").visible(), "the rest of the layout loaded as saved");
+        assert!(window.try_find("screen-accounts").is_none());
+        window.click("pane-replace", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("popup-menu").visible(), "Replace pane lists the screens");
+        // Today, Decisions, Forecast, Accounts, …: Accounts is the fourth entry.
+        window.within("popup-menu").click(3usize, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    cx.update(|cx| {
+        let layout = workspace.read(cx).layout();
+        assert_eq!(layout.pane(&accounts_pane).map(|definition| definition.kind.as_str()), Some("accounts"), "the definition is the replacement's");
+        assert!(workspace.read(cx).pane(&accounts_pane).unwrap().read(cx).placeholder().is_none());
+    });
+    cx.update_window(window, |_, window, _| {
+        assert!(window.find("screen-accounts").visible(), "the replacement screen shows in the same pane");
+        assert!(window.try_find("pane-unsupported").is_none());
+    })
+    .unwrap();
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Replace pane with Accounts"));
+
+    // The other way out: the placeholder's Close button.
+    let mut layout = cx.update(|cx| workspace.read(cx).layout().clone());
+    layout.replace_pane(&accounts_pane, atlas_workspace::PaneDefinition::new("tax-review")).expect("replace");
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.load_layout(layout, "Load a newer layout", window, cx));
+    cx.update_window(window, |_, window, cx| {
+        assert!(window.find("pane-unsupported").visible());
+        window.click("pane-close", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 1);
+    assert_eq!(grid(cx, &workspace, 1, 1), "1");
+}
+
+#[gpui_kit::test]
+fn a_missing_record_shows_the_unavailable_placeholder(cx: &mut TestAppContext) {
+    let (window, app, workspace) = today_and_accounts(cx);
+    let accounts_pane = active(cx, &workspace);
+    // An account that was deleted since the layout was saved.
+    navigate(cx, window, &app, Route::Account(atlas_core::ids::AccountId::new(9_999)));
+    cx.update_window(window, |_, window, _| {
+        let placeholder = window.find("pane-unavailable");
+        assert!(placeholder.visible(), "the pane says the account is unavailable instead of drawing the screen");
+        assert!(window.find("pane-replace").visible() && window.find("pane-close").visible());
+        assert!(window.find("screen-today").visible(), "the other pane is unaffected");
+    })
+    .unwrap();
+    cx.update(|cx| {
+        assert!(workspace.read(cx).pane(&accounts_pane).unwrap().read(cx).placeholder().is_none(), "an unavailable record is not an unknown kind: the pane still knows its route");
+        assert_eq!(workspace.read(cx).layout().pane(&accounts_pane).map(|definition| definition.kind.as_str()), Some("account"));
+    });
+    // Back leads out of it like any other route.
+    let back = drive(cx, window, &workspace, |workspace, _, cx| workspace.back_active(cx));
+    assert_eq!(back, Some(Route::Accounts));
+    cx.update_window(window, |_, window, _| {
+        assert!(window.try_find("pane-unavailable").is_none());
+        assert!(window.find("screen-accounts").visible());
+    })
+    .unwrap();
+}
+
 #[test]
 fn every_route_round_trips_through_the_pane_registry() {
     for slug in Route::slugs() {
