@@ -168,3 +168,45 @@ sibling, so the other siblings keep their exact widths. `PaneView` body: `MIN_CO
 the model default 0.35. Autoscroll of an overflowing tab bar during a drag is not implemented (the
 skin does not expose the tab strip's scroll handle). The gpui-shot drag step holds the button
 until `release`; a capture without release photographs the in-flight state.
+
+---
+
+## 4. Ancestor docking — (commits ddad448, 86e373b)
+
+**Claims.** Model: `DockTarget::BesideRange { split, from, to, side, share }` groups children
+`from..=to` of a split (perpendicular to `side`) before docking beside the group;
+`simplified()` reduces a one-child range to `Beside` the child and a full range to `Beside` the
+split; `range_after_removal` re-aims a range whose split loses the moved pane's own slot;
+`ops::ancestor_targets(root, pane, side)` lists the levels narrow → broad (stack, sibling runs
+growing to the first then to the last child, ancestors, window edge) without duplicates. App:
+`dock_targets.rs` computes `Band`s for the pane under the pointer from the panes' recorded
+bounds (`PaneBounds`, written by a `canvas` in every pane; only displayed panes are trusted):
+the window edge is always the outermost band, at most 3 per side, `Space` cycles the inner
+levels; each band's `Outcome` is decided by `move_pane` on a clone (Allowed + preview rect /
+Unchanged / Refused); the view draws bands, the hovered band's preview (`dock-preview`) and a
+label (`dock-band-label`, aria-labelled), and a drop on a band goes through `dock_pane`. Tabs
+now render the pane's `title()` element (`tab_name` is `None`).
+
+**Verify.**
+
+1. `tests/workspace.rs`: `123/123/144` via band depth 1 (Today's weight unchanged), window band →
+   `123/123/444` (columns keep their ratio), the group band divides only the group's slot,
+   `123/144/144` via drag + resize, preview + Escape leaves JSON identical, Space cycling with the
+   window band fixed, refused band takes no drop.
+2. Model unit tests in `ops.rs` (`a_range_target_spans_exactly_those_siblings`, refusal
+   unchanged, retargeting after removal, `ancestor_targets` lists) and the randomized run
+   (targets include deliberately invalid ranges).
+3. Try: a range on a *vertical* split (rows) docked left/right; a range in a nested split (not the
+   root) — `1 | V[2,3,4]` with 5 dragged to the right band of "3–4"; dropping on a band while the
+   dragged pane is the hovered pane itself (its own bands); a drop on a band when the pane is
+   alone in its column and the range includes that column (the range shrinks).
+4. Double handling: after a band drop, pane count and grid match the model; no engine drop is
+   also applied (the band takes `active_drag`, `cx.stop_propagation()`).
+5. Stale bounds: hide a pane behind a tab, drag over the stack — bands belong to the displayed
+   pane, never to the hidden one.
+6. Label positions near the window's bottom/right edge stay on screen.
+
+**Known / fragile.** The engine's own drop indicator (a pane's edge zone) draws under the bands
+at the same time; the band wins the drop. Band thickness 14 px × up to 3 levels is a small
+target on a trackpad — consider a modifier to widen. `hovered_pane` sorts hits by id when
+rectangles overlap (they should not).
