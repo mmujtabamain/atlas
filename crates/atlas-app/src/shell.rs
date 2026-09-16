@@ -122,6 +122,12 @@ impl Shell {
             }
             let _ = this;
         });
+        // Closing the window is the last chance to write the session.
+        let flushing = workspace.clone();
+        window.on_window_should_close(cx, move |_, cx| {
+            flushing.update(cx, |workspace, cx| workspace.flush_session(cx));
+            true
+        });
         Shell { app, workspace, launcher, _job_events }
     }
 

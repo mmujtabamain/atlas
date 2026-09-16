@@ -36,6 +36,7 @@
 //! | [`launcher`] | the pane launcher strip under the title bar, and its saved arrangement |
 //! | [`jobs`] | the job centre: long-running work that outlives the pane that started it |
 //! | [`floating`] | a floating window: another root over the same workspace |
+//! | [`session`] | the session file per household: debounced atomic autosave and restore |
 //! | [`commands`] | the keyboard commands: split, close, next pane, back |
 //!
 //! Dragging a pane onto another pane (its centre for a tab, an edge for a
@@ -54,6 +55,7 @@ pub mod kinds;
 pub mod launcher;
 pub mod mirror;
 pub mod pane;
+pub mod session;
 pub mod view;
 
 pub use floating::FloatingView;

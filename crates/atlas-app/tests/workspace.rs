@@ -1547,6 +1547,137 @@ fn releasing_a_drag_outside_the_window_opens_a_window_for_the_pane(cx: &mut Test
     cx.update(|cx| assert_eq!(workspace.read(cx).layout().window_id_of(&today), Some(atlas_workspace::WindowId::main())));
 }
 
+// ----- the session: saved and restored per household ------------------------------------
+
+/// A data directory of this test's own.
+fn test_data_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("atlas-session-ui-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+/// Lets the autosave's wait lapse and the write happen.
+fn let_autosave_run(cx: &mut TestAppContext) {
+    cx.executor().advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_workspace_is_written_after_a_change_and_restored_for_the_household(cx: &mut TestAppContext) {
+    let dir = test_data_dir("restore");
+    let mut launch = sample(Route::Today);
+    launch.data_dir = Some(dir.clone());
+    let (handle, _app, workspace) = open_workspace(cx, launch.clone());
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    let path = atlas_app::workspace::session::session_path(&dir, "sample");
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Right, Route::Accounts, window, cx).expect("split"));
+    assert!(!path.exists(), "nothing is written before the wait lapses");
+    cx.update(|cx| assert!(workspace.read(cx).session().is_dirty()));
+    let_autosave_run(cx);
+    assert!(path.exists(), "the session was written at {}", path.display());
+    cx.update(|cx| assert_eq!(workspace.read(cx).session().writes(), 1));
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(json["schemaVersion"], atlas_workspace::SCHEMA_VERSION);
+    assert_eq!(json["panes"].as_object().map(|panes| panes.len()), Some(2));
+    assert_eq!(json["scope"]["householdId"], "sample");
+    // Two more changes: one write, a moment after the first.
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Bottom, Route::Rules, window, cx).expect("split"));
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.close_active(window, cx).expect("close"));
+    let_autosave_run(cx);
+    cx.update(|cx| assert_eq!(workspace.read(cx).session().writes(), 2, "a burst of changes is one write"));
+    assert!(atlas_workspace::persist::backup_path(&path).exists(), "the previous file is kept as .bak");
+
+    // The same household opened again: the workspace is as it was.
+    let (handle2, _app2, workspace2) = open_workspace(cx, launch);
+    let window2: gpui_kit::AnyWindowHandle = handle2.into();
+    settle(cx, window2);
+    assert_eq!(grid(cx, &workspace2, 2, 1), "12", "the two panes came back");
+    let order = cx.update(|cx| workspace2.read(cx).panes_in_order());
+    cx.update(|cx| {
+        let workspace = workspace2.read(cx);
+        assert_eq!(workspace.pane_route(&order[0], cx), Some(Route::Today));
+        assert_eq!(workspace.pane_route(&order[1], cx), Some(Route::Accounts));
+        assert!(workspace.history().labels().is_empty(), "a restored session starts with a clean history");
+    });
+    cx.update_window(window2, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-today").visible() && window.find("screen-accounts").visible());
+    })
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[gpui_kit::test]
+fn a_corrupt_session_starts_fresh_keeps_the_file_and_says_so(cx: &mut TestAppContext) {
+    let dir = test_data_dir("corrupt");
+    let path = atlas_app::workspace::session::session_path(&dir, "sample");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"{ this is not a workspace").unwrap();
+    let mut launch = sample(Route::Today);
+    launch.data_dir = Some(dir.clone());
+    let (handle, _app, workspace) = open_workspace(cx, launch);
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    assert_eq!(grid(cx, &workspace, 1, 1), "1", "a fresh workspace with the launch screen");
+    let copies: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().filter_map(Result::ok).filter(|entry| entry.file_name().to_string_lossy().contains("corrupt")).collect();
+    assert_eq!(copies.len(), 1, "the broken file was copied aside for diagnosis");
+    assert_eq!(std::fs::read(copies[0].path()).unwrap(), b"{ this is not a workspace");
+    cx.update_window(window, |_, window, cx| assert!(!window.notifications(cx).is_empty(), "the person is told")).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[gpui_kit::test]
+fn a_launch_that_names_a_screen_does_not_restore_the_session(cx: &mut TestAppContext) {
+    let dir = test_data_dir("explicit");
+    let mut launch = sample(Route::Today);
+    launch.data_dir = Some(dir.clone());
+    let (handle, _app, workspace) = open_workspace(cx, launch.clone());
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Right, Route::Accounts, window, cx).expect("split"));
+    let_autosave_run(cx);
+    let mut explicit = launch;
+    explicit.route = Route::Rules;
+    explicit.explicit_screen = true;
+    let (handle2, _app2, workspace2) = open_workspace(cx, explicit);
+    let window2: gpui_kit::AnyWindowHandle = handle2.into();
+    settle(cx, window2);
+    assert_eq!(grid(cx, &workspace2, 1, 1), "1", "the screen asked for, alone");
+    let only = active(cx, &workspace2);
+    assert_eq!(cx.update(|cx| workspace2.read(cx).pane_route(&only, cx)), Some(Route::Rules));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[gpui_kit::test]
+fn floating_windows_come_back_with_the_session(cx: &mut TestAppContext) {
+    let dir = test_data_dir("windows");
+    let mut launch = sample(Route::Today);
+    launch.data_dir = Some(dir.clone());
+    let (handle, _app, workspace) = open_workspace(cx, launch.clone());
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Right, Route::Accounts, window, cx).expect("split"));
+    let accounts = active(cx, &workspace);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.detach_pane(&accounts, None, window, cx).expect("detach"));
+    let_autosave_run(cx);
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+    let (handle2, _app2, workspace2) = open_workspace(cx, launch);
+    let window2: gpui_kit::AnyWindowHandle = handle2.into();
+    settle(cx, window2);
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| cx.windows().len()), 4, "the restored session opened its floating window too");
+    cx.update(|cx| {
+        let workspace = workspace2.read(cx);
+        assert_eq!(workspace.layout().windows.len(), 2);
+        assert_eq!(workspace.floating_windows().len(), 1);
+        let floating = workspace.floating_windows()[0].clone();
+        assert_eq!(workspace.layout().panes_in(&floating).len(), 1, "Accounts is in the floating window");
+        assert!(workspace.layout().window(&floating).and_then(|window| window.frame).is_some());
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn every_route_round_trips_through_the_pane_registry() {
     for slug in Route::slugs() {

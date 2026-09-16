@@ -42,6 +42,13 @@
 //! A definition this build cannot show is kept and shown as a placeholder
 //! (see [`super::pane`]) rather than dropped.
 //!
+//! The workspace is kept: every change marks the household's session dirty
+//! and, a moment after the last change, the model is written to the session
+//! file ([`super::session`]); when the household opens again the session is
+//! read back and installed, windows included, unless the launch asked for a
+//! particular screen. A session that cannot be read starts the workspace
+//! fresh and says so.
+//!
 //! There is one workspace and any number of windows. This view is the main
 //! window's content column and the owner of everything shared — the model,
 //! the pane views, history, the closed-pane stack — and every other window
@@ -85,6 +92,8 @@ use std::cell::{Cell, RefCell};
 use super::commands::{self, Back, ClosePane, DetachPane, FocusNextPane, SplitBelow, SplitRight};
 use super::dock_targets::{self, Band, DragInFlight, Dragged, Outcome};
 use super::floating::FloatingView;
+use super::session::{self, SessionStore};
+use atlas_workspace::persist::LoadOutcome;
 use atlas_workspace::{WindowFrame, WindowLayout, WindowRole};
 use super::kinds;
 use super::launcher::LaunchDrag;
@@ -178,6 +187,12 @@ pub struct WorkspaceView {
     /// Panes a rebuild took out of one window's area because the model moved
     /// them elsewhere: the engine's "removed" notice for them is not a close.
     expected_removals: HashSet<PaneId>,
+    /// The household's session file and the autosave policy over it.
+    session: SessionStore,
+    /// Where the app keeps its files; `None` keeps nothing.
+    data_dir: Option<std::path::PathBuf>,
+    /// The launch named a screen: the session is not restored over it.
+    explicit_screen: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -257,6 +272,9 @@ impl WorkspaceView {
             drag: None,
             floating: HashMap::new(),
             expected_removals: HashSet::new(),
+            session: SessionStore::for_household(None, "none"),
+            data_dir: launch.data_dir.clone(),
+            explicit_screen: launch.explicit_screen,
             _subscriptions: vec![area_events, app_changes, escape_cancels_drag],
         };
         this.follow_household(window, cx);
@@ -343,10 +361,65 @@ impl WorkspaceView {
     }
 
     /// Records one undoable step. Any step but a divider drag ends the run of
-    /// divider drags that share an entry.
-    fn record(&mut self, label: impl Into<String>, before: WorkspaceLayout) {
+    /// divider drags that share an entry. Every step is a change to keep.
+    fn record(&mut self, label: impl Into<String>, before: WorkspaceLayout, cx: &mut Context<Self>) {
         self.last_resized_split = None;
-        self.history.push(label, before);
+        let label = label.into();
+        self.history.push(label.clone(), before);
+        self.touch(label, cx);
+    }
+
+    /// The household's session on disk, and how it is written.
+    pub fn session(&self) -> &SessionStore {
+        &self.session
+    }
+
+    /// Notes a change to the workspace; the session is written once the
+    /// debounce has lapsed, by a task started for the first change.
+    fn touch(&mut self, reason: impl Into<String>, cx: &mut Context<Self>) {
+        self.session.mark_dirty(reason);
+        if self.session.flush_scheduled || !self.session.persists() {
+            return;
+        }
+        // One write, a little after the first of a burst of changes; the
+        // changes that follow within the wait join it.
+        self.session.flush_scheduled = true;
+        let debounce = session::DEBOUNCE;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(debounce).await;
+            let _ = this.update(cx, |workspace, cx| workspace.flush_session(cx));
+        })
+        .detach();
+    }
+
+    /// Writes the session now if anything changed, window frames included.
+    /// Called when the debounce lapses, when the household closes and when
+    /// the window closes; safe to call at any time.
+    pub fn flush_session(&mut self, cx: &mut Context<Self>) {
+        self.session.flush_scheduled = false;
+        if !self.session.is_dirty() {
+            return;
+        }
+        self.note_window_frames(cx);
+        if let Err(err) = self.session.write(&self.layout) {
+            let path = self.session.path().map(|path| path.display().to_string()).unwrap_or_default();
+            alerting::report(Level::Warning, format!("workspace session could not be written to {path}: {err}"));
+        }
+    }
+
+    /// Records where every window is, so a restored session opens them there.
+    fn note_window_frames(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<WindowId> = self.layout.windows.iter().map(|candidate| candidate.id.clone()).collect();
+        for id in ids {
+            let Some(handle) = self.window_handle_of(&id) else {
+                continue;
+            };
+            let bounds = handle.update(cx, |_, window, _| window.bounds()).ok();
+            if let Some(bounds) = bounds {
+                let frame = WindowFrame::new(f64::from(f32::from(bounds.origin.x)), f64::from(f32::from(bounds.origin.y)), f64::from(f32::from(bounds.size.width)), f64::from(f32::from(bounds.size.height)));
+                let _ = self.layout.set_frame(&id, Some(frame));
+            }
+        }
     }
 
     /// The panes closed recently, newest last.
@@ -409,10 +482,16 @@ impl WorkspaceView {
     /// first pane and the `--open` panes beside it.
     fn start_household(&mut self, identity: &str, window: &mut Window, cx: &mut Context<Self>) {
         log::info!("workspace: household {identity:?} is usable; starting its workspace");
+        self.flush_session(cx);
         self.layout = WorkspaceLayout::new("Main").with_scope(Scope::household(identity));
         self.history = LayoutHistory::default();
         self.closed = ClosedPanes::default();
         self.panes.clear();
+        self.session = SessionStore::for_household(self.data_dir.as_deref(), identity);
+        if self.restore_session(window, cx) {
+            self.launch_panes = None;
+            return;
+        }
         let first = match self.app.read(cx).route() {
             Route::Welcome => Route::Today,
             route => route,
@@ -447,9 +526,44 @@ impl WorkspaceView {
         }
     }
 
+    /// Installs the household's saved session, if there is one to install.
+    /// Returns false when the workspace should start fresh: no session, the
+    /// launch named a screen, or the session could not be read (then the
+    /// person is told, and the file was copied aside for diagnosis).
+    fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.explicit_screen {
+            log::info!("workspace: the launch named a screen; the saved session is not restored");
+            return false;
+        }
+        match self.session.load() {
+            LoadOutcome::Fresh => false,
+            LoadOutcome::Loaded(mut layout) => {
+                layout.set_limits(*self.layout.limits());
+                log::info!("workspace: session restored from {} ({} panes, {} windows)", self.session.path().map(|path| path.display().to_string()).unwrap_or_default(), layout.panes.len(), layout.windows.len());
+                self.install_layout(layout, window, cx);
+                true
+            }
+            LoadOutcome::Recovered { diagnostics, reason, .. } => {
+                let message = format!("Your last workspace could not be restored ({reason}). A copy of the file was kept at {}.", diagnostics.display());
+                log::warn!("workspace: {message}");
+                alerting::report(Level::Warning, format!("workspace session recovery: {reason}; copy at {}", diagnostics.display()));
+                // Told once the window is whole: at start-up this runs while
+                // the window is still being built, before it can show a toast.
+                let _ = window;
+                let handle = self.window;
+                cx.defer(move |cx| {
+                    let _ = handle.update(cx, |_, window, cx| window.push_notification(Notification::warning(message), cx));
+                });
+                false
+            }
+        }
+    }
+
     /// Everything goes: the household is closed, Welcome takes the column.
     fn clear_for_closed_household(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         log::info!("workspace: household closed; removing every pane ({} open)", self.panes.len());
+        self.flush_session(cx);
+        self.session = SessionStore::for_household(None, "none");
         self.layout = WorkspaceLayout::new("Main");
         self.history = LayoutHistory::default();
         self.closed = ClosedPanes::default();
@@ -531,7 +645,7 @@ impl WorkspaceView {
         let bounds = self.pane_bounds.clone();
         let view = cx.new(|cx| PaneView::new(pane.clone(), route, app, workspace, bounds, cx));
         self.panes.insert(pane.clone(), view);
-        self.record(format!("Open {}", route.title()), before);
+        self.record(format!("Open {}", route.title()), before, cx);
         log::info!("workspace: opened pane {pane} ({}) at {target:?}; {} panes", route.slug(), self.panes.len());
         self.rebuild_area(window, cx);
         self.focus_active(window, cx);
@@ -548,7 +662,7 @@ impl WorkspaceView {
         log::info!("workspace: closed pane {pane} ({}); {} panes left", closed.definition.kind, self.layout.panes.len());
         let window_id = closed.window.clone();
         self.closed.record(closed);
-        self.record(format!("Close {title}"), before);
+        self.record(format!("Close {title}"), before, cx);
         if let Some(view) = self.panes.remove(pane) {
             if let Some(area) = self.area_of(&window_id) {
                 self.in_window(&window_id, window, cx, |window, cx| area.update(cx, |area, cx| area.remove_panel(view, window, cx)));
@@ -578,6 +692,7 @@ impl WorkspaceView {
         if changed {
             let slug = self.pane_route(pane, cx).map(Route::slug).unwrap_or("?");
             log::info!("workspace: active pane {pane} ({slug})");
+            self.touch(format!("active pane {pane}"), cx);
         }
         self.select_tab_in_area(pane, window, cx);
         self.apply_active_flags(cx);
@@ -604,7 +719,7 @@ impl WorkspaceView {
     pub fn resize_split(&mut self, split: &NodeId, weights: &[f64], window: &mut Window, cx: &mut Context<Self>) -> Result<(), OpError> {
         let before = self.layout.clone();
         self.layout.resize(split, weights)?;
-        self.record(RESIZE_LABEL, before);
+        self.record(RESIZE_LABEL, before, cx);
         log::info!("workspace: split {split} resized to {weights:?}");
         self.rebuild_area(window, cx);
         Ok(())
@@ -637,7 +752,7 @@ impl WorkspaceView {
     pub fn load_layout(&mut self, layout: WorkspaceLayout, label: impl Into<String>, window: &mut Window, cx: &mut Context<Self>) {
         let before = self.layout.clone();
         self.install_layout(layout, window, cx);
-        self.record(label, before);
+        self.record(label, before, cx);
     }
 
     /// Installs a whole layout without recording history (undo and redo do
@@ -695,7 +810,7 @@ impl WorkspaceView {
     /// Writes what `pane` shows — its route and Back history — into the
     /// model, so the layout that is saved and the resolver's answers follow
     /// the pane. A placeholder pane keeps the definition it could not show.
-    fn sync_pane_definition(&mut self, pane: &PaneId, cx: &App) {
+    fn sync_pane_definition(&mut self, pane: &PaneId, cx: &mut Context<Self>) {
         let Some(view) = self.panes.get(pane) else {
             return;
         };
@@ -707,9 +822,12 @@ impl WorkspaceView {
         if self.layout.pane(pane) == Some(&definition) {
             return;
         }
+        let slug = view.route().slug();
         if let Err(err) = self.layout.replace_pane(pane, definition) {
-            log::warn!("workspace: pane {pane} shows {} but its definition could not be updated: {err}", view.route().slug());
+            log::warn!("workspace: pane {pane} shows {slug} but its definition could not be updated: {err}");
+            return;
         }
+        self.touch(format!("pane {pane} shows {slug}"), cx);
     }
 
     /// Replaces what `pane` shows — a placeholder, or a screen — with
@@ -721,7 +839,7 @@ impl WorkspaceView {
         let before = self.layout.clone();
         view.update(cx, |view, cx| view.become_screen(route, cx));
         self.sync_pane_definition(pane, cx);
-        self.record(format!("Replace pane with {}", route.title()), before);
+        self.record(format!("Replace pane with {}", route.title()), before, cx);
         log::info!("workspace: pane {pane} replaced with {}", route.slug());
         let _ = self.set_active_pane(pane, window, cx);
         self.sync_chrome(cx);
@@ -829,7 +947,7 @@ impl WorkspaceView {
                 let title = kinds::route_of(&closed.definition).map(Route::title).unwrap_or("pane");
                 log::info!("workspace: pane {pane} ({}) was closed from its tab; {} panes left", closed.definition.kind, self.layout.panes.len());
                 self.closed.record(closed);
-                self.record(format!("Close {title}"), before);
+                self.record(format!("Close {title}"), before, cx);
             }
             Err(err) => log::warn!("workspace: pane {pane} left the dock but could not be closed in the model: {err}"),
         }
@@ -926,7 +1044,7 @@ impl WorkspaceView {
                 {
                     let _ = self.layout.set_active_pane(&displayed);
                 }
-                self.record(MOVE_LABEL, before);
+                self.record(MOVE_LABEL, before, cx);
                 log::info!(
                     "workspace: moved pane {pane} to {target:?} in {in_window}; grid:\n{}",
                     atlas_workspace::grid::render_window(self.layout.window(in_window).and_then(|target_window| target_window.root.as_ref()), 12, 4, |pane| pane.minted_counter().map(|n| char::from_digit((n % 36) as u32, 36).unwrap_or('?')).unwrap_or('?'))
@@ -1036,7 +1154,7 @@ impl WorkspaceView {
                 let bounds = self.pane_bounds.clone();
                 let view = cx.new(|cx| PaneView::new(pane.clone(), route, app, workspace, bounds, cx));
                 self.panes.insert(pane.clone(), view);
-                self.record(format!("Open {} in a new window", route.title()), before);
+                self.record(format!("Open {} in a new window", route.title()), before, cx);
                 log::info!("workspace: opened pane {pane} ({}) in new window {window_id}", route.slug());
                 self.open_floating_window(&window_id, frame, cx);
                 self.rebuild_area(window, cx);
@@ -1058,7 +1176,7 @@ impl WorkspaceView {
         let frame = self.floating_frame(at, window);
         let window_id = self.layout.detach_pane(pane, frame)?;
         let title = self.pane_route(pane, cx).map(Route::title).unwrap_or("pane");
-        self.record(format!("Move {title} to a new window"), before);
+        self.record(format!("Move {title} to a new window"), before, cx);
         log::info!("workspace: pane {pane} detached into window {window_id} at {frame:?}");
         self.open_floating_window(&window_id, frame, cx);
         self.rebuild_area(window, cx);
@@ -1074,7 +1192,7 @@ impl WorkspaceView {
         let before = self.layout.clone();
         self.layout.move_pane(pane, target_window, target)?;
         let title = self.pane_route(pane, cx).map(Route::title).unwrap_or("pane");
-        self.record(format!("Move {title} to another window"), before);
+        self.record(format!("Move {title} to another window"), before, cx);
         log::info!("workspace: pane {pane} moved to window {target_window}");
         self.rebuild_area(window, cx);
         self.focus_active(window, cx);
@@ -1098,7 +1216,7 @@ impl WorkspaceView {
                 log::warn!("workspace: pane {pane} could not be moved back to the main window: {err}");
             }
         }
-        self.record("Move panes back to the main window", before);
+        self.record("Move panes back to the main window", before, cx);
         log::info!("workspace: window {window_id} gathered into the main window ({} panes)", panes.len());
         self.rebuild_area(window, cx);
         self.focus_active(window, cx);
@@ -1331,7 +1449,7 @@ impl WorkspaceView {
             }
             Err(err) => log::warn!("workspace: reset could not open {}: {err}", route.slug()),
         }
-        self.record("Reset layout", before);
+        self.record("Reset layout", before, cx);
         log::info!("workspace: layout reset to a single {} pane", route.slug());
         self.rebuild_area(window, cx);
         self.focus_active(window, cx);
@@ -1596,13 +1714,15 @@ impl WorkspaceView {
         );
         let previous = std::mem::replace(&mut self.layout, candidate);
         if structure_changed {
-            self.record(MOVE_LABEL, previous);
+            self.record(MOVE_LABEL, previous, cx);
         } else if weights_changed && !joins_previous_resize {
-            self.record(RESIZE_LABEL, previous);
+            self.record(RESIZE_LABEL, previous, cx);
             self.last_resized_split = match resized.as_slice() {
                 [split] => Some(split.clone()),
                 _ => None,
             };
+        } else {
+            self.touch("dock mirrored", cx);
         }
         for (pane, definition) in departed {
             log::info!("workspace: pane {pane} ({}) was closed from its tab", definition.kind);

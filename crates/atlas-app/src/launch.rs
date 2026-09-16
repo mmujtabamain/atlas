@@ -61,12 +61,15 @@ pub struct Launch {
     /// Off unless `--perf-overlay` or `ATLAS_PERF_OVERLAY=1` asks for it; the
     /// status bar keeps gpui's fps reading either way.
     pub perf_overlay: bool,
-    /// Where the app keeps its own files (the launcher's arrangement, later
-    /// workspace sessions and saved layouts): `--data-dir`, else
+    /// Where the app keeps its own files (the launcher's arrangement,
+    /// workspace sessions, saved layouts): `--data-dir`, else
     /// `ATLAS_DATA_DIR`, else the platform's per-user application directory.
     /// `None` — the default for a `Launch` built in code, as the tests do —
     /// keeps everything for this run only and writes nothing.
     pub data_dir: Option<std::path::PathBuf>,
+    /// `--screen` or `--open` was given: the person asked for that screen,
+    /// so the household's saved session is not restored over it.
+    pub explicit_screen: bool,
 }
 
 /// The app's directory name inside the platform's per-user application directory.
@@ -88,6 +91,7 @@ impl Default for Launch {
             viewer_id: None,
             start: Start::Welcome,
             data_dir: None,
+            explicit_screen: false,
             as_of: None,
             owner: std::env::var("USER").unwrap_or_else(|_| "user".into()),
             take_over: false,
@@ -117,6 +121,7 @@ impl Launch {
                     }
                 }
                 "--screen" => {
+                    launch.explicit_screen = true;
                     i += 1;
                     match args.get(i) {
                         Some(slug) if Route::from_slug(slug).is_some() => {
@@ -134,6 +139,7 @@ impl Launch {
                     }
                 }
                 "--open" => {
+                    launch.explicit_screen = true;
                     i += 1;
                     match args.get(i) {
                         Some(value) => {
