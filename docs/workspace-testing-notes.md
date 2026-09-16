@@ -569,3 +569,41 @@ render up to the panic point are kept (gpui element state is per frame, so nothi
 leaks, but a screen's own `Entity` updates before the panic stay). Menus have no keyboard
 access. Keys in the main window do nothing while the focus is in a floating window (and
 vice versa) — by design, each window answers its own keys.
+
+---
+
+## 13. Dashboard architecture removed — (commit cef734b)
+
+**Claims.** `models::Section` (the fourteen-section sidebar model) is gone; `nav::Destination`
+and `nav::Route` are the whole map. `AtlasApp` keeps `route` only as what the chrome reflects
+(launcher highlight, frame label, the perf frame's name) and `launch_route` — what `--screen`
+asked for, a detail slug resolved against the household (`FirstDetail::resolve`) — which the
+workspace opens as its first pane through `WorkspaceView::open` (the resolver) when no session
+restores; a household opened later starts at Today. `AtlasApp::navigate`/`go_back` go through
+the active pane only (without a usable workspace they log and do nothing); the app-level Back
+history is gone. `AtlasApp::render` shows Welcome or the viewer gate only; with a usable
+household the shell shows the workspace, and the content column logs a warning if it is ever
+asked to render then. The sidebar and its cached view were removed in the launcher section;
+comments and docs no longer describe one (`docs/perf-plan.md` is history and keeps its wording).
+
+**Verify.**
+
+1. `tests/workspace.rs`: `a_launch_naming_a_kind_of_record_opens_the_first_one_the_viewer_may_see`,
+   `a_launch_that_names_a_screen_does_not_restore_the_session`; `tests/copy.rs` iterates the
+   destinations and every route title; `tests/ui.rs` (34) unchanged.
+2. `--screen` for every slug in `Route::slugs()` and every detail slug in `FirstDetail::slugs()`
+   (`scripts/shoot.sh` runs the reference screens): each opens as the one pane, the launcher
+   highlights its destination, the frame label names it.
+3. Open the sample, then open a file from the household menu: the new workspace starts at
+   Today (not at the screen the sample showed), unless that household has a session.
+4. Welcome → Explore sample → close household → Welcome again: no pane survives, the content
+   column shows Welcome, no warning in the log about rendering with a usable household.
+5. A link inside a screen while the viewer gate is up (should be impossible; the gate has no
+   links) — the warning line, nothing else.
+6. Grep for `sidebar` in `crates/` finds only the theme's `sidebar_*` tokens on Welcome.
+
+**Known / fragile.** `AtlasApp::route` still exists as a mirror; a screen that reads
+`app.route()` to decide what to show would be wrong in a pane that is not the active one —
+none does today (`is_model_computed`, the perf frame name and the launcher are the readers).
+The `Section`-based element ids of the old sidebar are gone; tests use the launcher's
+`launcher-<slug>` ids.
