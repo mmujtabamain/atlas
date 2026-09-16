@@ -210,3 +210,39 @@ now render the pane's `title()` element (`tab_name` is `None`).
 at the same time; the band wins the drop. Band thickness 14 px × up to 3 levels is a small
 target on a trackpad — consider a modifier to widen. `hovered_pane` sorts hits by id when
 rectangles overlap (they should not).
+
+---
+
+## 5. Screens as pane types — (commit b03218c)
+
+**Claims.** `kinds.rs` is the registry: `definition_of`/`route_of` (kind = route slug, resource
+= record id), `title_of`/`context_of`/`icon_of`, `availability(route, household, viewer)` (missing
+or hidden record → reason), `view_state_of`/`history_from` (Back history as definitions),
+`label_of_unknown_kind`. `WorkspaceView::sync_pane_definition` rewrites the model's definition
+after every in-pane navigation (`navigate_active`, `back_active`, menu Back, viewer reset).
+`sync_pane_entities` rebuilds a missing pane view from its definition (history restored), drops a
+view whose definition no longer matches, and gives an unknown kind `PaneView::unsupported`.
+`PaneView` renders `pane-unsupported` / `pane-unavailable` placeholders with `pane-replace`
+(menu of destinations → `replace_pane_content`) and `pane-close`. `load_layout(layout, label)`
+installs a layout as one undo step. `pane_left` carries the view's `EntityId` so a replaced
+view's removal notice is ignored.
+
+**Verify.**
+
+1. `tests/workspace.rs`: `a_pane_that_drills_into_a_record_is_found_by_the_resolver`,
+   `back_history_survives_a_closed_pane_being_restored`,
+   `an_unknown_pane_kind_shows_a_placeholder_that_can_be_replaced_or_closed`,
+   `a_missing_record_shows_the_unavailable_placeholder`; `kinds` unit tests.
+2. Two panes drilled into different accounts: both definitions distinct; `open(Account(x))`
+   focuses the right one; a plain `open` with no exact match adds a tab to the active stack.
+3. Viewer change: every pane resets to its destination's home and the model definitions follow
+   (`reset_panes_for_viewer`); Back history is cleared (it may name hidden records).
+4. The placeholder fits a narrow pane (no 1080 px minimum for placeholders); its buttons are
+   reachable without sideways scrolling.
+5. A placeholder pane is a normal pane otherwise: it can be dragged, split, closed from its tab,
+   and appears in the grid.
+
+**Known / fragile.** Scroll positions are not part of the view state. `availability` for rules
+checks existence only (rules carry no disclosure). Detail screens also have their own "not
+available to this viewer" copy for the in-screen case; the pane-level placeholder takes
+precedence because it is checked before the screen renders.
