@@ -1306,8 +1306,9 @@ fn the_title_bar_opens_settings_and_resets_the_layout(cx: &mut TestAppContext) {
     let_dialog_settle();
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
-        // Undo, Redo, ─, Reset layout.
-        window.within("popup-menu").click(3usize, cx);
+        // Without a data directory nothing can be saved, so the menu is the
+        // five presets, ─, Undo, Redo, ─, Reset layout.
+        window.within("popup-menu").click(9usize, cx);
     })
     .unwrap();
     settle(cx, window);
@@ -1414,6 +1415,56 @@ fn a_second_run_while_one_is_running_is_ignored_and_an_edit_supersedes_the_resul
 }
 
 // ----- floating windows ---------------------------------------------------------------------
+
+#[gpui_kit::test]
+fn a_screen_shown_in_two_windows_yields_to_the_main_window(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let today = cx.update(|cx| workspace.read(cx).panes_in_order()[0].clone());
+    let accounts = active(cx, &workspace);
+    let floating = drive(cx, window, &workspace, |workspace, window, cx| workspace.detach_pane(&accounts, None, window, cx).expect("detach"));
+    let handle = cx.update(|cx| workspace.read(cx).window_handle_of(&floating)).expect("the floating window's handle");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-accounts").visible(), "alone, the floating window shows Accounts");
+    })
+    .unwrap();
+    // A second Accounts pane in the main window: the main window wins, the
+    // floating pane becomes a placeholder pointing at it.
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_beside(&today, Side::Right, Route::Accounts, window, cx).expect("split"));
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-accounts").visible(), "the main window shows Accounts");
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("screen-accounts").is_none(), "the floating window does not draw the same controls");
+        assert!(window.find("pane-elsewhere").visible());
+        assert!(window.find("pane-show-elsewhere").visible() && window.find("pane-close").visible());
+    })
+    .unwrap();
+    // Two Accounts panes in one window are fine: each is drawn.
+    let second = active(cx, &workspace);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Bottom, Route::Accounts, window, cx).expect("split"));
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("pane-elsewhere").is_none(), "no placeholder within one window");
+    })
+    .unwrap();
+    // Closing the main window's Accounts panes gives the floating one its screen back.
+    let third = active(cx, &workspace);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.close_pane(&third, window, cx).expect("close"));
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.close_pane(&second, window, cx).expect("close"));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("pane-elsewhere").is_none());
+        assert!(window.find("screen-accounts").visible(), "the floating window shows Accounts again");
+    })
+    .unwrap();
+}
 
 #[gpui_kit::test]
 fn a_pane_moves_into_a_window_of_its_own_and_back(cx: &mut TestAppContext) {
@@ -1675,6 +1726,137 @@ fn floating_windows_come_back_with_the_session(cx: &mut TestAppContext) {
         assert_eq!(workspace.layout().panes_in(&floating).len(), 1, "Accounts is in the floating window");
         assert!(workspace.layout().window(&floating).and_then(|window| window.frame).is_some());
     });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ----- saved layouts, templates and presets ----------------------------------------------
+
+#[gpui_kit::test]
+fn a_layout_is_saved_loaded_back_and_managed(cx: &mut TestAppContext) {
+    let dir = test_data_dir("layouts");
+    let mut launch = sample(Route::Today);
+    launch.data_dir = Some(dir.clone());
+    let (handle, _app, workspace) = open_workspace(cx, launch);
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Right, Route::Accounts, window, cx).expect("split"));
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.save_layout_as("Review", window, cx));
+    cx.update(|cx| assert_eq!(workspace.read(cx).current_layout_name(), Some("Review")));
+    let entries = cx.update(|cx| workspace.update(cx, |workspace, _| workspace.saved_layouts()));
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "Review");
+    let review = entries[0].id.clone();
+    assert!(dir.join("layouts").exists(), "kept under the data directory");
+    // The same name twice is refused, with a toast, and nothing else changes.
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.save_layout_as("Review", window, cx));
+    assert_eq!(cx.update(|cx| workspace.update(cx, |workspace, _| workspace.saved_layouts().len())), 1);
+    cx.update_window(window, |_, window, cx| assert!(!window.notifications(cx).is_empty())).unwrap();
+
+    // Change the workspace, then load the saved one back: one undoable step.
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.close_active(window, cx).expect("close"));
+    assert_eq!(grid(cx, &workspace, 2, 1), "11");
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.load_saved_layout(&review, window, cx));
+    assert_eq!(grid(cx, &workspace, 2, 1), "12", "the saved arrangement is back");
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Load layout Review"));
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    cx.update(|cx| assert_eq!(workspace.read(cx).pane_route(&order[1], cx), Some(Route::Accounts)));
+    drive(cx, window, &workspace, |workspace, window, cx| assert!(workspace.undo(window, cx)));
+    assert_eq!(grid(cx, &workspace, 2, 1), "11", "Undo brings the previous arrangement back");
+
+    // Save under the current name updates the entry in place.
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.load_saved_layout(&review, window, cx));
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Bottom, Route::Rules, window, cx).expect("split"));
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.save_layout(window, cx));
+    let entries = cx.update(|cx| workspace.update(cx, |workspace, _| workspace.saved_layouts()));
+    assert_eq!(entries.len(), 1, "no second entry");
+    assert_eq!(entries[0].layout.as_ref().map(|layout| layout.panes.len()), Some(3), "the entry holds the three panes now");
+
+    // Rename, duplicate, delete.
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.rename_saved_layout(&review, "Monthly review", window, cx));
+    cx.update(|cx| assert_eq!(workspace.read(cx).current_layout_name(), Some("Monthly review")));
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.duplicate_saved_layout(&review, window, cx));
+    let entries = cx.update(|cx| workspace.update(cx, |workspace, _| workspace.saved_layouts()));
+    assert_eq!(entries.len(), 2);
+    let copy = entries.iter().find(|entry| entry.id != review).unwrap().id.clone();
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.delete_saved_layout(&copy, window, cx));
+    assert_eq!(cx.update(|cx| workspace.update(cx, |workspace, _| workspace.saved_layouts().len())), 1);
+
+    // Open in a new window: the saved layout's panes beside the workspace, fresh ids.
+    let panes_before = pane_count(cx, &workspace);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.open_saved_layout_in_new_window(&review, window, cx));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2, "a floating window opened for it");
+    assert_eq!(pane_count(cx, &workspace), panes_before + 3);
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        let floating = workspace.floating_windows()[0].clone();
+        assert_eq!(workspace.layout().panes_in(&floating).len(), 3);
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[gpui_kit::test]
+fn a_preset_arranges_the_open_panes_and_a_template_adds_the_screens_it_names(cx: &mut TestAppContext) {
+    let dir = test_data_dir("presets");
+    let mut launch = sample(Route::Today);
+    launch.data_dir = Some(dir.clone());
+    launch.extra = vec![Route::Accounts, Route::Rules];
+    let (handle, _app, workspace) = open_workspace(cx, launch);
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    assert_eq!(grid(cx, &workspace, 3, 3), "123\n123\n123");
+    let before: Vec<PaneId> = cx.update(|cx| workspace.read(cx).panes_in_order());
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.apply_preset(atlas_workspace::Preset::Analysis, window, cx));
+    assert_eq!(grid(cx, &workspace, 3, 3), "112\n113\n113", "Analysis: main pane left, two on the right");
+    assert_eq!(pane_count(cx, &workspace), 3, "the same panes, re-arranged");
+    let after: Vec<PaneId> = cx.update(|cx| workspace.read(cx).panes_in_order());
+    assert_eq!(after, before, "the pane ids did not change");
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Arrange as Analysis"));
+    cx.update_window(window, |_, window, _| {
+        assert!(window.find("screen-today").visible() && window.find("screen-accounts").visible() && window.find("screen-rules").visible());
+    })
+    .unwrap();
+    drive(cx, window, &workspace, |workspace, window, cx| assert!(workspace.undo(window, cx)));
+    assert_eq!(grid(cx, &workspace, 3, 3), "123\n123\n123");
+
+    // A template saved from this arrangement names its slots after the
+    // screens; applied where one of them is closed, it opens that screen again.
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.save_template("Three up", window, cx));
+    let entries = cx.update(|cx| workspace.update(cx, |workspace, _| workspace.saved_layouts()));
+    let template = entries.iter().find(|entry| entry.kind == atlas_workspace::SavedKind::Template).expect("the template").clone();
+    assert_eq!(template.template.as_ref().map(|template| template.slots.clone()), Some(vec!["today".to_string(), "accounts".to_string(), "rules".to_string()]));
+    let rules = before[2].clone();
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.close_pane(&rules, window, cx).expect("close"));
+    assert_eq!(pane_count(cx, &workspace), 2);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.load_saved_layout(&template.id, window, cx));
+    assert_eq!(pane_count(cx, &workspace), 3, "the slot named rules got a new Rules pane");
+    assert_eq!(grid(cx, &workspace, 3, 1), "123");
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    cx.update(|cx| assert_eq!(workspace.read(cx).pane_route(&order[2], cx), Some(Route::Rules)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[gpui_kit::test]
+fn a_saved_layout_naming_a_deleted_record_loads_with_a_placeholder_in_its_place(cx: &mut TestAppContext) {
+    let dir = test_data_dir("stale");
+    let mut launch = sample(Route::Today);
+    launch.data_dir = Some(dir.clone());
+    let (handle, _app, workspace) = open_workspace(cx, launch);
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    // Save a layout whose second pane names an account that does not exist.
+    let mut stale = cx.update(|cx| workspace.read(cx).layout().clone());
+    let main = atlas_workspace::WindowId::main();
+    stale.open_pane(&main, atlas_workspace::PaneDefinition::new("account").with_resource(serde_json::json!({ "accountId": 9_999 })), atlas_workspace::DockTarget::edge(Side::Right)).unwrap();
+    let id = cx.update(|cx| workspace.update(cx, |workspace, _| workspace.store_layout_as("Old accounts", &stale).expect("saved")));
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.load_saved_layout(&id, window, cx));
+    assert_eq!(pane_count(cx, &workspace), 2, "the rest of the layout loaded");
+    cx.update_window(window, |_, window, _| {
+        assert!(window.find("screen-today").visible());
+        assert!(window.find("pane-unavailable").visible(), "the deleted account's pane is a placeholder");
+        assert!(window.find("pane-replace").visible() && window.find("pane-close").visible());
+    })
+    .unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
 

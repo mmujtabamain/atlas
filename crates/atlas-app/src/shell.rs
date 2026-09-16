@@ -232,17 +232,60 @@ impl Shell {
     }
 
     /// The layout menu: the workspace-level commands. Undo and redo name the
-    /// step they would take back; saved layouts join this menu once they exist.
+    /// step they would take back; then the saved layouts and templates, the
+    /// presets, saving, and the reset.
     fn render_layout_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = self.workspace.clone();
-        let (undo, redo) = {
-            let history = self.workspace.read(cx).history();
-            (history.undo_label().map(str::to_owned), history.redo_label().map(str::to_owned))
+        let (undo, redo, current, can_save) = {
+            let view = self.workspace.read(cx);
+            let history = view.history();
+            (history.undo_label().map(str::to_owned), history.redo_label().map(str::to_owned), view.current_layout_name().map(str::to_owned), view.can_save_layouts())
         };
-        Button::new("layout-menu").small().ghost().compact().icon(IconName::LayoutGrid).label("Layout").tooltip("Arrange the workspace: undo, redo, reset").dropdown_menu(move |menu, _, _| {
+        let saved = self.workspace.update(cx, |workspace, _| workspace.saved_layouts());
+        let label = match &current {
+            Some(name) => format!("Layout: {name}"),
+            None => "Layout".to_string(),
+        };
+        Button::new("layout-menu").small().ghost().compact().icon(IconName::LayoutGrid).label(label).tooltip("Arrange the workspace: undo, redo, saved layouts, presets, reset").dropdown_menu(move |menu, _, _| {
             let undo_workspace = workspace.clone();
             let redo_workspace = workspace.clone();
             let reset_workspace = workspace.clone();
+            let mut menu = menu;
+            if can_save {
+                let save = workspace.clone();
+                let save_as = workspace.clone();
+                let save_template = workspace.clone();
+                let manage = workspace.clone();
+                menu = menu
+                    .item(PopupMenuItem::new(match &current {
+                        Some(name) => format!("Save layout “{name}”"),
+                        None => "Save layout…".to_string(),
+                    })
+                    .icon(IconName::Save)
+                    .on_click(move |_, window, cx| save.update(cx, |workspace, cx| workspace.save_layout(window, cx))))
+                    .item(PopupMenuItem::new("Save layout as…").icon(IconName::SaveAll).on_click(move |_, window, cx| save_as.update(cx, |workspace, cx| workspace.prompt_save_layout_as(false, window, cx))))
+                    .item(PopupMenuItem::new("Save as template…").icon(IconName::LayoutTemplate).on_click(move |_, window, cx| save_template.update(cx, |workspace, cx| workspace.prompt_save_layout_as(true, window, cx))))
+                    .separator();
+                for entry in &saved {
+                    let id = entry.id.clone();
+                    let load = workspace.clone();
+                    let name = match entry.kind {
+                        atlas_workspace::SavedKind::Layout => format!("Load {}", entry.name),
+                        atlas_workspace::SavedKind::Template => format!("Arrange as {}", entry.name),
+                    };
+                    let icon = match entry.kind {
+                        atlas_workspace::SavedKind::Layout => IconName::LayoutGrid,
+                        atlas_workspace::SavedKind::Template => IconName::LayoutTemplate,
+                    };
+                    menu = menu.item(PopupMenuItem::new(name).icon(icon).on_click(move |_, window, cx| load.update(cx, |workspace, cx| workspace.load_saved_layout(&id, window, cx))));
+                }
+                menu = menu.item(PopupMenuItem::new("Manage layouts…").icon(IconName::FolderOpen).on_click(move |_, window, cx| manage.update(cx, |workspace, cx| workspace.open_manage_layouts(window, cx)))).separator();
+            }
+            for preset in atlas_workspace::Preset::all() {
+                let apply = workspace.clone();
+                menu = menu.item(PopupMenuItem::new(format!("Arrange as {} — {}", preset.label(), preset.description())).icon(IconName::LayoutDashboard).on_click(move |_, window, cx| apply.update(cx, |workspace, cx| workspace.apply_preset(preset, window, cx))));
+            }
+            menu = menu.separator();
             menu.item(PopupMenuItem::new(match &undo {
                 Some(label) => format!("Undo: {label}"),
                 None => "Nothing to undo".to_string(),

@@ -153,9 +153,9 @@ struct LaunchPanes {
 
 /// The content column: one window's workspace of panes.
 pub struct WorkspaceView {
-    app: Entity<AtlasApp>,
+    pub(crate) app: Entity<AtlasApp>,
     window: AnyWindowHandle,
-    layout: WorkspaceLayout,
+    pub(crate) layout: WorkspaceLayout,
     panes: HashMap<PaneId, Entity<PaneView>>,
     area: Entity<DockArea>,
     skin: Rc<DockSkin>,
@@ -193,6 +193,8 @@ pub struct WorkspaceView {
     data_dir: Option<std::path::PathBuf>,
     /// The launch named a screen: the session is not restored over it.
     explicit_screen: bool,
+    /// The saved layouts and templates, and which one is on show.
+    pub(crate) layouts: super::layouts::LayoutStore,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -275,6 +277,7 @@ impl WorkspaceView {
             session: SessionStore::for_household(None, "none"),
             data_dir: launch.data_dir.clone(),
             explicit_screen: launch.explicit_screen,
+            layouts: super::layouts::LayoutStore::new(launch.data_dir.as_deref()),
             _subscriptions: vec![area_events, app_changes, escape_cancels_drag],
         };
         this.follow_household(window, cx);
@@ -362,7 +365,7 @@ impl WorkspaceView {
 
     /// Records one undoable step. Any step but a divider drag ends the run of
     /// divider drags that share an entry. Every step is a change to keep.
-    fn record(&mut self, label: impl Into<String>, before: WorkspaceLayout, cx: &mut Context<Self>) {
+    pub(crate) fn record(&mut self, label: impl Into<String>, before: WorkspaceLayout, cx: &mut Context<Self>) {
         self.last_resized_split = None;
         let label = label.into();
         self.history.push(label.clone(), before);
@@ -769,7 +772,7 @@ impl WorkspaceView {
     /// layout has and this view does not is rebuilt from its definition, Back
     /// history included; a definition of a kind this build does not know gets
     /// a placeholder pane so the layout loads whole and the person decides.
-    fn sync_pane_entities(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_pane_entities(&mut self, cx: &mut Context<Self>) {
         // A view stays only while it shows what the model says the pane is:
         // a layout that was loaded may name another screen for the same id.
         let layout = &self.layout;
@@ -1247,7 +1250,7 @@ impl WorkspaceView {
 
     /// Where a new floating window goes: at `at` (its top-left corner, on
     /// screen), else offset from the current window; clamped onto a display.
-    fn floating_frame(&self, at: Option<Point<Pixels>>, window: &Window) -> WindowFrame {
+    pub(crate) fn floating_frame(&self, at: Option<Point<Pixels>>, window: &Window) -> WindowFrame {
         let current = window.bounds();
         let origin = at.unwrap_or(current.origin + point(px(80.), px(80.)));
         WindowFrame::new(f64::from(f32::from(origin.x)), f64::from(f32::from(origin.y)), f64::from(f32::from(FLOATING_WINDOW_SIZE.width)), f64::from(f32::from(FLOATING_WINDOW_SIZE.height)))
@@ -1266,7 +1269,7 @@ impl WorkspaceView {
     /// and that frame reads the workspace, which is being updated right now;
     /// so the window is opened from the app, then registered here, then given
     /// its area's contents.
-    fn open_floating_window(&mut self, id: &WindowId, frame: WindowFrame, cx: &mut Context<Self>) {
+    pub(crate) fn open_floating_window(&mut self, id: &WindowId, frame: WindowFrame, cx: &mut Context<Self>) {
         if self.floating.contains_key(id) {
             return;
         }
@@ -1433,6 +1436,7 @@ impl WorkspaceView {
     /// Everything back to one pane: the active screen (or Today) alone in the
     /// window, as one undoable step. Application data is untouched.
     pub fn reset_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.layouts.current = None;
         let route = self.active_route(cx).unwrap_or(Route::Today);
         let before = self.layout.clone();
         let mut fresh = WorkspaceLayout::new("Main").with_scope(before.scope.clone());
@@ -1654,14 +1658,17 @@ impl WorkspaceView {
             }
         };
         // Panes the engine no longer shows left the dock (a tab's close
-        // button); their definitions go with them. Panes it shows that the
-        // model never opened cannot be mirrored at all.
+        // button); their definitions go with them. Only this window's panes
+        // can have left through this window's area: the definitions map
+        // holds every window's. Panes it shows that the model never opened
+        // cannot be mirrored at all.
         let present: HashSet<PaneId> = root.as_ref().map(LayoutNode::panes).unwrap_or_default().into_iter().collect();
         if let Some(unknown) = present.iter().find(|pane| !candidate.panes.contains_key(*pane)) {
             self.mirror_failed(&format!("the dock shows pane {unknown}, which the model never opened"));
             return;
         }
-        let departed: Vec<(PaneId, PaneDefinition)> = candidate.panes.iter().filter(|(pane, _)| !present.contains(*pane)).map(|(pane, definition)| (pane.clone(), definition.clone())).collect();
+        let in_this_window: Vec<PaneId> = previous_root.as_ref().map(LayoutNode::panes).unwrap_or_default();
+        let departed: Vec<(PaneId, PaneDefinition)> = in_this_window.iter().filter(|pane| !present.contains(*pane)).filter_map(|pane| candidate.panes.get(pane).map(|definition| (pane.clone(), definition.clone()))).collect();
         for (pane, _) in &departed {
             candidate.panes.remove(pane);
         }
@@ -1861,18 +1868,59 @@ impl WorkspaceView {
         }
     }
 
-    /// Tells every pane whether it is the active one.
+    /// Tells every pane whether it is the active one, and that the layout
+    /// changed (what a pane may show depends on what other windows show).
     fn apply_active_flags(&self, cx: &mut Context<Self>) {
         let active = self.layout.active_pane();
         for (pane, view) in &self.panes {
             let is_active = active.as_ref() == Some(pane);
-            view.update(cx, |pane, cx| pane.set_workspace_active(is_active, cx));
+            view.update(cx, |pane, cx| {
+                pane.set_workspace_active(is_active, cx);
+                cx.notify();
+            });
         }
+    }
+
+    /// The window that already shows a pane of the same screen family as
+    /// `pane`, when that window takes precedence — the main window over any
+    /// floating one, an earlier floating window over a later one. A screen
+    /// family's controls (its search field, its filters, its tables) are one
+    /// set on the app, and one set can be drawn in one window at a time;
+    /// the pane that loses shows a placeholder pointing at the winner.
+    ///
+    /// `route` is what `pane` shows; the pane passes it in because it asks
+    /// while it is being rendered, when it cannot be read.
+    pub fn shown_elsewhere(&self, pane: &PaneId, route: Route, cx: &App) -> Option<(WindowId, PaneId)> {
+        let family = route.destination()?;
+        let mine = self.window_of_pane(pane);
+        let precedence = |window: &WindowId| if *window == WindowId::main() { (0, String::new()) } else { (1, window.to_string()) };
+        let mut winner: Option<(WindowId, PaneId)> = None;
+        for window in &self.layout.windows {
+            if window.id == mine || precedence(&window.id) >= precedence(&mine) {
+                continue;
+            }
+            for other in mirror::displayed_panes(window.root.as_ref()) {
+                let Some(other_route) = self.pane_route(&other, cx) else {
+                    continue;
+                };
+                if other_route.destination() == Some(family) {
+                    winner = Some((window.id.clone(), other));
+                }
+            }
+        }
+        winner
+    }
+
+    /// Brings the window and pane that already show a screen to the front.
+    pub(crate) fn show_pane_in_its_window(&mut self, pane: &PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.set_active_pane(pane, window, cx);
+        let in_window = self.window_of_pane(pane);
+        self.in_window(&in_window, window, cx, |window, _| window.activate_window());
     }
 
     /// Gives the active pane keyboard focus, in whichever window it is, so
     /// the workspace commands reach it.
-    fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(active) = self.active_pane() else {
             return;
         };
@@ -1885,14 +1933,14 @@ impl WorkspaceView {
 
     /// The sidebar highlight and the frame label follow the active pane.
     /// Never called while the app is being updated (see the module docs).
-    fn sync_chrome(&self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_chrome(&self, cx: &mut Context<Self>) {
         if let Some(route) = self.active_route(cx) {
             self.app.update(cx, |app, cx| app.set_route_for_chrome(route, cx));
         }
     }
 
     /// Tells the person about a refused command; a no-op is only logged.
-    fn report<T>(&self, result: &Result<T, OpError>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn report<T>(&self, result: &Result<T, OpError>, window: &mut Window, cx: &mut Context<Self>) {
         match result {
             Ok(_) | Err(OpError::NoOp) => {}
             Err(err) => {

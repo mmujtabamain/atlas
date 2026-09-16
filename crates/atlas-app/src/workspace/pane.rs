@@ -363,6 +363,42 @@ impl Panel for PaneView {
 }
 
 impl PaneView {
+    /// The placeholder for a screen family that another window is showing:
+    /// the way to that window, or closing this pane.
+    fn render_shown_elsewhere(&self, route: Route, in_window: atlas_workspace::WindowId, other: PaneId, cx: &mut Context<Self>) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let family = route.destination().map(Destination::label).unwrap_or(route.title());
+        let where_ = if in_window == atlas_workspace::WindowId::main() { "the main window" } else { "another window" };
+        let show = self.workspace.clone();
+        let close_workspace = self.workspace.clone();
+        let close_pane = self.id.clone();
+        v_flex()
+            .id("pane-elsewhere")
+            .test_support()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_6()
+            .child(Icon::new(kinds::icon_of(route)).large().text_color(muted))
+            .child(div().text_lg().font_weight(FontWeight::MEDIUM).child(format!("{family} is on show in {where_}")))
+            .child(div().text_sm().text_color(muted).max_w(px(480.)).text_center().child(format!("A screen's controls — its search, filters and tables — can be in one window at a time. Show {family} there, or close this pane.")))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .pt_2()
+                    .child(Button::new("pane-show-elsewhere").primary().icon(gpui_kit::assets::IconName::AppWindow).label("Show it there").on_click(move |_, window, cx| {
+                        let _ = show.update(cx, |workspace, cx| workspace.show_pane_in_its_window(&other, window, cx));
+                    }))
+                    .child(Button::new("pane-close").outline().label("Close pane").on_click(move |_, window, cx| {
+                        let _ = close_workspace.update(cx, |workspace, cx| {
+                            let _ = workspace.close_pane(&close_pane, window, cx);
+                        });
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// The placeholder a pane shows in place of a screen it cannot show: what
     /// it was, why, and the two ways out — another screen, or closing it.
     fn render_placeholder(&self, id: &'static str, icon: gpui_kit::assets::IconName, title: String, reason: String, cx: &mut Context<Self>) -> AnyElement {
@@ -449,9 +485,11 @@ impl Render for PaneView {
                     let app = self.app.read(cx);
                     (app.household().clone(), app.viewer())
                 };
-                match kinds::availability(route, &household, viewer) {
-                    Ok(()) => self.app.update(cx, |app, cx| app.render_route(route, cx)),
-                    Err(reason) => self.render_placeholder("pane-unavailable", kinds::icon_of(route), format!("{} unavailable", route.title()), format!("{reason} Replace the pane with another screen, or close it."), cx),
+                let elsewhere = self.workspace.upgrade().and_then(|workspace| workspace.read(cx).shown_elsewhere(&self.id, route, cx));
+                match (elsewhere, kinds::availability(route, &household, viewer)) {
+                    (Some((window, other)), _) => self.render_shown_elsewhere(route, window, other, cx),
+                    (None, Ok(())) => self.app.update(cx, |app, cx| app.render_route(route, cx)),
+                    (None, Err(reason)) => self.render_placeholder("pane-unavailable", kinds::icon_of(route), format!("{} unavailable", route.title()), format!("{reason} Replace the pane with another screen, or close it."), cx),
                 }
             }
         };
@@ -459,7 +497,7 @@ impl Render for PaneView {
         // width instead of asking for a screen's.
         let showing_placeholder = self.placeholder.is_some() || {
             let app = self.app.read(cx);
-            kinds::availability(route, app.household(), app.viewer()).is_err()
+            kinds::availability(route, app.household(), app.viewer()).is_err() || self.workspace.upgrade().is_some_and(|workspace| workspace.read(cx).shown_elsewhere(&self.id, route, cx).is_some())
         };
         let min_width = if showing_placeholder { px(0.) } else { MIN_CONTENT_WIDTH };
         let border = if self.active { cx.theme().ring } else { transparent_black() };

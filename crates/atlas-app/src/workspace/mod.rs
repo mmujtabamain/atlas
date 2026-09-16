@@ -37,6 +37,7 @@
 //! | [`jobs`] | the job centre: long-running work that outlives the pane that started it |
 //! | [`floating`] | a floating window: another root over the same workspace |
 //! | [`session`] | the session file per household: debounced atomic autosave and restore |
+//! | [`layouts`] | saved layouts and templates: save, load, presets, manage |
 //! | [`commands`] | the keyboard commands: split, close, next pane, back |
 //!
 //! Dragging a pane onto another pane (its centre for a tab, an edge for a
@@ -53,6 +54,7 @@ pub mod floating;
 pub mod jobs;
 pub mod kinds;
 pub mod launcher;
+pub mod layouts;
 pub mod mirror;
 pub mod pane;
 pub mod session;
