@@ -130,3 +130,41 @@ pane's route. `--open <slug>` / `--open +<slug>` open extra panes/tabs at launch
 and `DockArea::load` are unused (restore goes model → `rebuild_area`). Pane in-pane histories
 live only in `PaneView` (not in the model, so not persisted). `Resolution::CreateWindow` falls
 back to the active stack until floating windows exist.
+
+---
+
+## 3. Transactional drag and dock — (commits a62fcc0, 506a189, 73183a7)
+
+**Claims.** Tab/title drags are the dock engine's; the workspace subscribes to every tab group's
+`TabGroupEvent::Drop` (`pane_joined_group`) and applies the drop to the **model first**
+(`dock_pane` → `WorkspaceLayout::move_pane` with share 0.5), then `rebuild_area`. `Err(NoOp)`
+(dropped back where it was) records no history; `TooSmall`/`TooDeep` refuse with the toast
+`REFUSED_SPLIT_MESSAGE` (`workspace-drop-refused`) and put the area back. `Escape` during any drag
+ends it through a keystroke interceptor with nothing changed. `mirror_from_area` classifies
+engine edits: structural → "Move pane" (after `ops::check_limits`), weights only → "Resize
+split" coalesced per split, active tab only → no history. Model rule (`slot_handover`): a pane
+alone in its stack moved beside a node inside a former sibling hands its freed weight to that
+sibling, so the other siblings keep their exact widths. `PaneView` body: `MIN_CONTENT_WIDTH`
+1080 px with sideways scroll. `gpui-shot --step drag:X1,Y1,X2,Y2` / `release`.
+
+**Verify.**
+
+1. `tests/workspace.rs` drag tests (centre → tabs; edge → split + undo exact; below → wraps in a
+   column and leaves the rest alone; Escape → byte-identical; drop back → nothing recorded;
+   divider run → one undo step; refused drop → toast, JSON identical; narrow pane → min width
+   and sideways scroll).
+2. Try drags the tests do not: a tab out of a 3-tab stack onto its own stack's edge (should
+   split, leaving 2 tabs); the last tab of a stack onto a far pane (source stack collapses,
+   target divided); a drop on the same edge the pane already sits on (NoOp, no history).
+3. Confirm no double handling: after a drop, pane count is unchanged and the grid matches the
+   model (the engine's own move and the model's rebuild happen inside one event flush).
+4. The interceptor: Escape inside a text input while *not* dragging must still reach the input.
+5. `check_limits` on an engine rearrangement: tighten limits, drag to split a narrow pane → toast
+   and the previous model kept.
+6. Sideways scroll: `pane-body` scrolls horizontally when a pane is narrower than 1080 px; a wide
+   pane fills its width; the vertical scroll still works inside; wheel scrolls vertically.
+
+**Known / fragile.** `DROP_SHARE` is 0.5 (matches the engine's indicator) while command splits use
+the model default 0.35. Autoscroll of an overflowing tab bar during a drag is not implemented (the
+skin does not expose the tab strip's scroll handle). The gpui-shot drag step holds the button
+until `release`; a capture without release photographs the in-flight state.
