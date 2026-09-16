@@ -9,7 +9,9 @@
 //!
 //! Drags are real pointer sequences on the pane titles (`pane-title-<n>`),
 //! the drag handle of a single-pane stack, dropped on the engine's zones of
-//! another pane: its centre for a tab, an edge for a split.
+//! another pane — its centre for a tab, an edge for a split — or on the
+//! workspace's own bands (`dock-band-<side>-<depth>`) for docking beside a
+//! group, a run of siblings, or along the window.
 
 mod common;
 
@@ -725,6 +727,213 @@ fn a_drop_that_would_squeeze_a_pane_below_the_minimum_is_refused_with_a_toast(cx
         assert!(today.top() >= accounts.bottom(), "Today is drawn under Accounts: {accounts:?} {today:?}");
     })
     .unwrap();
+}
+
+// ----- docking beside a group, a run of siblings, or the window ------------------------
+
+/// Today, Accounts and Rules as three equal columns, with a fourth pane
+/// (Forecast) tabbed behind Rules: the layout the cross-column cases start
+/// from. The picture is `123/123/123` with Forecast (4) displayed on the right.
+fn three_equal_columns_and_a_tab(cx: &mut TestAppContext) -> (gpui_kit::AnyWindowHandle, Entity<WorkspaceView>) {
+    let mut launch = sample(Route::Today);
+    launch.extra = vec![Route::Accounts, Route::Rules];
+    launch.stacked = vec![(2, Route::ForecastPath)];
+    let (handle, _app, workspace) = open_workspace(cx, launch);
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    assert_eq!(grid(cx, &workspace, 3, 3), "124\n124\n124", "Forecast is the displayed tab of the third column");
+    assert_eq!(pane_count(cx, &workspace), 4);
+    (window, workspace)
+}
+
+/// Starts dragging pane `from` by its title and moves the pointer to the
+/// centre of pane `over`, so the overlay lays its bands over that pane.
+/// Returns nothing; the drag is left in flight for the caller.
+fn start_drag_over(window: &mut Window, from: u64, over: u64, cx: &mut gpui_kit::App) {
+    window.render_frame(cx);
+    let handle = window.find(title_id(from)).bounds().center();
+    let over = window.find(pane_id(over)).bounds().center();
+    press_at(window, handle, cx);
+    move_pressed_to(window, handle + point(px(12.), px(4.)), cx);
+    move_pressed_to(window, over, cx);
+    // The overlay appears on the frame after the first move over the pane.
+    window.render_frame(cx);
+    assert!(cx.has_active_drag(), "the title started a drag");
+}
+
+/// Moves the drag in flight onto the band `dock-band-<side>-<depth>` and
+/// returns the band's centre.
+fn hover_band(window: &mut Window, side: &str, depth: usize, cx: &mut gpui_kit::App) -> Point<Pixels> {
+    let id = SharedString::from(format!("dock-band-{side}-{depth}"));
+    let centre = window.find(id).bounds().center();
+    move_pressed_to(window, centre, cx);
+    window.render_frame(cx);
+    centre
+}
+
+/// Drags pane `from` onto the band `dock-band-<side>-<depth>` of the pane
+/// `over` and drops it there.
+fn drag_to_band(cx: &mut TestAppContext, window: gpui_kit::AnyWindowHandle, from: u64, over: u64, side: &str, depth: usize) {
+    cx.update_window(window, |_, window, cx| {
+        start_drag_over(window, from, over, cx);
+        let centre = hover_band(window, side, depth, cx);
+        release_at(window, centre, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+}
+
+#[gpui_kit::test]
+fn dropping_on_the_band_of_two_columns_spans_exactly_those_columns(cx: &mut TestAppContext) {
+    let (window, workspace) = three_equal_columns_and_a_tab(cx);
+    let before = root_weights(cx, &workspace);
+    // The band just inside the window band, on the bottom of the third
+    // column, is the run "Accounts and Rules": Forecast goes under those two.
+    drag_to_band(cx, window, 4, 4, "bottom", 1);
+    assert_eq!(grid(cx, &workspace, 3, 3), "123\n123\n144", "the cross-column layout, without touching Today");
+    let tree = root(cx, &workspace);
+    assert!(about(tree.weights()[0], before[0]), "Today keeps its width: {:?} vs {before:?}", tree.weights());
+    assert_eq!(pane_count(cx, &workspace), 4, "no pane was lost or duplicated by the drop");
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Move pane"));
+    cx.update_window(window, |_, window, _| {
+        assert!(window.try_find("dock-targets").is_none(), "the overlay is gone after the drop");
+        let today = window.find(pane_id(1)).bounds();
+        let forecast = window.find(pane_id(4)).bounds();
+        let accounts = window.find(pane_id(2)).bounds();
+        assert!(forecast.left() >= today.right() - px(2.), "Forecast starts where Today ends: {today:?} {forecast:?}");
+        assert!(forecast.top() >= accounts.bottom() - px(2.), "and sits under Accounts: {accounts:?} {forecast:?}");
+        assert!(window.find("screen-forecast").visible() && window.find("screen-today").visible());
+    })
+    .unwrap();
+    // Undo puts the tab back.
+    drive(cx, window, &workspace, |workspace, window, cx| assert!(workspace.undo(window, cx)));
+    assert_eq!(grid(cx, &workspace, 3, 3), "124\n124\n124");
+}
+
+#[gpui_kit::test]
+fn dropping_on_the_window_band_spans_the_whole_window(cx: &mut TestAppContext) {
+    let (window, workspace) = three_equal_columns_and_a_tab(cx);
+    drag_to_band(cx, window, 4, 4, "bottom", 0);
+    assert_eq!(grid(cx, &workspace, 3, 3), "123\n123\n444");
+    let tree = root(cx, &workspace);
+    assert_eq!(tree.axis(), Some(Axis::Vertical));
+    let row = &tree.children()[0];
+    assert!(row.weights().iter().all(|weight| about(*weight, 1.0 / 3.0)), "the three columns keep their ratio: {:?}", row.weights());
+}
+
+#[gpui_kit::test]
+fn dropping_on_a_groups_band_divides_only_that_groups_slot(cx: &mut TestAppContext) {
+    // `1 | [2 / 3]`, then a fourth pane tabbed behind 3.
+    let (window, _app, workspace) = today_and_accounts(cx);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.split_active(Side::Bottom, Route::Rules, window, cx).expect("split below"));
+    assert_eq!(grid(cx, &workspace, 4, 2), "1112\n1113");
+    let rules = active(cx, &workspace);
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.stack_onto(&rules, Route::ForecastPath, window, cx).expect("tab"));
+    let before = root_weights(cx, &workspace);
+    // Right of the column: bands are the column (inner) and the window (outer).
+    drag_to_band(cx, window, 4, 4, "right", 1);
+    let tree = root(cx, &workspace);
+    assert_eq!(tree.axis(), Some(Axis::Horizontal));
+    assert_eq!(tree.children().len(), 3, "Today, the column, Forecast: {tree:?}");
+    assert!(about(tree.weights()[0], before[0]), "Today's slot is untouched: {:?} vs {before:?}", tree.weights());
+    assert!(about(tree.weights()[1] + tree.weights()[2], before[1]), "the column's slot was divided between the column and Forecast");
+    assert_eq!(tree.children()[1].panes().len(), 2, "Accounts and Rules still share the column");
+    assert_eq!(tree.children()[2].panes().len(), 1);
+}
+
+#[gpui_kit::test]
+fn the_analysis_shape_is_reachable_by_a_drag_and_a_resize(cx: &mut TestAppContext) {
+    let (window, workspace) = three_equal_columns_and_a_tab(cx);
+    drag_to_band(cx, window, 4, 4, "bottom", 1);
+    assert_eq!(grid(cx, &workspace, 3, 3), "123\n123\n144");
+    // The new column is a vertical split of the 2–3 row over Forecast; a
+    // third for the row and two thirds for Forecast is `123/144/144`.
+    let column = cx.update(|cx| {
+        let tree = workspace.read(cx).layout().main_window().and_then(|window| window.root.clone()).expect("a tree");
+        tree.children()[1].id().clone()
+    });
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.resize_split(&column, &[1.0 / 3.0, 2.0 / 3.0], window, cx).expect("resize"));
+    assert_eq!(grid(cx, &workspace, 3, 3), "123\n144\n144");
+}
+
+#[gpui_kit::test]
+fn hovering_a_band_shows_the_preview_and_escape_leaves_everything_as_it_was(cx: &mut TestAppContext) {
+    let (window, workspace) = three_equal_columns_and_a_tab(cx);
+    let before = layout_json(cx, &workspace);
+    let labels = history_labels(cx, &workspace);
+    cx.update_window(window, |_, window, cx| {
+        start_drag_over(window, 4, 4, cx);
+        assert!(window.try_find("dock-targets").is_some(), "the overlay is up while a pane is dragged");
+        assert!(window.try_find("dock-preview").is_none(), "no preview until a band is hovered");
+        hover_band(window, "bottom", 1, cx);
+        let preview = window.find("dock-preview").bounds();
+        let today = window.find(pane_id(1)).bounds();
+        let accounts = window.find(pane_id(2)).bounds();
+        assert!(preview.left() >= today.right() - px(2.) && preview.top() >= accounts.center().y, "the preview is the bottom of the 2–3 columns: {preview:?}");
+        assert_eq!(window.find("dock-band-label").label(), Some("Dock below these 2 panes"));
+        assert_eq!(window.find("dock-band-bottom-0").label(), Some("Dock along the bottom of the window"));
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(!cx.has_active_drag());
+        assert!(window.try_find("dock-targets").is_none(), "Escape takes the overlay down");
+        assert!(window.try_find("dock-preview").is_none());
+        release_at(window, window.find(pane_id(4)).bounds().center(), cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(layout_json(cx, &workspace), before, "nothing changed");
+    assert_eq!(history_labels(cx, &workspace), labels);
+    assert_eq!(grid(cx, &workspace, 3, 3), "124\n124\n124");
+}
+
+#[gpui_kit::test]
+fn space_cycles_the_inner_levels_while_the_window_band_stays(cx: &mut TestAppContext) {
+    // Five columns: the middle one has four runs below it, more than fit.
+    let mut launch = sample(Route::Today);
+    launch.extra = vec![Route::Accounts, Route::Rules, Route::ForecastPath, Route::People];
+    let (handle, _app, workspace) = open_workspace(cx, launch);
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    assert_eq!(grid(cx, &workspace, 5, 1), "12345");
+    cx.update_window(window, |_, window, cx| {
+        start_drag_over(window, 5, 3, cx);
+        hover_band(window, "bottom", 2, cx);
+        assert_eq!(window.find("dock-band-label").label(), Some("Dock below these 2 panes"), "the innermost band: Rules with Accounts");
+        assert_eq!(window.find("dock-band-bottom-0").label(), Some("Dock along the bottom of the window"));
+        window.press("space", cx);
+        window.render_frame(cx);
+        assert!(cx.has_active_drag(), "Space does not end the drag");
+        assert_eq!(window.find("dock-band-label").label(), Some("Dock below these 3 panes"), "after Space the innermost band is the next run");
+        assert_eq!(window.find("dock-band-bottom-0").label(), Some("Dock along the bottom of the window"), "the window band stays outermost");
+        window.press("escape", cx);
+        release_at(window, window.find(pane_id(3)).bounds().center(), cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(grid(cx, &workspace, 5, 1), "12345");
+}
+
+#[gpui_kit::test]
+fn a_band_the_minimum_size_rule_refuses_takes_no_drop(cx: &mut TestAppContext) {
+    let (window, workspace) = three_equal_columns_and_a_tab(cx);
+    // Nothing under 40 % of the window: a third row for Forecast is too small.
+    cx.update(|cx| workspace.update(cx, |workspace, _| workspace.set_split_limits(SplitLimits { min_share: 0.4, max_depth: 12 })));
+    let before = layout_json(cx, &workspace);
+    let labels = history_labels(cx, &workspace);
+    cx.update_window(window, |_, window, cx| {
+        start_drag_over(window, 4, 4, cx);
+        hover_band(window, "bottom", 0, cx);
+        assert_eq!(window.find("dock-band-bottom-0").label(), Some("Dock along the bottom of the window (not enough room)"));
+        assert_eq!(window.find("dock-band-label").label(), Some("Not enough room here"));
+        assert!(window.try_find("dock-preview").is_none(), "a refused band previews nothing");
+        let centre = window.find("dock-band-bottom-0").bounds().center();
+        release_at(window, centre, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(layout_json(cx, &workspace), before, "the drop changed nothing");
+    assert_eq!(history_labels(cx, &workspace), labels);
+    assert_eq!(grid(cx, &workspace, 3, 3), "124\n124\n124");
 }
 
 #[test]

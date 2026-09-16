@@ -32,16 +32,19 @@
 //! | [`pane`] | [`PaneView`]: one pane — a dock panel rendering one screen, with its own scroll region and in-pane history |
 //! | [`kinds`] | the pane registry: a route as a pane definition (`kind` + `resource`) and back; titles and icons |
 //! | [`mirror`] | reading the engine's dumped layout back into a model tree |
+//! | [`dock_targets`] | the drag-target overlay: bands for docking beside a group, a run of siblings, or the window |
 //! | [`commands`] | the keyboard commands: split, close, next pane, back |
 //!
 //! Dragging a pane onto another pane (its centre for a tab, an edge for a
 //! split) works within the window and is transactional: Escape cancels with
 //! nothing changed, a drop that changes nothing leaves no history, and a drop
 //! the minimum-size rule refuses is put back and explained. Docking beside a
-//! whole group or at the window's edges, the launcher, floating windows and
-//! persistence build on this and come later.
+//! whole group, beside a run of sibling panes or along the window's edges is
+//! the workspace's own overlay ([`dock_targets`]). The launcher, floating
+//! windows and persistence build on this and come later.
 
 pub mod commands;
+pub mod dock_targets;
 pub mod kinds;
 pub mod mirror;
 pub mod pane;

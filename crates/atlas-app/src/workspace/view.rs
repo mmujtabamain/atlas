@@ -27,6 +27,12 @@
 //! the drop indicator over the centre and the four edge zones, and commits
 //! nothing until the drop. `Escape` during a drag ends it before any of that
 //! happens (a keystroke interceptor installed in [`WorkspaceView::new`]).
+//! The broader targets — beside a whole group, beside a run of siblings, along
+//! a window edge — are the workspace's own: while a pane is dragged it draws
+//! the bands of [`super::dock_targets`] over the pane under the pointer, with
+//! the rectangle the pane would take, and a drop on a band goes through
+//! [`WorkspaceView::dock_pane`] like any other. `Space` cycles the levels a
+//! side offers when there are more than fit.
 //!
 //! The workspace follows the app rather than being told: it observes
 //! [`AtlasApp`] and starts a fresh layout, scoped to the household, the
@@ -56,10 +62,14 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
+use std::cell::{Cell, RefCell};
+
 use super::commands::{self, Back, ClosePane, FocusNextPane, SplitBelow, SplitRight};
+use super::dock_targets::{self, Band, DragInFlight, Outcome};
 use super::kinds;
 use super::mirror;
-use super::pane::PaneView;
+use super::pane::{PaneBounds, PaneView};
+use gpui_kit::component::dock::DragPanel;
 use crate::alerting::{self, Level};
 use crate::app::AtlasApp;
 use crate::launch::Launch;
@@ -135,6 +145,13 @@ pub struct WorkspaceView {
     /// other change has happened since: another drag of the same divider
     /// then joins that entry instead of adding one.
     last_resized_split: Option<NodeId>,
+    /// Where every drawn pane is, written by the panes each frame and read by
+    /// the drag-target overlay.
+    pane_bounds: PaneBounds,
+    /// Where this view was drawn, so window coordinates can be made relative.
+    root_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The pane drag in flight, while one is: what the overlay follows.
+    drag: Option<DragInFlight>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -156,11 +173,31 @@ impl WorkspaceView {
         // inside the pane that binds Escape (an input) would otherwise take
         // the key first; the interceptor runs before either and only ever
         // acts while a drag is in flight.
-        let escape_cancels_drag = cx.intercept_keystrokes(|event, window, cx| {
-            if event.keystroke.key == "escape" && event.keystroke.modifiers.number_of_modifiers() == 0 && cx.has_active_drag() {
-                cx.stop_active_drag(window);
-                cx.stop_propagation();
-                log::info!("workspace: drag cancelled with Escape; nothing changed");
+        // `Space` while dragging shows the next levels of docking targets on
+        // every side of the pane under the pointer.
+        let this_for_keys = cx.weak_entity();
+        let escape_cancels_drag = cx.intercept_keystrokes(move |event, window, cx| {
+            if !cx.has_active_drag() || event.keystroke.modifiers.number_of_modifiers() != 0 {
+                return;
+            }
+            match event.keystroke.key.as_str() {
+                "escape" => {
+                    cx.stop_active_drag(window);
+                    cx.stop_propagation();
+                    let _ = this_for_keys.update(cx, |this, cx| this.end_drag_overlay(cx));
+                    log::info!("workspace: drag cancelled with Escape; nothing changed");
+                }
+                "space" => {
+                    cx.stop_propagation();
+                    let _ = this_for_keys.update(cx, |this, cx| {
+                        if let Some(drag) = this.drag.as_mut() {
+                            drag.level_offset += 1;
+                            log::info!("workspace: docking levels cycled to offset {}", drag.level_offset);
+                            cx.notify();
+                        }
+                    });
+                }
+                _ => {}
             }
         });
         let mut this = WorkspaceView {
@@ -178,6 +215,9 @@ impl WorkspaceView {
             renders: 0,
             group_watches: HashMap::new(),
             last_resized_split: None,
+            pane_bounds: Rc::new(RefCell::new(HashMap::new())),
+            root_bounds: Rc::new(Cell::new(Bounds::default())),
+            drag: None,
             _subscriptions: vec![area_events, app_changes, escape_cancels_drag],
         };
         this.follow_household(window, cx);
@@ -406,7 +446,8 @@ impl WorkspaceView {
         let pane = self.layout.open_pane(target_window, definition, target.clone())?;
         let workspace = cx.weak_entity();
         let app = self.app.clone();
-        let view = cx.new(|cx| PaneView::new(pane.clone(), route, app, workspace, cx));
+        let bounds = self.pane_bounds.clone();
+        let view = cx.new(|cx| PaneView::new(pane.clone(), route, app, workspace, bounds, cx));
         self.panes.insert(pane.clone(), view);
         self.record(format!("Open {}", route.title()), before);
         log::info!("workspace: opened pane {pane} ({}) at {target:?}; {} panes", route.slug(), self.panes.len());
@@ -523,7 +564,8 @@ impl WorkspaceView {
                 Some(route) => {
                     let workspace = cx.weak_entity();
                     let app = self.app.clone();
-                    let view = cx.new(|cx| PaneView::new(pane.clone(), route, app, workspace, cx));
+                    let bounds = self.pane_bounds.clone();
+                    let view = cx.new(|cx| PaneView::new(pane.clone(), route, app, workspace, bounds, cx));
                     self.panes.insert(pane, view);
                 }
                 None => {
@@ -697,6 +739,7 @@ impl WorkspaceView {
     /// area back to it; a move that changes nothing does the same, because the
     /// engine may have redistributed sizes while deciding nothing changed.
     pub fn dock_pane(&mut self, pane: &PaneId, target: DockTarget, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.end_drag_overlay(cx);
         let before = self.layout.clone();
         let displayed_before = self.layout.main_window().and_then(|main| main.root.as_ref()).and_then(|root| target.node().and_then(|node| root.find(node))).and_then(|stack| stack.active_pane().cloned());
         match self.layout.move_pane(pane, &WindowId::main(), target.clone()) {
@@ -732,6 +775,156 @@ impl WorkspaceView {
                 self.report(&Err::<(), _>(err), window, cx);
             }
         }
+    }
+
+    // ----- the drag-target overlay -------------------------------------------------------
+
+    /// The pointer moved while a pane is dragged: the overlay follows it.
+    fn follow_drag(&mut self, panel: PanelId, pointer: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(pane) = self.pane_of_panel(panel) else {
+            return;
+        };
+        let level_offset = self.drag.as_ref().filter(|drag| drag.pane == pane).map(|drag| drag.level_offset).unwrap_or(0);
+        let next = DragInFlight { pane, pointer, level_offset };
+        if self.drag.as_ref() != Some(&next) {
+            self.drag = Some(next);
+            cx.notify();
+        }
+    }
+
+    /// The drag is over (dropped, cancelled, released elsewhere): no overlay.
+    fn end_drag_overlay(&mut self, cx: &mut Context<Self>) {
+        if self.drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// A pane was dropped on one of the overlay's bands.
+    fn drop_on_band(&mut self, panel: PanelId, band: &Band, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.pane_of_panel(panel) else {
+            log::warn!("workspace: a panel that is not one of the workspace's panes was dropped on a docking band; ignoring it");
+            self.end_drag_overlay(cx);
+            return;
+        };
+        if !band.accepts_drops() {
+            log::info!("workspace: pane {pane} dropped on a band that refuses it ({}); nothing changed", band.label);
+            self.end_drag_overlay(cx);
+            return;
+        }
+        log::info!("workspace: pane {pane} dropped on band {} ({})", band.element_id(), band.label);
+        self.dock_pane(&pane, band.target.clone(), true, window, cx);
+    }
+
+    /// The bands and the preview for the drag in flight, over the area. Only
+    /// drawn while a pane drag is active; the panes' own drop zones stay the
+    /// engine's, underneath.
+    fn render_drag_overlay(&self, drag: &DragInFlight, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let drawn = self.pane_bounds.borrow();
+        let bands = dock_targets::bands_for(&self.layout, &WindowId::main(), &drawn, drag);
+        drop(drawn);
+        if bands.is_empty() {
+            return None;
+        }
+        let origin = self.root_bounds.get().origin;
+        let area = self.area.read(cx).bounds();
+        let theme = cx.theme();
+        let primary = theme.primary;
+        let muted = theme.muted_foreground;
+        let popover = theme.popover;
+        let popover_foreground = theme.popover_foreground;
+        let hovered = bands.iter().find(|band| band.hovered).cloned();
+        let mut overlay = div().id("dock-targets").test_support().absolute().inset_0();
+        for band in bands {
+            let relative = Bounds::new(band.bounds.origin - origin, band.bounds.size);
+            let accepts = band.accepts_drops();
+            let fill = match (&band.outcome, band.hovered) {
+                (Outcome::Refused(_), _) => muted.opacity(0.15),
+                (_, true) => primary.opacity(0.45),
+                (_, false) => primary.opacity(0.18),
+            };
+            let border = if accepts { primary.opacity(0.7) } else { muted.opacity(0.5) };
+            let element_id = band.element_id();
+            let band_for_drop = band.clone();
+            // The label doubles as the accessible name, so a screen reader
+            // says what the band does.
+            let spoken = match &band.outcome {
+                Outcome::Refused(_) => format!("{} (not enough room)", band.label),
+                _ => band.label.clone(),
+            };
+            let mut strip = div()
+                .id(element_id)
+                .test_support()
+                .aria_label(spoken)
+                .absolute()
+                .left(relative.origin.x)
+                .top(relative.origin.y)
+                .w(relative.size.width)
+                .h(relative.size.height)
+                .bg(fill)
+                .border_1()
+                .border_color(border)
+                .rounded(px(2.));
+            // A refused band takes the drop as well — and then does nothing —
+            // so the engine underneath does not treat it as a drop on the
+            // pane's own edge zone.
+            strip = strip.on_drop(cx.listener(move |this, dropped: &DragPanel, window, cx| {
+                cx.stop_propagation();
+                this.drop_on_band(dropped.panel(), &band_for_drop, window, cx);
+            }));
+            overlay = overlay.child(strip);
+        }
+        if let Some(band) = hovered {
+            // The rectangle the pane would take, and what will happen.
+            if let Outcome::Allowed { preview } = &band.outcome {
+                let rect = Bounds::new(
+                    point(area.origin.x + area.size.width * preview.x as f32 - origin.x, area.origin.y + area.size.height * preview.y as f32 - origin.y),
+                    size(area.size.width * preview.width as f32, area.size.height * preview.height as f32),
+                );
+                overlay = overlay.child(
+                    div()
+                        .id("dock-preview")
+                        .test_support()
+                        .absolute()
+                        .left(rect.origin.x)
+                        .top(rect.origin.y)
+                        .w(rect.size.width)
+                        .h(rect.size.height)
+                        .bg(primary.opacity(0.12))
+                        .border_1()
+                        .border_color(primary)
+                        .rounded(px(3.)),
+                );
+            }
+            let label = match &band.outcome {
+                Outcome::Allowed { .. } => band.label.clone(),
+                Outcome::Unchanged => "Already here: dropping changes nothing".to_string(),
+                Outcome::Refused(_) => "Not enough room here".to_string(),
+            };
+            // Beside the pointer, or above it when the pointer is near the
+            // bottom (the bands people aim for are at the edges).
+            let anchor = drag.pointer - origin;
+            let room_below = self.root_bounds.get().size.height - anchor.y;
+            let label_top = if room_below < px(48.) { anchor.y - px(32.) } else { anchor.y + px(16.) };
+            let label_left = (anchor.x + px(16.)).min(self.root_bounds.get().size.width - px(260.)).max(px(0.));
+            overlay = overlay.child(
+                div()
+                    .id("dock-band-label")
+                    .test_support()
+                    .aria_label(label.clone())
+                    .absolute()
+                    .left(label_left)
+                    .top(label_top)
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.))
+                    .bg(popover)
+                    .text_color(popover_foreground)
+                    .text_xs()
+                    .whitespace_nowrap()
+                    .child(label),
+            );
+        }
+        Some(overlay.into_any_element())
     }
 
     /// The pane behind an engine panel id.
@@ -1059,16 +1252,38 @@ impl Render for WorkspaceView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
         let has_panes = self.layout.main_window().is_some_and(|main| !main.is_empty());
+        // If the drag ended anywhere the overlay did not see (a release over
+        // the sidebar, a drop the engine took), the next frame clears it.
+        if self.drag.is_some() && !cx.has_active_drag() {
+            self.drag = None;
+        }
+        let recorded = self.root_bounds.clone();
+        let recorder = canvas(
+            move |bounds, _, _| {
+                recorded.set(bounds);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
+        let overlay = self.drag.clone().and_then(|drag| self.render_drag_overlay(&drag, cx));
         let root = div()
             .id("workspace")
             .key_context(commands::KEY_CONTEXT)
             .track_focus(&self.focus_handle)
+            .relative()
             .size_full()
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DragPanel>, _, cx| {
+                let panel = event.drag(cx).panel();
+                this.follow_drag(panel, event.event.position, cx);
+            }))
+            .capture_any_mouse_up(cx.listener(|this, _, _, cx| this.end_drag_overlay(cx)))
+            .child(recorder)
             .on_action(cx.listener(|this, _: &SplitRight, window, cx| this.command_split(Side::Right, window, cx)))
             .on_action(cx.listener(|this, _: &SplitBelow, window, cx| this.command_split(Side::Bottom, window, cx)))
             .on_action(cx.listener(|this, _: &ClosePane, window, cx| this.command_close(window, cx)))
             .on_action(cx.listener(|this, _: &FocusNextPane, window, cx| this.command_focus_next(window, cx)))
             .on_action(cx.listener(|this, _: &Back, window, cx| this.command_back(window, cx)));
-        if has_panes { root.child(self.area.clone()) } else { root.child(self.render_empty(cx)) }
+        if has_panes { root.child(self.area.clone()).children(overlay) } else { root.child(self.render_empty(cx)) }
     }
 }

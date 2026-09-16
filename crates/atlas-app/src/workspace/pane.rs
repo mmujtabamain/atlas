@@ -28,11 +28,21 @@
 //! group may be rearranged. The pane's own title element is what the skin
 //! wraps in that handle, so it carries a `pane-title-<n>` id for tests.
 //!
+//! Every frame the pane records where it was drawn into the workspace's
+//! shared [`PaneBounds`] map; the drag-target overlay reads those rectangles
+//! to place its bands beside groups and the window (see
+//! [`super::dock_targets`]). A hidden tab is not drawn and its entry goes
+//! stale, so readers only trust the panes their stacks display.
+//!
 //! Everything the engine tells the pane — it was displayed, it left the dock,
 //! it joined a tab group — is passed to the workspace **deferred**: those
 //! callbacks arrive while the dock area, and possibly the workspace that
 //! drove the edit, are still being updated, and gpui refuses a nested update
 //! of an entity that is already on the stack.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 use atlas_workspace::{PaneId, Side};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent, PanelInfo, PanelState, TabGroup};
@@ -69,6 +79,10 @@ const HISTORY_LIMIT: usize = 32;
 /// redesigned for narrower columns can lower this.
 pub const MIN_CONTENT_WIDTH: Pixels = px(1080.);
 
+/// Where every drawn pane is, in window coordinates, as of its last prepaint.
+/// Shared between the workspace and its panes.
+pub type PaneBounds = Rc<RefCell<HashMap<PaneId, Bounds<Pixels>>>>;
+
 /// One pane: a screen instance inside the workspace.
 pub struct PaneView {
     id: PaneId,
@@ -86,17 +100,19 @@ pub struct PaneView {
     group: Option<WeakEntity<TabGroup>>,
     /// The sideways scroll of the body, kept so it survives a rebuild of the area.
     horizontal_scroll: ScrollHandle,
+    /// The workspace's map of where every pane is drawn; this pane writes its own entry.
+    bounds: PaneBounds,
     _observe_app: Subscription,
 }
 
 impl PaneView {
     /// A pane showing `route`. `workspace` is told about activation, Back and
     /// removal; `app` is what the screen renders from.
-    pub fn new(id: PaneId, route: Route, app: Entity<AtlasApp>, workspace: WeakEntity<WorkspaceView>, cx: &mut Context<Self>) -> Self {
+    pub fn new(id: PaneId, route: Route, app: Entity<AtlasApp>, workspace: WeakEntity<WorkspaceView>, bounds: PaneBounds, cx: &mut Context<Self>) -> Self {
         // Every state change of the app is a possible change of what the
         // screen shows; the pane is a cached view, so it has to ask for a frame.
         let _observe_app = cx.observe(&app, |_, _, cx| cx.notify());
-        PaneView { id, route, history: Vec::new(), app, workspace, focus_handle: cx.focus_handle(), active: false, displayed: false, group: None, horizontal_scroll: ScrollHandle::new(), _observe_app }
+        PaneView { id, route, history: Vec::new(), app, workspace, focus_handle: cx.focus_handle(), active: false, displayed: false, group: None, horizontal_scroll: ScrollHandle::new(), bounds, _observe_app }
     }
 
     /// The pane's id in the layout model.
@@ -250,8 +266,10 @@ impl BasePanel for PaneView {
 }
 
 impl Panel for PaneView {
-    fn tab_name(&self, cx: &App) -> Option<SharedString> {
-        Some(kinds::title_of(self.route, self.app.read(cx).household()))
+    /// `None`: a tab shows the same icon-and-title element as a single pane's
+    /// header, so tabs and titles read alike and carry the same id.
+    fn tab_name(&self, _: &App) -> Option<SharedString> {
+        None
     }
 
     /// The title element the skin wraps in the drag handle; its id lets a
@@ -321,6 +339,19 @@ impl Render for PaneView {
         let border = if self.active { cx.theme().ring } else { transparent_black() };
         let id = self.id.clone();
         let workspace = self.workspace.clone();
+        // The canvas fills the pane and does nothing but note where it was
+        // laid out: an absolutely placed element, so it takes no space and
+        // no input.
+        let recorded = self.bounds.clone();
+        let recorder_id = self.id.clone();
+        let recorder = canvas(
+            move |bounds, _, _| {
+                recorded.borrow_mut().insert(recorder_id, bounds);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
         div()
             .id(self.element_id())
             .test_support()
@@ -345,5 +376,6 @@ impl Render for PaneView {
                     .child(v_flex().id("pane-scroll").size_full().min_w(MIN_CONTENT_WIDTH).p_6().gap_6().child(content).overflow_y_scrollbar()),
             )
             .child(div().absolute().inset_0().child(Scrollbar::horizontal(&self.horizontal_scroll).viewport_from_layout()))
+            .child(recorder)
     }
 }
