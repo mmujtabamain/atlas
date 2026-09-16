@@ -34,6 +34,16 @@ pub struct Launch {
     /// record rather than one record; resolved against the household once it
     /// is open, since only then is there an id to open.
     pub detail: Option<crate::nav::FirstDetail>,
+    /// `--open <slug>`, repeatable: further screens opened as panes at launch,
+    /// each a new column at the right edge of the window, all columns sharing
+    /// the width equally. Screenshots and tests build multi-pane workspaces with it.
+    pub extra: Vec<Route>,
+    /// `--open +<slug>`: screens opened as a **tab** of an earlier pane rather
+    /// than beside it. The index counts the panes opened at launch in order
+    /// (`route` is 0, the first `--open` is 1, …); the tab goes onto the pane
+    /// opened just before the flag, so `--open accounts --open +rules` stacks
+    /// Rules onto Accounts. Applied after every `extra` pane exists.
+    pub stacked: Vec<(usize, Route)>,
     /// Which fixture person is looking (`a` or `b`) when given explicitly;
     /// `--viewer <person id>` for real households. Without it a household with
     /// several people opens behind the "Who is looking?" chooser.
@@ -61,6 +71,8 @@ impl Default for Launch {
             height: 1000.,
             route: Route::Today,
             detail: None,
+            extra: Vec::new(),
+            stacked: Vec::new(),
             viewer: None,
             viewer_id: None,
             start: Start::Welcome,
@@ -109,6 +121,28 @@ impl Launch {
                         ),
                     }
                 }
+                "--open" => {
+                    i += 1;
+                    match args.get(i) {
+                        Some(value) => {
+                            let (as_tab, slug) = match value.strip_prefix('+') {
+                                Some(slug) => (true, slug),
+                                None => (false, value.as_str()),
+                            };
+                            match Route::from_slug(slug) {
+                                Some(route) if as_tab => {
+                                    // The pane opened just before this flag: the
+                                    // launch route counts as pane 0.
+                                    let onto = launch.extra.len();
+                                    launch.stacked.push((onto, route));
+                                }
+                                Some(route) => launch.extra.push(route),
+                                None => log::warn!("unknown --open {value:?}; known: {} (prefix with + to open as a tab of the previous pane)", Route::slugs().join(", ")),
+                            }
+                        }
+                        None => log::warn!("--open needs a screen slug"),
+                    }
+                }
                 "--viewer" => {
                     i += 1;
                     match args.get(i) {
@@ -140,7 +174,7 @@ impl Launch {
                 "--no-perf-overlay" => launch.perf_overlay = false,
                 "-h" | "--help" => {
                     println!(
-                        "atlas [--theme light|dark] [--size WxH] [--screen {}] [--viewer a|b|<person id>] [--household FILE.atlas.sqlite | --new | --sample] [--as-of YYYY-MM-DD] [--owner NAME] [--take-over] [--perf-overlay]\n\nLogs go to stderr and logs.log (ATLAS_LOG_FILE=path|off, RUST_LOG=filter, ATLAS_LOG_FILE_FILTER=filter); the status bar shows gpui's frame timing.",
+                        "atlas [--theme light|dark] [--size WxH] [--screen {}] [--open <slug>|+<slug>]... [--viewer a|b|<person id>] [--household FILE.atlas.sqlite | --new | --sample] [--as-of YYYY-MM-DD] [--owner NAME] [--take-over] [--perf-overlay]\n\n--open adds a pane to the right of the previous one; +slug adds it as a tab of the previous pane.\nLogs go to stderr and logs.log (ATLAS_LOG_FILE=path|off, RUST_LOG=filter, ATLAS_LOG_FILE_FILTER=filter); the status bar shows gpui's frame timing.",
                         [Route::slugs(), crate::nav::FirstDetail::slugs()].concat().join("|")
                     );
                     std::process::exit(0);
@@ -182,6 +216,9 @@ mod tests {
         assert!(!launch.perf_overlay, "the overlay is off unless asked for");
         assert!(Launch::parse(["--perf-overlay"].map(String::from)).perf_overlay);
         assert!(!Launch::parse(["--perf-overlay", "--no-perf-overlay"].map(String::from)).perf_overlay);
+        let panes = Launch::parse(["--screen", "today", "--open", "accounts", "--open", "+rules", "--open", "forecast", "--open", "nonsense"].map(String::from));
+        assert_eq!(panes.extra, vec![Route::Accounts, Route::ForecastPath], "unknown slugs are skipped");
+        assert_eq!(panes.stacked, vec![(1, Route::Rules)], "a +slug stacks onto the pane opened just before it");
         let empty = Launch::parse(["--new", "--viewer", "7", "--as-of", "2026-09-11"].map(String::from));
         assert_eq!(empty.start, Start::Empty);
         assert_eq!(empty.viewer_id, Some(7));

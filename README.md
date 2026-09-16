@@ -33,9 +33,17 @@ cargo test                      # engine unit tests, E01–E08 examples, store, 
 ```
 
 Options: `--theme light|dark`, `--size WxH`, `--screen <slug>` (see `atlas --help`),
-`--viewer a|b` (which fixture person is looking — private objects project to aggregates),
-`--perf-overlay` (show gpui's frame-time overlay, see below). With no household flag the app
-opens on **Welcome**: create a household, open a file, or explore the fictitious sample.
+`--open <slug>` (a further pane at launch, a new column at the right edge; `--open +<slug>`
+opens it as a tab of the pane before it; repeatable), `--viewer a|b` (which fixture person is
+looking — private objects project to aggregates), `--perf-overlay` (show gpui's frame-time
+overlay, see below). With no household flag the app opens on **Welcome**: create a household,
+open a file, or explore the fictitious sample.
+
+Every screen shows inside a **pane** of the window's workspace: panes split left/right and
+top/bottom, stack as tabs, and one pane is the active one the sidebar and the keyboard commands
+act on (`cmd-\`/`ctrl-\` split right, `cmd-shift-\` split below, `cmd-w`/`ctrl-w` close,
+`cmd-[`/`alt-left` back). The layout model lives in `crates/atlas-workspace`; the window's
+projection of it in `crates/atlas-app/src/workspace`.
 
 ## The screens
 
