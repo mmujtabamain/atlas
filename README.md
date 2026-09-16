@@ -40,10 +40,15 @@ overlay, see below). With no household flag the app opens on **Welcome**: create
 open a file, or explore the fictitious sample.
 
 Every screen shows inside a **pane** of the window's workspace: panes split left/right and
-top/bottom, stack as tabs, and one pane is the active one the sidebar and the keyboard commands
-act on (`cmd-\`/`ctrl-\` split right, `cmd-shift-\` split below, `cmd-w`/`ctrl-w` close,
-`cmd-[`/`alt-left` back). The layout model lives in `crates/atlas-workspace`; the window's
-projection of it in `crates/atlas-app/src/workspace`.
+top/bottom, stack as tabs, move by drag or keyboard, float in windows of their own, and one
+pane is the active one the launcher and the keyboard commands act on. The keys (`cmd` on
+macOS, `ctrl` elsewhere): `cmd-\` split right, `cmd-shift-\` split below, `cmd-shift-d`
+duplicate, `cmd-w` close, `cmd-shift-t` reopen the last closed pane, `cmd-alt-←↑→↓` focus the
+pane that way, `cmd-alt-]`/`[` next/previous pane, `cmd-alt-shift-←↑→↓` move the pane,
+`cmd-shift-enter` zoom, `cmd-[`/`alt-left` back, `cmd-shift-n` float, `cmd-z`/`cmd-shift-z`
+undo/redo the layout. The **Layout** menu saves and loads layouts and templates, arranges the
+open panes by a preset, and resets. The layout model lives in `crates/atlas-workspace`; the
+window's projection of it in `crates/atlas-app/src/workspace`.
 
 ## The screens
 

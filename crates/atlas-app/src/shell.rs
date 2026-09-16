@@ -236,10 +236,17 @@ impl Shell {
     /// presets, saving, and the reset.
     fn render_layout_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = self.workspace.clone();
-        let (undo, redo, current, can_save) = {
+        let (undo, redo, current, can_save, last_closed, zoomed) = {
             let view = self.workspace.read(cx);
             let history = view.history();
-            (history.undo_label().map(str::to_owned), history.redo_label().map(str::to_owned), view.current_layout_name().map(str::to_owned), view.can_save_layouts())
+            (
+                history.undo_label().map(str::to_owned),
+                history.redo_label().map(str::to_owned),
+                view.current_layout_name().map(str::to_owned),
+                view.can_save_layouts(),
+                view.recently_closed(cx).into_iter().next().map(|(_, title)| title),
+                view.is_zoomed(&atlas_workspace::WindowId::main(), cx),
+            )
         };
         let saved = self.workspace.update(cx, |workspace, _| workspace.saved_layouts());
         let label = match &current {
@@ -307,6 +314,30 @@ impl Shell {
                 redo_workspace.update(cx, |workspace, cx| {
                     workspace.redo(window, cx);
                 });
+            }))
+            .item(
+                PopupMenuItem::new(match &last_closed {
+                    Some(title) => format!("Reopen {title}"),
+                    None => "No closed pane to reopen".to_string(),
+                })
+                .icon(IconName::ArchiveRestore)
+                .disabled(last_closed.is_none())
+                .on_click({
+                    let workspace = workspace.clone();
+                    move |_, window, cx| {
+                        workspace.update(cx, |workspace, cx| {
+                            let _ = workspace.reopen_last_closed(window, cx);
+                        });
+                    }
+                }),
+            )
+            .item(PopupMenuItem::new(if zoomed { "Back from zoom" } else { "Zoom the active pane" }).icon(if zoomed { IconName::Minimize2 } else { IconName::Maximize2 }).on_click({
+                let workspace = workspace.clone();
+                move |_, window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        let _ = workspace.toggle_zoom(window, cx);
+                    });
+                }
             }))
             .separator()
             .item(PopupMenuItem::new("Reset layout").icon(IconName::RotateCcw).on_click(move |_, window, cx| {

@@ -89,7 +89,8 @@ use gpui_kit::*;
 
 use std::cell::{Cell, RefCell};
 
-use super::commands::{self, Back, ClosePane, DetachPane, FocusNextPane, SplitBelow, SplitRight};
+use super::commands;
+use atlas_workspace::focus::{self, Direction};
 use super::dock_targets::{self, Band, DragInFlight, Dragged, Outcome};
 use super::floating::FloatingView;
 use super::session::{self, SessionStore};
@@ -716,6 +717,151 @@ impl WorkspaceView {
         let current = self.active_pane().and_then(|active| order.iter().position(|pane| *pane == active)).unwrap_or(0);
         let next = order[(current + 1) % order.len()].clone();
         self.set_active_pane(&next, window, cx)
+    }
+
+    /// The previous pane in reading order becomes the active one (wrapping).
+    pub fn focus_previous_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<(), OpError> {
+        let order = self.panes_in_order();
+        if order.is_empty() {
+            return Err(OpError::EmptyWindow(WindowId::main()));
+        }
+        let current = self.active_pane().and_then(|active| order.iter().position(|pane| *pane == active)).unwrap_or(0);
+        let previous = order[(current + order.len() - 1) % order.len()].clone();
+        self.set_active_pane(&previous, window, cx)
+    }
+
+    /// The pane in `direction` from the active one (the neighbour sharing the
+    /// longest edge, in the same window) becomes the active one. `NoOp`
+    /// when there is none that way.
+    pub fn focus_direction(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) -> Result<(), OpError> {
+        let active = self.active_pane().ok_or(OpError::EmptyWindow(WindowId::main()))?;
+        let in_window = self.window_of_pane(&active);
+        let root = self.layout.window(&in_window).and_then(|layout| layout.root.as_ref()).ok_or_else(|| OpError::UnknownWindow(in_window.clone()))?;
+        match focus::neighbour(root, &active, direction) {
+            Some(next) => {
+                log::info!("workspace: focus {direction:?} from {active} → {next}");
+                self.set_active_pane(&next, window, cx)
+            }
+            None => {
+                log::info!("workspace: no pane {direction:?} of {active}");
+                Err(OpError::NoOp)
+            }
+        }
+    }
+
+    /// Moves the active pane one step in `direction`: beside its neighbour
+    /// there, over it when it already sits beside it, or to the window edge
+    /// when it has no neighbour that way. One history step, like a drop.
+    pub fn move_active(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) -> Result<(), OpError> {
+        let active = self.active_pane().ok_or(OpError::EmptyWindow(WindowId::main()))?;
+        let in_window = self.window_of_pane(&active);
+        let root = self.layout.window(&in_window).and_then(|layout| layout.root.as_ref()).ok_or_else(|| OpError::UnknownWindow(in_window.clone()))?;
+        let target = focus::move_direction_target(root, &active, direction).ok_or(OpError::NoOp)?;
+        log::info!("workspace: move {active} {direction:?} → {target:?}");
+        self.dock_pane(&active, &in_window, target, true, window, cx);
+        Ok(())
+    }
+
+    /// Opens the active pane again — same screen, same state — to its right.
+    pub fn duplicate_active(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<PaneId, OpError> {
+        let active = self.active_pane().ok_or(OpError::EmptyWindow(WindowId::main()))?;
+        self.duplicate_pane(&active, window, cx)
+    }
+
+    /// Opens `pane` again beside it (to the right), with the screen it shows
+    /// and the state of that screen — its scroll, its filters — copied. Unlike
+    /// a split, which opens the screen afresh.
+    pub fn duplicate_pane(&mut self, pane: &PaneId, window: &mut Window, cx: &mut Context<Self>) -> Result<PaneId, OpError> {
+        let stack = self.layout.stack_of(pane).ok_or_else(|| OpError::UnknownPane(pane.clone()))?;
+        self.sync_pane_definition(pane, cx);
+        let before = self.layout.clone();
+        let title = self.pane_route(pane, cx).map(Route::title).unwrap_or("pane");
+        let result = self.layout.duplicate_pane(pane, DockTarget::beside(stack, Side::Right));
+        match &result {
+            Ok(copy) => {
+                log::info!("workspace: duplicated pane {pane} as {copy}");
+                self.record(format!("Duplicate {title}"), before, cx);
+                self.sync_pane_entities(cx);
+                self.rebuild_area(window, cx);
+                self.focus_active(window, cx);
+                self.sync_chrome(cx);
+            }
+            Err(error) => log::warn!("workspace: duplicating pane {pane} refused: {error}"),
+        }
+        self.report(&result, window, cx);
+        result
+    }
+
+    /// Puts the most recently closed pane back where it was.
+    pub fn reopen_last_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<PaneId, OpError> {
+        let closed = self.closed.pop().ok_or(OpError::NoOp)?;
+        self.reopen_closed(closed, window, cx)
+    }
+
+    /// Puts back the remembered pane at `index` (oldest first) — a pick from
+    /// the list of recently closed panes.
+    pub fn reopen_closed_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> Result<PaneId, OpError> {
+        let closed = self.closed.take(index).ok_or(OpError::NoOp)?;
+        self.reopen_closed(closed, window, cx)
+    }
+
+    /// The remembered closed panes a menu can offer, newest first: the index
+    /// [`reopen_closed_at`](Self::reopen_closed_at) takes, and a title.
+    pub fn recently_closed(&self, cx: &App) -> Vec<(usize, SharedString)> {
+        let household = self.app.read(cx).household().clone();
+        let entries: Vec<&ClosedPane> = self.closed.iter().collect();
+        entries
+            .into_iter()
+            .enumerate()
+            .rev()
+            .map(|(index, closed)| {
+                let title = kinds::route_of(&closed.definition).map(|route| kinds::title_of(route, &household)).unwrap_or_else(|| kinds::label_of_unknown_kind(&closed.definition.kind).into());
+                (index, title)
+            })
+            .collect()
+    }
+
+    fn reopen_closed(&mut self, closed: ClosedPane, window: &mut Window, cx: &mut Context<Self>) -> Result<PaneId, OpError> {
+        let before = self.layout.clone();
+        let title = kinds::route_of(&closed.definition).map(Route::title).unwrap_or("pane");
+        let fallback = self.layout.active_window().map(WindowLayout::default_target).unwrap_or_else(|| DockTarget::edge(Side::Right));
+        let result = self.layout.reopen(closed.clone(), fallback);
+        match &result {
+            Ok(pane) => {
+                let _ = self.layout.set_active_pane(pane);
+                self.record(format!("Reopen {title}"), before, cx);
+                log::info!("workspace: reopened {pane} ({}); {} panes", closed.definition.kind, self.layout.panes.len());
+                self.sync_pane_entities(cx);
+                self.rebuild_area(window, cx);
+                self.focus_active(window, cx);
+                self.sync_chrome(cx);
+            }
+            Err(error) => {
+                log::warn!("workspace: reopening {} refused: {error}", closed.definition.kind);
+                // Refused, not lost: it stays the next one to reopen.
+                self.closed.record(closed);
+            }
+        }
+        self.report(&result, window, cx);
+        result
+    }
+
+    /// The active pane fills its window, or comes back to its place. A view
+    /// state of the window, not of the layout: any layout change ends it.
+    pub fn toggle_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<(), OpError> {
+        let active = self.active_pane().ok_or(OpError::EmptyWindow(WindowId::main()))?;
+        let group = self.panes.get(&active).and_then(|view| view.read(cx).group().cloned()).and_then(|group| group.upgrade()).ok_or_else(|| OpError::UnknownPane(active.clone()))?;
+        let in_window = self.window_of_pane(&active);
+        let zoomed = group.read(cx).is_zoomed();
+        log::info!("workspace: pane {active} {}", if zoomed { "back from zoom" } else { "zoomed" });
+        self.in_window(&in_window, window, cx, |window, cx| group.update(cx, |group, cx| group.toggle_zoom(window, cx)));
+        cx.notify();
+        Ok(())
+    }
+
+    /// True while a pane of `in_window` is zoomed.
+    pub fn is_zoomed(&self, in_window: &WindowId, cx: &App) -> bool {
+        self.area_of(in_window).is_some_and(|area| area.read(cx).is_zoomed())
     }
 
     /// Replaces a split's weights, in the model and then on screen.
@@ -1439,6 +1585,17 @@ impl WorkspaceView {
         self.layouts.current = None;
         let route = self.active_route(cx).unwrap_or(Route::Today);
         let before = self.layout.clone();
+        // The panes the reset drops can be put back one by one.
+        let active = self.active_pane();
+        for pane in self.panes_in_order() {
+            if Some(&pane) == active.as_ref() {
+                continue;
+            }
+            self.sync_pane_definition(&pane, cx);
+            if let Some(definition) = self.layout.pane(&pane).cloned() {
+                self.closed.record(ClosedPane { definition, window: WindowId::main(), stack: None, index: 0, neighbour: None, neighbour_side: None, closed_at: chrono::Utc::now() });
+            }
+        }
         let mut fresh = WorkspaceLayout::new("Main").with_scope(before.scope.clone());
         fresh.set_limits(*before.limits());
         self.layout = fresh;
@@ -1970,6 +2127,41 @@ impl WorkspaceView {
         self.report(&result, window, cx);
     }
 
+    pub(crate) fn command_focus_previous(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.focus_previous_pane(window, cx);
+        self.report(&result, window, cx);
+    }
+
+    /// No neighbour that way is not an error worth a toast.
+    pub(crate) fn command_focus_direction(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
+        match self.focus_direction(direction, window, cx) {
+            Ok(()) | Err(OpError::NoOp) => {}
+            other => self.report(&other, window, cx),
+        }
+    }
+
+    pub(crate) fn command_move_direction(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
+        match self.move_active(direction, window, cx) {
+            Ok(()) | Err(OpError::NoOp) => {}
+            other => self.report(&other, window, cx),
+        }
+    }
+
+    pub(crate) fn command_duplicate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.duplicate_active(window, cx);
+    }
+
+    pub(crate) fn command_reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(OpError::NoOp) = self.reopen_last_closed(window, cx) {
+            window.push_notification("No closed pane to reopen.", cx);
+        }
+    }
+
+    pub(crate) fn command_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.toggle_zoom(window, cx);
+        self.report(&result, window, cx);
+    }
+
     pub(crate) fn command_back(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         if self.back_active(cx).is_some() {
             self.sync_chrome(cx);
@@ -2088,13 +2280,8 @@ impl Render for WorkspaceView {
             }))
             .capture_any_mouse_up(cx.listener(|this, _, _, cx| this.end_drag_overlay(cx)))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, event: &MouseUpEvent, window, cx| this.drag_released_outside(event.position, window, cx)))
-            .child(recorder)
-            .on_action(cx.listener(|this, _: &DetachPane, window, cx| this.command_detach(window, cx)))
-            .on_action(cx.listener(|this, _: &SplitRight, window, cx| this.command_split(Side::Right, window, cx)))
-            .on_action(cx.listener(|this, _: &SplitBelow, window, cx| this.command_split(Side::Bottom, window, cx)))
-            .on_action(cx.listener(|this, _: &ClosePane, window, cx| this.command_close(window, cx)))
-            .on_action(cx.listener(|this, _: &FocusNextPane, window, cx| this.command_focus_next(window, cx)))
-            .on_action(cx.listener(|this, _: &Back, window, cx| this.command_back(window, cx)));
+            .child(recorder);
+        let root = commands::attach(root, cx.entity());
         if has_panes { root.child(self.area.clone()).children(overlay) } else { root.child(self.render_empty(cx)) }
     }
 }

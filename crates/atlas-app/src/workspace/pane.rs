@@ -350,12 +350,16 @@ impl Panel for PaneView {
     fn dropdown_menu(&mut self, menu: PopupMenu, _: &mut Window, cx: &mut Context<Self>) -> PopupMenu {
         let split_right = self.pane_command(|workspace, id, window, cx| workspace.split_pane_from_menu(id, Side::Right, window, cx));
         let split_below = self.pane_command(|workspace, id, window, cx| workspace.split_pane_from_menu(id, Side::Bottom, window, cx));
+        let duplicate = self.pane_command(|workspace, id, window, cx| {
+            let _ = workspace.duplicate_pane(id, window, cx);
+        });
         let back = self.pane_command(|workspace, id, window, cx| workspace.back_pane_from_menu(id, window, cx));
         let detach = self.pane_command(|workspace, id, window, cx| workspace.move_pane_from_menu(id, None, window, cx));
         let to_main = self.pane_command(|workspace, id, window, cx| workspace.move_pane_from_menu(id, Some(atlas_workspace::WindowId::main()), window, cx));
         let in_floating_window = self.workspace.upgrade().is_some_and(|workspace| workspace.read(cx).layout().window_id_of(&self.id).is_some_and(|window| window != atlas_workspace::WindowId::main()));
         menu.item(PopupMenuItem::new("Split right").icon(gpui_kit::assets::IconName::SquareSplitHorizontal).on_click(split_right))
             .item(PopupMenuItem::new("Split below").icon(gpui_kit::assets::IconName::SquareSplitVertical).on_click(split_below))
+            .item(PopupMenuItem::new("Duplicate").icon(gpui_kit::assets::IconName::Copy).on_click(duplicate))
             .item(PopupMenuItem::new("Move to a new window").icon(gpui_kit::assets::IconName::AppWindow).on_click(detach))
             .when(in_floating_window, |menu| menu.item(PopupMenuItem::new("Move to the main window").icon(gpui_kit::assets::IconName::PanelLeftClose).on_click(to_main)))
             .when(!self.history.is_empty(), |menu| menu.item(PopupMenuItem::new("Back").icon(gpui_kit::assets::IconName::ArrowLeft).on_click(back)))

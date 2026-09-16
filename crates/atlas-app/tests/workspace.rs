@@ -1307,8 +1307,8 @@ fn the_title_bar_opens_settings_and_resets_the_layout(cx: &mut TestAppContext) {
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         // Without a data directory nothing can be saved, so the menu is the
-        // five presets, ─, Undo, Redo, ─, Reset layout.
-        window.within("popup-menu").click(9usize, cx);
+        // five presets, ─, Undo, Redo, Reopen, Zoom, ─, Reset layout.
+        window.within("popup-menu").click(11usize, cx);
     })
     .unwrap();
     settle(cx, window);
@@ -1317,6 +1317,8 @@ fn the_title_bar_opens_settings_and_resets_the_layout(cx: &mut TestAppContext) {
     let only = active(cx, &workspace);
     assert_eq!(cx.update(|cx| workspace.read(cx).pane_route(&only, cx)), Some(Route::Settings));
     assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Reset layout"));
+    let dropped: Vec<String> = cx.update(|cx| workspace.read(cx).recently_closed(cx)).into_iter().map(|(_, title)| title.to_string()).collect();
+    assert_eq!(dropped, vec!["Accounts".to_string(), "Today".to_string()], "the panes the reset dropped can be reopened, newest first");
     // And undo brings the three panes back.
     drive(cx, window, &workspace, |workspace, window, cx| assert!(workspace.undo(window, cx)));
     assert_eq!(pane_count(cx, &workspace), 3);
@@ -1870,4 +1872,174 @@ fn every_route_round_trips_through_the_pane_registry() {
     }
     let account = Route::Account(atlas_core::ids::AccountId::new(3));
     assert_eq!(kinds::route_of(&kinds::definition_of(account)), Some(account));
+}
+
+// ----- workspace commands: keys, reopen, zoom, duplicate ------------------------------------
+
+#[gpui_kit::test]
+fn the_keyboard_moves_the_focus_between_panes_by_direction(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = three_columns(cx);
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.set_active_pane(&order[0], window, cx).expect("active"));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-alt-right", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(active(cx, &workspace), order[1], "the pane to the right is the active one");
+    cx.update_window(window, |_, window, cx| window.press("ctrl-alt-right", cx)).unwrap();
+    settle(cx, window);
+    assert_eq!(active(cx, &workspace), order[2]);
+    // Nothing further right: the focus stays, without a toast.
+    cx.update_window(window, |_, window, cx| window.press("ctrl-alt-right", cx)).unwrap();
+    settle(cx, window);
+    assert_eq!(active(cx, &workspace), order[2]);
+    cx.update_window(window, |_, window, cx| assert!(window.notifications(cx).is_empty(), "no toast for a direction with nothing there")).unwrap();
+    cx.update_window(window, |_, window, cx| window.press("ctrl-alt-left", cx)).unwrap();
+    settle(cx, window);
+    assert_eq!(active(cx, &workspace), order[1]);
+    // Reading order, both ways, wrapping.
+    cx.update_window(window, |_, window, cx| window.press("ctrl-alt-[", cx)).unwrap();
+    settle(cx, window);
+    assert_eq!(active(cx, &workspace), order[0]);
+    cx.update_window(window, |_, window, cx| window.press("ctrl-alt-[", cx)).unwrap();
+    settle(cx, window);
+    assert_eq!(active(cx, &workspace), order[2], "previous from the first wraps to the last");
+    cx.update_window(window, |_, window, cx| window.press("ctrl-alt-]", cx)).unwrap();
+    settle(cx, window);
+    assert_eq!(active(cx, &workspace), order[0], "next from the last wraps to the first");
+}
+
+#[gpui_kit::test]
+fn the_keyboard_moves_the_active_pane_and_undo_brings_it_back(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = three_columns(cx);
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.set_active_pane(&order[0], window, cx).expect("active"));
+    let jumped = vec![order[1].clone(), order[0].clone(), order[2].clone()];
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-alt-shift-right", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(cx.update(|cx| workspace.read(cx).panes_in_order()), jumped, "the pane jumped over its neighbour");
+    assert_eq!(active(cx, &workspace), order[0], "and stays the active one");
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Move pane"));
+    cx.update_window(window, |_, window, cx| window.press("ctrl-alt-shift-down", cx)).unwrap();
+    settle(cx, window);
+    assert_eq!(cx.update(|cx| workspace.read(cx).panes_in_order()), vec![order[1].clone(), order[2].clone(), order[0].clone()], "no neighbour below: it went to the bottom edge instead");
+    assert_eq!(grid(cx, &workspace, 1, 2), "1\n3", "…so the pane spans the bottom (digits are reading-order positions)");
+    cx.update_window(window, |_, window, cx| window.press("ctrl-z", cx)).unwrap();
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| window.press("ctrl-z", cx)).unwrap();
+    settle(cx, window);
+    assert_eq!(cx.update(|cx| workspace.read(cx).panes_in_order()), order, "ctrl-z twice undoes both moves");
+    cx.update_window(window, |_, window, cx| window.press("ctrl-shift-z", cx)).unwrap();
+    settle(cx, window);
+    assert_eq!(cx.update(|cx| workspace.read(cx).panes_in_order()), jumped, "ctrl-shift-z redoes the first");
+}
+
+#[gpui_kit::test]
+fn a_closed_pane_is_reopened_where_it_was_by_key_and_from_the_add_menu(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = three_columns(cx);
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.close_pane(&order[1], window, cx).expect("close"));
+    assert_eq!(cx.update(|cx| workspace.read(cx).panes_in_order()), vec![order[0].clone(), order[2].clone()]);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-shift-t", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    let now = cx.update(|cx| workspace.read(cx).panes_in_order());
+    assert_eq!(now.len(), 3);
+    assert_eq!((&now[0], &now[2]), (&order[0], &order[2]), "the pane is back in the middle, as a new pane");
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Reopen Accounts"));
+    let reopened = active(cx, &workspace);
+    assert_eq!(reopened, now[1]);
+    cx.update(|cx| assert_eq!(workspace.read(cx).pane_route(&reopened, cx), Some(Route::Accounts)));
+    assert!(cx.update(|cx| workspace.read(cx).recently_closed(cx).is_empty()), "reopened panes leave the list");
+    // Nothing left to reopen: a toast says so.
+    cx.update_window(window, |_, window, cx| window.press("ctrl-shift-t", cx)).unwrap();
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| assert!(!window.notifications(cx).is_empty(), "a toast for nothing to reopen")).unwrap();
+    // Close two; the `+` menu lists them newest first and reopens the chosen one.
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.close_pane(&order[2], window, cx).expect("close"));
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.close_pane(&reopened, window, cx).expect("close"));
+    assert_eq!(pane_count(cx, &workspace), 1);
+    let listed = cx.update(|cx| workspace.read(cx).recently_closed(cx));
+    assert_eq!(listed.iter().map(|(_, title)| title.to_string()).collect::<Vec<_>>(), vec!["Accounts".to_string(), "Rules".to_string()]);
+    cx.update_window(window, |_, window, cx| window.click("launcher-add", cx)).unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        // Eight destinations and Settings, ─, the heading, then Accounts and Rules & taxes.
+        window.within("popup-menu").click(12usize, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 2);
+    let back = active(cx, &workspace);
+    cx.update(|cx| assert_eq!(workspace.read(cx).pane_route(&back, cx), Some(Route::Rules), "the second entry was Rules & taxes"));
+    assert_eq!(cx.update(|cx| workspace.read(cx).recently_closed(cx).len()), 1, "Accounts is still offered");
+}
+
+#[gpui_kit::test]
+fn the_active_pane_zooms_to_the_window_and_comes_back(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("pane-1").visible() && window.find("pane-2").visible());
+        window.press("ctrl-shift-enter", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert!(cx.update(|cx| workspace.read(cx).is_zoomed(&atlas_workspace::WindowId::main(), cx)));
+    assert_eq!(grid(cx, &workspace, 2, 1), "12", "zoom is not a layout change");
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("pane-2").visible(), "the active pane fills the window");
+        assert!(window.try_find("pane-1").is_none_or(|pane| !pane.visible()), "the other pane is out of sight");
+        window.press("ctrl-shift-enter", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert!(!cx.update(|cx| workspace.read(cx).is_zoomed(&atlas_workspace::WindowId::main(), cx)));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("pane-1").visible() && window.find("pane-2").visible());
+    })
+    .unwrap();
+    assert_eq!(grid(cx, &workspace, 2, 1), "12");
+    assert!(!history_labels(cx, &workspace).iter().any(|label| label.contains("oom")), "zooming leaves no history");
+}
+
+#[gpui_kit::test]
+fn a_pane_is_duplicated_beside_itself_with_its_state(cx: &mut TestAppContext) {
+    let (window, app, workspace) = today_and_accounts(cx);
+    let accounts = active(cx, &workspace);
+    navigate(cx, window, &app, Route::Earmarks);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-shift-d", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 3);
+    let copy = active(cx, &workspace);
+    assert_ne!(copy, accounts);
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    assert_eq!(order[1], accounts);
+    assert_eq!(order[2], copy, "the copy sits to the right of the original");
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.pane_route(&copy, cx), Some(Route::Earmarks), "the copy shows what the original showed");
+        let history = |pane: &PaneId| workspace.pane(pane).map(|view| view.read(cx).history().to_vec());
+        assert_eq!(history(&copy), Some(vec![Route::Accounts]), "Back history included");
+    });
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some(format!("Duplicate {}", Route::Earmarks.title()).as_str()));
+    drive(cx, window, &workspace, |workspace, window, cx| assert!(workspace.undo(window, cx)));
+    assert_eq!(pane_count(cx, &workspace), 2);
 }

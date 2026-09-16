@@ -28,7 +28,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
-use super::commands::{self, Back, ClosePane, DetachPane, FocusNextPane, SplitBelow, SplitRight};
+use super::commands;
 use super::view::WorkspaceView;
 
 /// The root view of a floating window.
@@ -149,33 +149,10 @@ impl Render for FloatingView {
                     workspace.update(cx, |workspace, cx| workspace.drag_released_outside(position, window, cx));
                 }
             })
-            .on_action({
-                let workspace = workspace.clone();
-                move |_: &SplitRight, window, cx| workspace.update(cx, |workspace, cx| workspace.command_split(atlas_workspace::Side::Right, window, cx))
-            })
-            .on_action({
-                let workspace = workspace.clone();
-                move |_: &SplitBelow, window, cx| workspace.update(cx, |workspace, cx| workspace.command_split(atlas_workspace::Side::Bottom, window, cx))
-            })
-            .on_action({
-                let workspace = workspace.clone();
-                move |_: &ClosePane, window, cx| workspace.update(cx, |workspace, cx| workspace.command_close(window, cx))
-            })
-            .on_action({
-                let workspace = workspace.clone();
-                move |_: &FocusNextPane, window, cx| workspace.update(cx, |workspace, cx| workspace.command_focus_next(window, cx))
-            })
-            .on_action({
-                let workspace = workspace.clone();
-                move |_: &Back, window, cx| workspace.update(cx, |workspace, cx| workspace.command_back(window, cx))
-            })
-            .on_action({
-                let workspace = workspace.clone();
-                move |_: &DetachPane, window, cx| workspace.update(cx, |workspace, cx| workspace.command_detach(window, cx))
-            })
             .child(recorder)
             .child(self.area.clone())
             .children(overlay);
+        let body = commands::attach(body, workspace);
         v_flex()
             .size_full()
             .bg(cx.theme().background)

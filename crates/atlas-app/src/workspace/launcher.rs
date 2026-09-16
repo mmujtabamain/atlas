@@ -50,6 +50,9 @@ pub const LAUNCHER_HEIGHT: Pixels = px(36.);
 /// The file the arrangement is kept in, inside the app's data directory.
 pub const CONFIG_FILE: &str = "launcher.json";
 
+/// How many recently closed panes the `+` menu offers.
+const RECENTLY_CLOSED_OFFERED: usize = 5;
+
 /// What a drag from the launcher carries: the screen to open. Wrapped in the
 /// dock engine's [`AnyDrag`] so its tab groups accept the drop and report it
 /// through `DockEvent::DragDrop`; the workspace's own docking bands read the
@@ -351,13 +354,26 @@ impl LauncherView {
         Some(deferred(anchored().position(open.position).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(gpui_kit::base::POPUP_PRIORITY).into_any_element())
     }
 
-    /// The `+` button: every screen, opened in the active stack.
+    /// The `+` button: every screen, opened in the active stack, and the
+    /// panes closed most recently, put back where they were.
     fn render_add(&self) -> impl IntoElement {
         let workspace = self.workspace.clone();
-        Button::new("launcher-add").ghost().compact().small().icon(IconName::Plus).tooltip("Add a pane").dropdown_menu(move |menu, _, _| {
-            LauncherConfig::default_order().into_iter().chain(std::iter::once(Destination::Settings)).fold(menu, |menu, destination| {
+        Button::new("launcher-add").ghost().compact().small().icon(IconName::Plus).tooltip("Add a pane, or reopen a closed one").dropdown_menu(move |menu, _, cx| {
+            let menu = LauncherConfig::default_order().into_iter().chain(std::iter::once(Destination::Settings)).fold(menu, |menu, destination| {
                 let workspace = workspace.clone();
                 menu.item(PopupMenuItem::new(destination.label()).icon(destination.icon()).on_click(move |_, window, cx| Self::open(&workspace, destination, Intent::Open, window, cx)))
+            });
+            let recently_closed: Vec<(usize, SharedString)> = workspace.read(cx).recently_closed(cx);
+            if recently_closed.is_empty() {
+                return menu;
+            }
+            recently_closed.into_iter().take(RECENTLY_CLOSED_OFFERED).fold(menu.separator().label("Recently closed"), |menu, (index, title)| {
+                let workspace = workspace.clone();
+                menu.item(PopupMenuItem::new(format!("Reopen {title}")).icon(IconName::ArchiveRestore).on_click(move |_, window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        let _ = workspace.reopen_closed_at(index, window, cx);
+                    });
+                }))
             })
         })
     }
