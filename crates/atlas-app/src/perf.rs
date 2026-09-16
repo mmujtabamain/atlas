@@ -15,7 +15,7 @@
 //!    gpui's phases: `layout` (request_layout — this is where `RenderOnce`
 //!    components such as Button, Table, Tag build their own element trees),
 //!    `taffy` (the flexbox solve), `prepaint` (hitboxes, element state) and
-//!    `paint` (quads, glyphs). The sidebar and the content are *cached views*
+//!    `paint` (quads, glyphs). The launcher and the content are *cached views*
 //!    (`shell`): gpui renders, lays out and prepaints a cached view inside the
 //!    `prepaint` phase, and only when the view was notified — so a screen's
 //!    build and flexbox solve show up under `prepaint`, and a frame that

@@ -13,7 +13,7 @@
 //! |---|---|
 //! | a pane opened (`open`, `split_*`), a layout installed (undo, redo, a new household) | [`WorkspaceView::rebuild_area`]: `set_center` with the model's tree, slot sizes = weights × the area's extent; pane entities survive, so their scroll and history do |
 //! | a pane closed | `DockArea::remove_panel` — the engine collapses the emptied group exactly as the model did |
-//! | the active pane changed | the pane's tab is selected in its group (`TabGroup::select_tab`); the pane is focused; the sidebar follows through `AtlasApp::set_route_for_chrome` |
+//! | the active pane changed | the pane's tab is selected in its group (`TabGroup::select_tab`); the pane is focused; the launcher follows through `AtlasApp::set_route_for_chrome` |
 //! | a split resized from the model | `rebuild_area` (the engine has no public "set these sizes") |
 //!
 //! | engine change | how the model follows |
@@ -496,7 +496,11 @@ impl WorkspaceView {
             self.launch_panes = None;
             return;
         }
-        let first = match self.app.read(cx).route() {
+        // The first household opens what `--screen` asked for; a household
+        // opened later starts at Today. Either way it is a request to the
+        // resolver, not a route the app owns.
+        let first = if self.launch_panes.is_some() { self.app.read(cx).launch_route() } else { Route::Today };
+        let first = match first {
             Route::Welcome => Route::Today,
             route => route,
         };
@@ -689,7 +693,7 @@ impl WorkspaceView {
     }
 
     /// Makes `pane` the one commands act on: active in the model, its tab
-    /// selected in its group, focused, and the sidebar following its route.
+    /// selected in its group, focused, and the launcher following its route.
     pub fn set_active_pane(&mut self, pane: &PaneId, window: &mut Window, cx: &mut Context<Self>) -> Result<(), OpError> {
         let changed = self.layout.active_pane().as_ref() != Some(pane);
         self.layout.set_active_pane(pane)?;
@@ -2093,7 +2097,7 @@ impl WorkspaceView {
         }
     }
 
-    /// The sidebar highlight and the frame label follow the active pane.
+    /// The launcher highlight and the frame label follow the active pane.
     /// Never called while the app is being updated (see the module docs).
     pub(crate) fn sync_chrome(&self, cx: &mut Context<Self>) {
         if let Some(route) = self.active_route(cx) {
@@ -2255,7 +2259,7 @@ impl Render for WorkspaceView {
         self.renders += 1;
         let has_panes = self.layout.main_window().is_some_and(|main| !main.is_empty());
         // If the drag ended anywhere the overlay did not see (a release over
-        // the sidebar, a drop the engine took), the next frame clears it.
+        // the launcher, a drop the engine took), the next frame clears it.
         if self.drag.is_some() && !cx.has_active_drag() {
             self.drag = None;
         }

@@ -52,7 +52,8 @@ window's projection of it in `crates/atlas-app/src/workspace`.
 
 ## The screens
 
-Eight destinations in the sidebar, each with its own tabs. Details are routes of their own and
+Eight destinations on the launcher strip, each with its own tabs, and every one opens as a pane
+(click: in the active pane; Shift-click or a drag from the launcher: a new pane). Details are routes of their own and
 carry the object's id, which a command line cannot name — so `--screen person`, `company`,
 `account`, `rule` and `series-detail` open the **first** record of that kind the chosen viewer
 may see, and the register instead when the household has none. A record hidden from the viewer
@@ -91,9 +92,9 @@ turns it on for a session that needs it (it is ~40 MB an hour while scrolling, w
 is off by default).
 
 - `build` — time in the root view's render (title bar, status bar; small). `draw≈` — build +
-  gpui layout + paint, measured to a probe painted last in the tree. The sidebar and the screen
-  are cached views: gpui rebuilds them inside its `prepaint` phase only when they were notified,
-  and a frame that reused the screen (a hover in the sidebar, typing in a dialog, a toast) says
+  gpui layout + paint, measured to a probe painted last in the tree. The launcher, the workspace
+  and each pane are cached views: gpui rebuilds them inside its `prepaint` phase only when they were notified,
+  and a frame that reused the screen (a hover in the launcher, typing in a dialog, a toast) says
   `content(cached)` instead of `content(render=…)`. `gpui draw` — gpui's own `Window::draw`
   histogram (the `profiler` feature), summarised once a second while frames happen.
 - The **status bar** counter is gpui's own reading, refreshed once a second from its profiler

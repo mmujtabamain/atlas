@@ -2230,3 +2230,23 @@ fn a_floating_window_saved_off_every_display_is_restored_within_one(cx: &mut Tes
     .unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[gpui_kit::test]
+fn a_launch_naming_a_kind_of_record_opens_the_first_one_the_viewer_may_see(cx: &mut TestAppContext) {
+    let mut launch = sample(Route::Accounts);
+    launch.detail = Some(atlas_app::nav::FirstDetail::Account);
+    let (handle, app, workspace) = open_workspace(cx, launch);
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 1);
+    let only = active(cx, &workspace);
+    let route = cx.update(|cx| workspace.read(cx).pane_route(&only, cx)).expect("a route");
+    assert!(matches!(route, Route::Account(_)), "the first account, as a pane: {route:?}");
+    cx.update(|cx| assert_eq!(app.read(cx).launch_route(), route, "what the launch resolved to"));
+    cx.update(|cx| assert_eq!(app.read(cx).route(), route, "and what the chrome reflects"));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-account").visible());
+    })
+    .unwrap();
+}

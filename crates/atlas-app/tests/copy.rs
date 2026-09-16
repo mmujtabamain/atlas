@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use atlas_app::models::Section;
+use atlas_app::nav::{Destination, Route};
 use atlas_core::authz::Viewer;
 use atlas_core::forecast::{Case, ForecastOptions, forecast};
 use atlas_core::ids::EntityRef;
@@ -136,11 +136,11 @@ fn rendered_texts(household: &Household, viewer: Viewer) -> Vec<(String, String)
     let mut texts: Vec<(String, String)> = Vec::new();
     let mut push = |what: &str, text: String| texts.push((what.to_string(), text));
 
-    for section in Section::ALL {
-        push("section label", section.label().to_string());
+    for destination in Destination::GROUPS.iter().flat_map(|group| group.iter()) {
+        push("destination label", destination.label().to_string());
     }
-    for (group, _) in Section::GROUPS {
-        push("sidebar group", group.to_string());
+    for route in Route::slugs().iter().filter_map(|slug| Route::from_slug(slug)) {
+        push("route title", route.title().to_string());
     }
     for class in MoneyClass::ALL {
         push("money class", format!("{} — {}", class.label(), class.description()));

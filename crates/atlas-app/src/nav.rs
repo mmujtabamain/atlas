@@ -27,7 +27,7 @@ pub enum Destination {
 }
 
 impl Destination {
-    /// Sidebar groups, in order; the group breaks are visual separators.
+    /// Launcher groups, in order; the group breaks are visual separators.
     pub const GROUPS: [&'static [Destination]; 3] = [
         &[Destination::Today, Destination::Decisions, Destination::Forecast],
         &[Destination::Accounts, Destination::Activity, Destination::Household],

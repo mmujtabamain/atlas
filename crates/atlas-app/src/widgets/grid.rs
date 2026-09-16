@@ -293,7 +293,7 @@ pub fn sync(grid: &Grid, rows: &Rows, cx: &mut App) {
 }
 
 /// The width a register's columns are laid out to fill: the content column of
-/// the default 1600px window, less the sidebar and the page's own padding.
+/// the default 1600px window, less the pane's own padding.
 ///
 /// A `DataTable` column is a fixed width — there is no grow — so a set of
 /// columns that falls short of this leaves a headerless empty column at the

@@ -1,7 +1,7 @@
 //! Welcome — no household is open — and the viewer gate that covers content
 //! until "Who is looking?" is answered.
 //!
-//! Both are whole-window surfaces with no sidebar, so they are laid out the
+//! Both are whole-window surfaces with no launcher, so they are laid out the
 //! same way: one centred block carrying the only decision there is to make,
 //! and one quiet line at the foot of the window saying what kind of program
 //! this is. The three ways in are the block; everything else supports them.

@@ -314,7 +314,7 @@ pub fn render(app: &AtlasApp, overview: &HouseholdOverview, household: &Househol
         )
         // One row: what the household is made of, and the sheet that reads it
         // out in full. The three registers stay reachable from here because
-        // they are this band's own commands, not the sidebar's.
+        // they are this band's own commands, not the launcher's.
         .child(
             section("today-members", "Household members and accounts")
                 .badge(membership_summary(overview))

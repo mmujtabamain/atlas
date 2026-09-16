@@ -35,10 +35,13 @@ front end was rebuilt from that design. The engine is untouched.
 
 What changed for a reader of this repository:
 
-- **Navigation.** Fourteen flat sections became eight sidebar destinations with their own tabs
+- **Navigation.** Fourteen flat sections became eight destinations with their own tabs
   and addressable details (`crates/atlas-app/src/nav.rs` is the whole map: `Destination`,
-  `Route`, every slug and its legacy aliases). `crates/atlas-app/src/screens/` holds one
-  module per workspace; `crates/atlas-app/src/models/` keeps the derived models they read.
+  `Route`, every slug and its legacy aliases). Since the workspace rebuild every screen is a
+  **pane**: the launcher strip opens them, the workspace (`crates/atlas-app/src/workspace/`,
+  model in `crates/atlas-workspace`) arranges them, and no view owns a route of its own any
+  more — `AtlasApp` keeps only the route the chrome reflects. `crates/atlas-app/src/screens/`
+  holds one module per destination; `crates/atlas-app/src/models/` keeps the derived models they read.
 - **First experience.** The app opens on Welcome (create / open / explore the sample) and asks
   who is looking before showing any figure; the sample is never loaded behind the chooser.
 - **Shared compositions.** `widgets/figure.rs` (explainable figures, now with a compact variant
@@ -70,8 +73,9 @@ Test suite: `crates/atlas-core/src/*` unit tests (money, provenance, liquidity, 
 forecast, assumptions, sensitivity, tax, rules, scenario, decision, authz, risk),
 `crates/atlas-core/tests/examples.rs` (E01–E08), `crates/atlas-store` (round trip, backups,
 lock, schema), `crates/atlas-app/tests/ui.rs` (gpui-kit `test-support` integration tests: the welcome and
-viewer gate, the sidebar and workspace tabs, one or more per workspace, every route for both
-viewers, the file round trip, and the view-cache and lazy-model guarantees).
+viewer gate, the launcher and the tabs, every route for both viewers, the file round trip, and
+the view-cache and lazy-model guarantees) and `crates/atlas-app/tests/workspace.rs` (the panes:
+splits, drags and drops, floating windows, sessions, saved layouts, keys, hardening).
 
 ## Monitoring
 

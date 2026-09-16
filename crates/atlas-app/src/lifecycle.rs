@@ -170,7 +170,6 @@ impl AtlasApp {
         self.selected_account = None;
         self.selected_company = None;
         self.selected_person = None;
-        self.history.clear();
         self.last_result = None;
         self.route = Route::Today;
         self.reset_decision_state();
@@ -199,7 +198,6 @@ impl AtlasApp {
         self.dirty = false;
         self.lock_holder = None;
         self.route = Route::Welcome;
-        self.history.clear();
         self.last_result = None;
         self.refresh_derived();
         cx.notify();

@@ -1,6 +1,6 @@
 //! Figure meanings — the reference sheet that explains every tag a figure
 //! can carry. Reachable from any tag, from the calculation sheet and from the
-//! sidebar footer; it opens on the family and term that was clicked.
+//! title bar; it opens on the family and term that was clicked.
 
 use atlas_core::model::Hardness;
 use atlas_core::vocab::{Certainty, MoneyClass, ResultStrength};

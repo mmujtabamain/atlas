@@ -81,10 +81,15 @@ use gpui_kit::component::{
 pub struct AtlasApp {
     pub(crate) household: Household,
     pub(crate) viewer: Viewer,
-    /// The surface on show.
+    /// The route the chrome reflects — the launcher highlight, the frame
+    /// label, the frame timing's name: the active pane's route while a
+    /// household is usable, Welcome otherwise. Panes own what is on show;
+    /// this is only what the shell says about it.
     pub(crate) route: Route,
-    /// Routes visited before the current one, newest last (for "Back to …").
-    pub(crate) history: Vec<Route>,
+    /// What `--screen` asked for, resolved against the household (a detail
+    /// slug names the first record the viewer may see). The workspace opens
+    /// it as its first pane, through the resolver like any other request.
+    launch_route: Route,
     /// Whether a household is open at all; `false` shows Welcome.
     pub(crate) opened: bool,
     /// The fictitious sample is loaded (shell marker, fixed horizon).
@@ -519,11 +524,11 @@ impl AtlasApp {
         let viewer_pending = opened && !explicit_viewer && household.people.len() > 1;
         // `--screen person` names a kind of record, not one record; only here
         // is there a household and a viewer to pick the first one they may see.
-        let route = match (opened, launch.detail) {
-            (false, _) => Route::Welcome,
-            (true, Some(detail)) => detail.resolve(&household, viewer),
-            (true, None) => launch.route,
+        let launch_route = match launch.detail {
+            Some(detail) if opened => detail.resolve(&household, viewer),
+            _ => launch.route,
         };
+        let route = if opened { launch_route } else { Route::Welcome };
         let horizon = household.as_of.checked_add_months(Months::new(12)).unwrap_or(fixtures::default_horizon()).max(fixtures::default_horizon().min(household.as_of.checked_add_months(Months::new(12)).unwrap_or(household.as_of)));
         let horizon = if launch.start == Start::Sample { fixtures::default_horizon() } else { horizon };
         for notice in &resolved.notices {
@@ -568,7 +573,7 @@ impl AtlasApp {
             household,
             viewer,
             route,
-            history: Vec::new(),
+            launch_route,
             opened,
             is_sample,
             viewer_pending,
@@ -1881,49 +1886,42 @@ impl AtlasApp {
     }
 
     /// Opens `route` in the active pane, which remembers where it came from
-    /// for "Back to …". Without a workspace (this view rendering the route
-    /// itself) the view keeps that history.
+    /// for "Back to …". A link on a screen calls this; the pane does the
+    /// rest. Without a usable workspace (Welcome, the viewer gate) there is
+    /// no pane to open it in, which is logged and nothing else.
     pub fn navigate(&mut self, route: Route, cx: &mut Context<Self>) {
-        if let Some(workspace) = self.usable_workspace() {
-            if self.route != route {
-                log::info!("navigate: {} → {} (active pane)", self.route.slug(), route.slug());
-            }
-            // The chrome (launcher highlight, frame label) follows at once; the
-            // workspace only changes the pane and never calls back into this
-            // view, which is being updated right now.
-            self.route = route;
-            workspace.update(cx, |workspace, cx| workspace.navigate_active(route, cx));
-            cx.notify();
+        let Some(workspace) = self.usable_workspace() else {
+            log::warn!("navigate: {} asked while no workspace shows panes; ignored", route.slug());
             return;
-        }
+        };
         if self.route != route {
-            log::info!("navigate: {} → {}", self.route.slug(), route.slug());
-            if self.route != Route::Welcome {
-                self.history.push(self.route);
-                if self.history.len() > 32 {
-                    self.history.remove(0);
-                }
-            }
-            self.route = route;
+            log::info!("navigate: {} → {} (active pane)", self.route.slug(), route.slug());
+        }
+        // The chrome (launcher highlight, frame label) follows at once; the
+        // workspace only changes the pane and never calls back into this
+        // view, which is being updated right now.
+        self.route = route;
+        workspace.update(cx, |workspace, cx| workspace.navigate_active(route, cx));
+        cx.notify();
+    }
+
+    /// Returns to the route the active pane showed before.
+    pub fn go_back(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace) = self.usable_workspace() else {
+            log::warn!("navigate: back asked while no workspace shows panes; ignored");
+            return;
+        };
+        if let Some(target) = workspace.update(cx, |workspace, cx| workspace.back_active(cx)) {
+            log::info!("navigate: back {} → {} (active pane)", self.route.slug(), target.slug());
+            self.route = target;
             cx.notify();
         }
     }
 
-    /// Returns to the previous route of the active pane, or to the current
-    /// route's parent.
-    pub fn go_back(&mut self, cx: &mut Context<Self>) {
-        if let Some(workspace) = self.usable_workspace() {
-            if let Some(target) = workspace.update(cx, |workspace, cx| workspace.back_active(cx)) {
-                log::info!("navigate: back {} → {} (active pane)", self.route.slug(), target.slug());
-                self.route = target;
-                cx.notify();
-            }
-            return;
-        }
-        let target = self.history.pop().unwrap_or_else(|| self.route.parent());
-        log::info!("navigate: back {} → {}", self.route.slug(), target.slug());
-        self.route = target;
-        cx.notify();
+    /// The screen `--screen` asked for, resolved against the household: the
+    /// workspace's first pane when there is no session to restore.
+    pub fn launch_route(&self) -> Route {
+        self.launch_route
     }
 
     /// The workspace's word on what the active pane shows: the launcher
@@ -1957,12 +1955,13 @@ impl AtlasApp {
         }
     }
 
-    /// The route on show: the active pane's while a workspace is attached.
+    /// The route the chrome reflects: the active pane's while a household is
+    /// usable, Welcome otherwise.
     pub fn route(&self) -> Route {
         self.route
     }
 
-    /// The sidebar destination of the current route, if any.
+    /// The launcher destination of the chrome's route, if any.
     pub fn destination(&self) -> Option<Destination> {
         self.route.destination()
     }
@@ -2064,7 +2063,6 @@ impl AtlasApp {
         self.selected_account = None;
         self.selected_company = None;
         self.selected_person = None;
-        self.history.clear();
         if let Some(destination) = self.route.destination() {
             self.route = destination.home();
         }
@@ -2099,25 +2097,24 @@ impl AtlasApp {
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let started = std::time::Instant::now();
         let element = self.render_section(cx);
-        // Welcome and the gate are content too; a route booked its own time.
-        if !self.opened || self.viewer_pending || self.route == Route::Welcome {
-            self.perf.add_content(started.elapsed());
-        }
+        // Welcome and the gate are content too.
+        self.perf.add_content(started.elapsed());
         element
     }
 
     /// Welcome and the viewer gate — what this view shows on its own while
     /// no household is open or nobody has said who is looking. With a
-    /// household usable the shell shows the workspace instead; this view then
-    /// renders the route itself only when no workspace is attached.
+    /// household usable the shell shows the workspace instead, and every
+    /// screen is a pane's; this view never renders a screen of its own.
     fn render_section(&self, cx: &mut Context<Self>) -> AnyElement {
-        if !self.opened || self.route == Route::Welcome {
+        if !self.opened {
             return crate::screens::welcome::render(self, cx);
         }
         if self.viewer_pending {
             return crate::screens::welcome::render_gate(self, cx);
         }
-        self.render_route(self.route, cx)
+        log::warn!("content column asked to render with a usable household; the shell shows the workspace then");
+        div().into_any_element()
     }
 
     /// One screen, for one pane: the route's screen over the derived model it
@@ -2240,11 +2237,11 @@ impl AtlasApp {
 }
 
 impl Render for AtlasApp {
-    /// The content column: the scroll region with the active screen inside.
-    /// The shell (see `shell`) embeds this view cached at a definite pixel
-    /// size — the column fills those bounds — so a frame that does not touch
-    /// the content (a hover in the sidebar, typing in a dialog, a toast)
-    /// reuses the previous layout and paint of the whole screen.
+    /// The content column while no household is usable: Welcome, or the
+    /// viewer gate. The shell (see `shell`) embeds this view cached at a
+    /// definite pixel size — the column fills those bounds — so a frame that
+    /// does not touch the content (a hover in the launcher, typing in a
+    /// dialog, a toast) reuses the previous layout and paint.
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .id("main-column")
