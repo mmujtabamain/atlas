@@ -87,3 +87,46 @@ flattening) — an explicit sibling-range target is planned for the ancestor-doc
 that it exists by the end and that `123/123/144` is reachable through it. `load()` tries
 `<path>.bak` before falling back to a fresh default (a deliberate extension). `resize` returns
 `Err(NoOp)` for unchanged weights.
+
+---
+
+## 2. Single-window workspace runtime — `crates/atlas-app/src/workspace/` (commits f5ce6bf, 1561f6e, fc95d07)
+
+**Claims.** `WorkspaceView` is the window's content column once a household is usable; it owns
+the `WorkspaceLayout` model, one `PaneView` entity per pane, gpui-kit's `DockArea` + `DockSkin`,
+`LayoutHistory` and `ClosedPanes`. Every new pane, undo/redo, household start/clear and
+`resize_split` rebuild the area from the model (`set_center`, slot px = weight × extent; pane
+entities survive so scroll and in-pane history survive). Close and tab activation use native
+engine calls. Every `DockEvent::LayoutChanged` is mirrored back (`dump` →
+`mirror::layout_node_from_state` → `WindowLayout::replace_root` → `validate()`; a failure keeps
+the previous model and reports through `alerting`). Echoes of our own edits (same structure,
+weights within 0.005) push no history; genuine engine edits push "Rearrange panes"/"Resize
+panes". `AtlasApp::navigate`/`go_back` act on the active pane; `route()` answers with the active
+pane's route. `--open <slug>` / `--open +<slug>` open extra panes/tabs at launch.
+
+**Verify.**
+
+1. `tests/workspace.rs` (12) and `tests/ui.rs` (34) and `tests/copy.rs` pass; `mirror` and
+   `kinds` unit tests pass (`cargo test -p atlas-app`).
+2. Re-entrancy: pane/engine callbacks are deferred through the window handle; the workspace never
+   calls the app while the app is updating. Try: navigate from a breadcrumb inside a pane, close
+   the active pane from its tab, switch households while several panes are open — no panics
+   ("already being updated"), no stale panes.
+3. Household switch: new/open/sample start a fresh layout (one pane on the launch route);
+   *Save as…* keeps the layout (`household_generation` unchanged). Closing the household shows the
+   Welcome screen again, and reopening the sample gives a fresh single pane.
+4. Two panes on the same register (Accounts | Accounts): they share selection/filter state
+   (documented limitation) but have independent scroll and history.
+5. Mirror correctness: build 0.65/0.35, render a frame, drag the divider, check the model
+   weights follow within 0.02; undo restores the grid.
+6. Menu items act on the pane whose menu was used (not the active pane).
+7. Perf: the workspace view is the cached content view (`shell_reuses_cached_views_between_frames`);
+   a hover in one pane must not re-render the sidebar.
+8. Narrow panes: screens squash (per-character wrapping, rows below the fold) — fixed in task 3
+   by a minimum content width with horizontal scroll; confirm the fix and that no screen is
+   clipped at the default `--open accounts --open rules` widths.
+
+**Known / fragile.** Engine node ids are never stored; everything maps by pane id. `PanelRegistry`
+and `DockArea::load` are unused (restore goes model → `rebuild_area`). Pane in-pane histories
+live only in `PaneView` (not in the model, so not persisted). `Resolution::CreateWindow` falls
+back to the active stack until floating windows exist.
