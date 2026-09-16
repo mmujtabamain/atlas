@@ -462,3 +462,56 @@ ids); the reset test counts on the menu shape without saved entries. `open_saved
 opens the saved layout's *main* window as a floating window; its floating windows are not
 imported. The one-family-per-window rule is the honest limit of app-owned controls; per-pane
 controls would lift it.
+
+---
+
+## 11. Workspace commands — (commit e5d7eb5)
+
+**Claims.** `workspace/commands.rs` declares every action and binds it once under the
+`Workspace` key context; `commands::attach(element, workspace)` puts all handlers on a window's
+root, used by the main window (`WorkspaceView::render`) and by `FloatingView`. Keys (`cmd` on
+macOS, `ctrl` elsewhere): `-\` split right, `-shift-\` split below, `-shift-d` duplicate, `-w`
+close, `-shift-t` reopen, `-alt-←↑→↓` focus by direction, `-alt-]`/`[` next/previous,
+`-alt-shift-←↑→↓` move by direction, `-shift-enter` zoom, `-[`/`alt-left` back, `-shift-n` float,
+`-z`/`-shift-z` (`ctrl-y`) undo/redo. View methods: `focus_direction` (`focus::neighbour`),
+`focus_previous_pane`, `move_active` (`focus::move_direction_target` → `dock_pane`, so a move is
+one `Move pane` history step, refused like a drop when too small), `duplicate_pane` (model
+`duplicate_pane` beside right, definition synced first so the copy has the state; `Duplicate
+<title>`), `reopen_last_closed` / `reopen_closed_at(index)` (`ClosedPanes::pop`/`take` →
+`WorkspaceLayout::reopen`; a refused reopen is put back on the list; `Reopen <title>`),
+`recently_closed(cx)` (newest first, titles), `toggle_zoom` (engine `TabGroup::toggle_zoom`;
+no history, no model change), `is_zoomed(window)`. Menus: Layout → `Reopen <last closed>` /
+`Zoom the active pane` ↔ `Back from zoom`; launcher `+` → "Recently closed" section (5 newest);
+pane menu → Duplicate. `reset_layout` records the panes it drops as closed.
+
+**Verify.**
+
+1. `tests/workspace.rs`: `the_keyboard_moves_the_focus_between_panes_by_direction`,
+   `the_keyboard_moves_the_active_pane_and_undo_brings_it_back`,
+   `a_closed_pane_is_reopened_where_it_was_by_key_and_from_the_add_menu`,
+   `the_active_pane_zooms_to_the_window_and_comes_back`,
+   `a_pane_is_duplicated_beside_itself_with_its_state`, and the reset test's recently-closed
+   assertion.
+2. Keys while a text field has the focus: `ctrl-z` in the Accounts search field must undo the
+   text, not the layout (the field's own binding wins); `ctrl-w` there still closes the pane.
+3. Keys in a floating window: every command acts on that window's active pane; `ctrl-alt-right`
+   never crosses into another window.
+4. Focus by direction on a grid with unequal edges (`123 / 123 / 124`): right from 2 → 3, left
+   from 4 → 2, down from 3 → 4.
+5. Move by direction against the minimum size (`SplitLimits::min_share`): refused with the same
+   toast as a drop; move into a tab stack is never refused.
+6. Reopen after the old neighbour was itself closed → the pane lands at the active stack's
+   default target; reopen when the list is empty → info toast; reopen of a pane whose record was
+   deleted meanwhile → the unavailable placeholder.
+7. Zoom, then any layout command (split, close, drop, undo): the zoom ends with the rebuild.
+   Zoom in a floating window; zoom then close the zoomed pane.
+8. Duplicate a placeholder pane (unsupported/unavailable): refused or a second placeholder —
+   check which and that nothing panics. Duplicate a pane with Back history: the copy's Back works.
+9. Undo/redo keys during a drag in flight: the drag overlay must end first (`end_drag_overlay`
+   runs on `dock_pane`; undo does not — check no stale bands remain).
+
+**Known / fragile.** Menu entries are index-addressed in tests: the Layout menu without saved
+layouts is presets ×5, ─, Undo, Redo, Reopen, Zoom, ─, Reset (index 11); the `+` menu is 9
+destinations, ─, heading, then the closed panes. Zoom is engine state, so it does not survive
+a session restore or a layout change. The grid helper's digits are reading-order positions,
+not pane numbers.
