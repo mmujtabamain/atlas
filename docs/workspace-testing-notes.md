@@ -515,3 +515,57 @@ layouts is presets ×5, ─, Undo, Redo, Reopen, Zoom, ─, Reset (index 11); th
 destinations, ─, heading, then the closed panes. Zoom is engine state, so it does not survive
 a session restore or a layout change. The grid helper's digits are reading-order positions,
 not pane numbers.
+
+---
+
+## 12. Hardening — (commit 1379722)
+
+**Claims.** *Error boundary*: `PaneView::render_screen` wraps `AtlasApp::render_route` in
+`catch_unwind`; a panic becomes `failed: Some(message)` on that pane alone, logged at error
+level and reported through `alerting::report` (the process-wide panic hook from
+`alerting::install_panic_hook` reports the location as well, so one failure is two lines in the
+chat: where, and which screen/pane). The pane shows `pane-failed` (`pane-failed-message`,
+`pane-retry` → `PaneView::retry`, `pane-replace`, `pane-close`) at placeholder width; the next
+render after Try again draws the screen again. `PaneView::fail_next_render` is the test hook.
+*Empty workspace*: `focus_active` with no pane focuses the workspace's own handle in the main
+window, so `Workspace`-context keys (redo, reopen, split) work from the empty state.
+*Already in place from earlier sections*: model randomized invariant test
+(`two_thousand_random_operations_never_break_an_invariant`), migration chain and recovery tests
+(`tests/persist.rs`), `WindowFrame::clamped_to_displays` applied in `open_floating_window`,
+Escape-cancels-drag tests, keyboard tests of section 11.
+
+**Verify.**
+
+1. `tests/workspace.rs`: `a_screen_that_fails_to_render_is_contained_in_its_pane`,
+   `an_undo_during_a_drag_leaves_a_consistent_workspace`,
+   `a_keyboard_only_session_builds_and_takes_apart_a_layout`,
+   `a_floating_window_saved_off_every_display_is_restored_within_one`.
+2. A panic *inside an event handler* of a screen (a click, a key) is not caught by the
+   boundary — only render is. Check what gpui does with it on each platform (the panic hook
+   reports either way).
+3. A screen that panics on *every* render: Try again fails again (a fresh notice, a fresh
+   report each time); Replace pane with another screen works; Close pane works; the session
+   still saves (the definition is untouched).
+4. The boundary and cached views: a failed pane is a cached view; the notice must repaint on
+   theme change and window resize (it observes the app).
+5. Drag interrupted by: the window losing focus mid-drag (alt-tab), a second mouse button, a
+   modal dialog opened by a job finishing mid-drag, the pane being closed from another
+   window's menu mid-drag. Expected: no partial mutation, no stale overlay, no panic.
+6. Keyboard only, no pointer at all, from app start: launch with `--screen today`, build a
+   layout, save it (the dialog's input takes focus, Enter saves), quit, relaunch, session
+   restored. Note what a pointer is still needed for (the launcher, the title menus — there
+   is no keyboard access to the menus yet; record as a gap).
+7. Off-screen: a floating window saved at negative coordinates, at a fractional DPI scale
+   (2×: frames are logical pixels, so a frame saved at 1× on a 4K display must still fit), and
+   a display list of two monitors where the frame straddles both (goes to the one it overlaps
+   most).
+8. Migration: a session at `schemaVersion: 0`/missing (read as 1), at `SCHEMA_VERSION + 1`
+   (Recovered, fresh, toast), with an unknown pane kind (placeholder), with `limits` missing
+   (defaults).
+9. Memory: open and close 200 panes by keyboard; leak detector clean (`cargo test` runs it).
+
+**Known / fragile.** The boundary covers render only; state mutations inside a panicking
+render up to the panic point are kept (gpui element state is per frame, so nothing structural
+leaks, but a screen's own `Entity` updates before the panic stay). Menus have no keyboard
+access. Keys in the main window do nothing while the focus is in a floating window (and
+vice versa) — by design, each window answers its own keys.
