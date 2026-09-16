@@ -266,6 +266,38 @@ impl X11 {
         Ok(())
     }
 
+    /// Presses button 1 at window-relative `(x1, y1)`, moves to `(x2, y2)` in
+    /// a few increments and leaves the button held, so the app is mid-drag
+    /// (its drag preview and drop indicator on screen) when the next step or
+    /// the capture happens. [`X11::release`] ends it.
+    pub fn drag_hold(&self, id: Window, x1: i16, y1: i16, x2: i16, y2: i16) -> Result<()> {
+        let from = self.conn.translate_coordinates(id, self.root, x1, y1)?.reply()?;
+        let to = self.conn.translate_coordinates(id, self.root, x2, y2)?.reply()?;
+        debug!("drag from window ({x1},{y1}) to ({x2},{y2}) = root ({},{}) -> ({},{}), holding", from.dst_x, from.dst_y, to.dst_x, to.dst_y);
+        self.fake_input(xproto::MOTION_NOTIFY_EVENT, 0, from.dst_x, from.dst_y)?;
+        std::thread::sleep(Duration::from_millis(30));
+        self.fake_input(xproto::BUTTON_PRESS_EVENT, 1, from.dst_x, from.dst_y)?;
+        std::thread::sleep(Duration::from_millis(30));
+        // Several motions rather than one jump: the app's drag threshold and
+        // its drop zones both watch the pointer move.
+        const STEPS: i32 = 8;
+        for step in 1..=STEPS {
+            let x = i32::from(from.dst_x) + (i32::from(to.dst_x) - i32::from(from.dst_x)) * step / STEPS;
+            let y = i32::from(from.dst_y) + (i32::from(to.dst_y) - i32::from(from.dst_y)) * step / STEPS;
+            self.fake_input(xproto::MOTION_NOTIFY_EVENT, 0, x as i16, y as i16)?;
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        Ok(())
+    }
+
+    /// Releases button 1 where the pointer is, dropping whatever a
+    /// [`X11::drag_hold`] picked up.
+    pub fn release(&self) -> Result<()> {
+        let pointer = self.conn.query_pointer(self.root)?.reply()?;
+        debug!("release at root ({},{})", pointer.root_x, pointer.root_y);
+        self.fake_input(xproto::BUTTON_RELEASE_EVENT, 1, pointer.root_x, pointer.root_y)
+    }
+
     /// Moves the pointer to window-relative `(x, y)` and turns the wheel:
     /// button 5 scrolls down, button 4 up, one press/release per notch.
     pub fn wheel(&self, id: Window, x: i16, y: i16, clicks: i32) -> Result<()> {

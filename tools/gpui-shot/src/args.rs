@@ -25,15 +25,39 @@ pub enum Step {
     /// wheel buttons do not produce, so gpui windows ignore this; use a taller
     /// `--size` to photograph long pages instead.
     Wheel { x: i16, y: i16, clicks: i32 },
+    /// Press button 1 at window-relative `(x1, y1)`, move to `(x2, y2)` in a
+    /// few increments and keep holding — a drag in flight, for photographing
+    /// drop indicators and previews. A later [`Step::Release`] drops.
+    Drag { x1: i16, y1: i16, x2: i16, y2: i16 },
+    /// Release button 1 where the pointer is, ending a [`Step::Drag`].
+    Release,
 }
 
 impl Step {
-    /// Parses `click:X,Y`, `key:NAME`, `wait:MS`, `shot:PATH`, `wheel:X,Y,CLICKS`.
+    /// Parses `click:X,Y`, `key:NAME`, `wait:MS`, `shot:PATH`, `wheel:X,Y,CLICKS`,
+    /// `drag:X1,Y1,X2,Y2` and `release`.
     pub fn parse(spec: &str) -> Result<Step> {
+        if spec == "release" {
+            return Ok(Step::Release);
+        }
         let (kind, rest) = spec
             .split_once(':')
-            .ok_or_else(|| anyhow!("step `{spec}` must look like kind:value (click:100,200 / key:Return / wait:500 / shot:file.png)"))?;
+            .ok_or_else(|| anyhow!("step `{spec}` must look like kind:value (click:100,200 / key:Return / wait:500 / shot:file.png / drag:10,20,300,400 / release)"))?;
         match kind {
+            "drag" => {
+                let parts: Vec<&str> = rest.split(',').map(str::trim).collect();
+                if parts.len() != 4 {
+                    bail!("drag step `{spec}` needs X1,Y1,X2,Y2");
+                }
+                let coordinate = |index: usize, name: &str| parts[index].parse::<i16>().with_context(|| format!("bad {name} in `{spec}`"));
+                Ok(Step::Drag {
+                    x1: coordinate(0, "X1")?,
+                    y1: coordinate(1, "Y1")?,
+                    x2: coordinate(2, "X2")?,
+                    y2: coordinate(3, "Y2")?,
+                })
+            }
+            "release" => bail!("release step takes no value: write `release`"),
             "click" => {
                 let (x, y) = rest
                     .split_once(',')
@@ -157,6 +181,7 @@ OPTIONS:
     --settle <ms>          frame must be unchanged for this long          [default: 600]
     --step <spec>          scripted action before the final shot; repeatable, in order:
                              click:X,Y   key:Return   wait:500   shot:extra.png   wheel:X,Y,CLICKS
+                             drag:X1,Y1,X2,Y2 (press, move, keep holding)   release (drop)
     --env KEY=VALUE        extra environment for the program; repeatable
     --pointer <X,Y>        hover the pointer at window-relative X,Y before capturing
                            (default: parked in the screen corner, so no hover effects)
@@ -362,6 +387,10 @@ mod tests {
         assert!(Step::parse("click:10").unwrap_err().to_string().contains("X,Y"));
         assert_eq!(Step::parse("wheel:5,6,-3").unwrap(), Step::Wheel { x: 5, y: 6, clicks: -3 });
         assert!(Step::parse("wheel:5,6").is_err());
+        assert_eq!(Step::parse("drag:10,20,300,400").unwrap(), Step::Drag { x1: 10, y1: 20, x2: 300, y2: 400 });
+        assert!(Step::parse("drag:10,20,300").is_err());
+        assert_eq!(Step::parse("release").unwrap(), Step::Release);
+        assert!(Step::parse("release:now").is_err());
         assert!(Step::parse("dance:1").unwrap_err().to_string().contains("unknown step kind"));
         assert!(Step::parse("nocolon").is_err());
         assert!(Step::parse("wait:abc").is_err());

@@ -175,6 +175,8 @@ pub fn run(options: &Options) -> Result<Outcome> {
         match step {
             Step::Click { x, y } => x11.click(window.id, *x, *y)?,
             Step::Wheel { x, y, clicks } => x11.wheel(window.id, *x, *y, *clicks)?,
+            Step::Drag { x1, y1, x2, y2 } => x11.drag_hold(window.id, *x1, *y1, *x2, *y2)?,
+            Step::Release => x11.release()?,
             Step::Key { keysym } => x11.key(keysym)?,
             Step::Wait { duration } => sleep_checking_child(*duration, child.as_mut(), app_log.as_deref())?,
             Step::Shot { path } => {
