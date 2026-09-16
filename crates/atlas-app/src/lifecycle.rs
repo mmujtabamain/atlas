@@ -326,6 +326,14 @@ impl AtlasApp {
         self.saving = true;
         cx.notify();
         log::info!("household save started path_id={}", file.identity());
+        // The save is a job of the workspace: it shows in the title bar while
+        // the file is written and a failure can be retried from there.
+        let retry_file = file.clone();
+        let runner: crate::workspace::jobs::Runner = std::rc::Rc::new(move |_ticket, window, cx| {
+            let file = retry_file.clone();
+            crate::app::with_app(cx, |app, cx| app.save_in_background(file, take_over, window, cx));
+        });
+        let job = self.jobs.update(cx, |jobs, cx| jobs.start(format!("Save to {}", file.path().display()), "save", None, false, Some(runner), cx));
         let started = std::time::Instant::now();
         let write = cx.background_spawn(async move {
             let result = if take_over {
@@ -340,13 +348,17 @@ impl AtlasApp {
         });
         cx.spawn(async move |this, cx| {
             let (file, result) = write.await;
-            let _ = this.update_in(cx, |app, window, cx| app.finish_save(file, result, take_over, edits, started.elapsed(), window, cx));
+            let _ = this.update_in(cx, |app, window, cx| app.finish_save(file, result, take_over, edits, started.elapsed(), job.id, window, cx));
         })
         .detach();
     }
 
-    fn finish_save(&mut self, file: HouseholdFile, result: Result<(), StoreError>, take_over: bool, edits: u64, took: std::time::Duration, window: &mut Window, cx: &mut Context<Self>) {
+    fn finish_save(&mut self, file: HouseholdFile, result: Result<(), StoreError>, take_over: bool, edits: u64, took: std::time::Duration, job: atlas_workspace::JobId, window: &mut Window, cx: &mut Context<Self>) {
         self.saving = false;
+        match &result {
+            Ok(()) => self.jobs.update(cx, |jobs, cx| jobs.complete(job, format!("Saved to {}", file.path().display()), cx)),
+            Err(err) => self.jobs.update(cx, |jobs, cx| jobs.fail(job, err.to_string(), true, cx)),
+        }
         match result {
             Ok(()) => {
                 log::info!("perf: household save path_id={} took {:.1}ms off the UI thread", file.identity(), crate::perf::ms(took));

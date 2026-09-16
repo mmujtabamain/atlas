@@ -51,6 +51,15 @@ impl<M> Lazy<M> {
     pub fn invalidate(&mut self) {
         self.cell.take();
     }
+
+    /// Installs a model computed elsewhere — a background job's result — in
+    /// place of whatever was there.
+    pub fn set(&mut self, value: Result<M, EngineError>) {
+        self.cell.take();
+        // The cell was just emptied, so this cannot fail; the value would
+        // only come back if it did.
+        let _ = self.cell.set(value);
+    }
 }
 
 #[cfg(test)]

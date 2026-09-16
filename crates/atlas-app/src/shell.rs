@@ -27,7 +27,7 @@
 //! | region | states |
 //! |---|---|
 //! | title bar, leading | the app's name, the household — its name and file menu — the sample marker, the layout menu |
-//! | title bar, trailing | the file state with `Save` beside it, the viewer, Figure meanings, the theme, Settings |
+//! | title bar, trailing | the jobs indicator while there are jobs, the file state with `Save` beside it, the viewer, Figure meanings, the theme, Settings |
 //! | launcher strip | the screens, as panes to open or focus; the `+` and `…` menus |
 //! | status bar | currency, the two dates, the last result, the file's path, gpui's frame reading |
 //!
@@ -39,7 +39,7 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, Root, Sizable as _, Theme, ThemeMode, TitleBar,
+    ActiveTheme as _, Disableable as _, Icon, Root, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -54,8 +54,10 @@ use gpui_kit::*;
 use crate::app::AtlasApp;
 use crate::launch::Launch;
 use crate::nav::Route;
+use crate::workspace::jobs::{JobCenter, JobEvent};
 use crate::workspace::launcher::{LAUNCHER_HEIGHT, LauncherView};
 use crate::workspace::{WorkspaceView, commands};
+use atlas_workspace::JobState;
 use atlas_workspace::resolver::Intent;
 
 /// The file facts the chrome states, read once per frame (the shell renders on
@@ -92,6 +94,7 @@ pub struct Shell {
     app: Entity<AtlasApp>,
     workspace: Entity<WorkspaceView>,
     launcher: Entity<LauncherView>,
+    _job_events: Subscription,
 }
 
 impl Shell {
@@ -103,7 +106,100 @@ impl Shell {
         let workspace = cx.new(|cx| WorkspaceView::new(app.clone(), launch, window, cx));
         app.update(cx, |app, _| app.attach_workspace(workspace.downgrade()));
         let launcher = cx.new(|cx| LauncherView::new(app.clone(), workspace.clone(), launch.data_dir.clone(), cx));
-        Shell { app, workspace, launcher }
+        // A job that ends is announced whether or not the pane that started
+        // it is still open: a toast, and the jobs list keeps the outcome.
+        let jobs = app.read(cx).jobs().clone();
+        let _job_events = cx.subscribe_in(&jobs, window, |this, jobs, event: &JobEvent, window, cx| {
+            let JobEvent::Finished(id) = event;
+            let Some(job) = jobs.read(cx).get(*id).cloned() else {
+                return;
+            };
+            match &job.state {
+                JobState::Completed { summary } => window.push_notification(summary.clone(), cx),
+                JobState::Failed { error, .. } => window.push_notification(gpui_kit::component::notification::Notification::error(format!("{} failed: {error}", job.title)), cx),
+                JobState::Cancelled => window.push_notification(format!("{} cancelled", job.title), cx),
+                _ => {}
+            }
+            let _ = this;
+        });
+        Shell { app, workspace, launcher, _job_events }
+    }
+
+    /// The jobs indicator: how many jobs are running, and the list of jobs
+    /// with the way to each job's screen, a retry for a failed job and a
+    /// cancel for one that allows it. Absent while there are no jobs at all.
+    fn render_jobs_indicator(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let jobs: Entity<JobCenter> = self.app.read(cx).jobs().clone();
+        let (running, all) = {
+            let centre = jobs.read(cx);
+            if centre.jobs().is_empty() {
+                return None;
+            }
+            (centre.running_count(), centre.jobs().to_vec())
+        };
+        let failed = all.iter().filter(|job| matches!(job.state, JobState::Failed { .. })).count();
+        let label = if running > 0 {
+            format!("{running} running")
+        } else if failed > 0 {
+            format!("{failed} failed")
+        } else {
+            "Done".to_string()
+        };
+        let icon = if running > 0 {
+            IconName::LoaderCircle
+        } else if failed > 0 {
+            IconName::CircleX
+        } else {
+            IconName::Check
+        };
+        let workspace = self.workspace.clone();
+        let button = Button::new("jobs").small().ghost().compact().icon(icon).label(label).tooltip("Background work: what is running, what finished, what failed").dropdown_menu(move |menu, _, cx| {
+            let centre = jobs.read(cx);
+            let mut menu = menu;
+            for job in centre.jobs().iter().rev() {
+                let line = centre.describe(job);
+                let route = centre.associated_route(job.id);
+                let workspace = workspace.clone();
+                let open = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    if let Some(route) = route {
+                        workspace.update(cx, |workspace, cx| {
+                            let _ = workspace.open(route, Intent::Open, window, cx);
+                        });
+                    }
+                };
+                menu = menu.item(PopupMenuItem::new(line).icon(match job.state {
+                    JobState::Queued | JobState::Running { .. } => IconName::LoaderCircle,
+                    JobState::Completed { .. } => IconName::Check,
+                    JobState::Failed { .. } => IconName::CircleX,
+                    JobState::Cancelled => IconName::Ban,
+                }).disabled(route.is_none()).on_click(open));
+                if centre.can_retry(job.id) {
+                    let id = job.id;
+                    let jobs = jobs.clone();
+                    menu = menu.item(PopupMenuItem::new(format!("Retry: {}", job.title)).icon(IconName::RotateCcw).on_click(move |_, window, cx| {
+                        jobs.update(cx, |jobs, cx| {
+                            if let Err(err) = jobs.retry(id, window, cx) {
+                                log::warn!("jobs: retry of {id} refused: {err}");
+                            }
+                        });
+                    }));
+                }
+                if job.cancellable && job.state.is_active() {
+                    let id = job.id;
+                    let jobs = jobs.clone();
+                    menu = menu.item(PopupMenuItem::new(format!("Cancel: {}", job.title)).icon(IconName::Ban).on_click(move |_, _, cx| {
+                        jobs.update(cx, |jobs, cx| {
+                            if let Err(err) = jobs.cancel(id, cx) {
+                                log::warn!("jobs: cancel of {id} refused: {err}");
+                            }
+                        });
+                    }));
+                }
+            }
+            let jobs = jobs.clone();
+            menu.separator().item(PopupMenuItem::new("Clear finished jobs").icon(IconName::Trash).on_click(move |_, _, cx| jobs.update(cx, |jobs, cx| jobs.clear_finished(cx))))
+        });
+        Some(button)
     }
 
     /// The content view: the household, the derived models, every screen.
@@ -200,6 +296,7 @@ impl Shell {
                     .justify_end()
                     .px_2()
                     .gap_3()
+                    .children(self.render_jobs_indicator(cx))
                     // Save and the state it acts on are one pair, set apart
                     // from the viewer and the theme by the wider gap.
                     .when(opened, |this| {

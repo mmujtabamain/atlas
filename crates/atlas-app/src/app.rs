@@ -249,6 +249,9 @@ pub struct AtlasApp {
     pub(crate) edits: u64,
     /// A save is writing the file on a background thread.
     pub(crate) saving: bool,
+    /// Long-running work that belongs to the workspace, not to a pane: the
+    /// save, the sensitivity recomputation. See `workspace::jobs`.
+    pub(crate) jobs: Entity<crate::workspace::JobCenter>,
     /// Lock owner name for the household file.
     pub(crate) owner: String,
     pub(crate) lifecycle_form: crate::lifecycle::LifecycleForm,
@@ -498,6 +501,10 @@ impl AtlasApp {
     pub fn new(launch: &Launch, _window: &mut Window, _cx: &mut Context<Self>) -> Self {
         let _window: &mut Window = _window;
         let _cx: &mut Context<Self> = _cx;
+        // Every change of a job is a possible change of what a screen shows
+        // (a progress line, a disabled Run button), so the app re-renders.
+        let jobs = _cx.new(|_| crate::workspace::JobCenter::default());
+        _cx.observe(&jobs, |_, _, cx| cx.notify()).detach();
         let owner = launch.owner.clone();
         let resolved = Self::resolve_start(launch, &owner);
         let household = resolved.household;
@@ -682,6 +689,7 @@ impl AtlasApp {
             dirty: false,
             edits: 0,
             saving: false,
+            jobs,
             owner,
             lifecycle_form,
             entry_forms,
@@ -1414,6 +1422,16 @@ impl AtlasApp {
     }
 
     /// Frame timings (status-bar counter, perf log).
+    /// The workspace's background jobs.
+    pub fn jobs(&self) -> &Entity<crate::workspace::JobCenter> {
+        &self.jobs
+    }
+
+    /// Whether the sensitivity report is being recomputed by a job.
+    pub fn sensitivity_running(&self, cx: &App) -> bool {
+        self.jobs.read(cx).running_for("sensitivity").is_some()
+    }
+
     pub fn perf(&self) -> &perf::FrameMeter {
         &self.perf
     }

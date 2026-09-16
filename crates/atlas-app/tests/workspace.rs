@@ -1321,6 +1321,98 @@ fn the_title_bar_opens_settings_and_resets_the_layout(cx: &mut TestAppContext) {
     assert_eq!(pane_count(cx, &workspace), 3);
 }
 
+// ----- background jobs -----------------------------------------------------------------------
+
+#[gpui_kit::test]
+fn a_sensitivity_run_outlives_the_pane_that_started_it(cx: &mut TestAppContext) {
+    let (handle, app, workspace) = open_workspace(cx, sample(Route::Sensitivity));
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    let jobs = cx.update(|cx| app.read(cx).jobs().clone());
+    // A new scope makes the result on show out of date; Run recomputes it.
+    cx.update(|cx| app.update(cx, |app, cx| app.select_sensitivity_boundary(atlas_core::liquidity::Boundary::Account(atlas_core::fixtures::ids::PERSON_A_CURRENT), cx)));
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("jobs").is_none(), "no indicator while there are no jobs");
+        window.click("run-sensitivity", cx);
+        // The job is under way; the background executor has not run it yet.
+        assert_eq!(jobs.read(cx).running_count(), 1, "the run is a job");
+        assert!(app.read(cx).sensitivity_running(cx));
+        window.render_frame(cx);
+        assert!(window.find("jobs").visible(), "the title bar shows the running job");
+    })
+    .unwrap();
+    // Close the pane that started it: the job keeps going.
+    let pane = active(cx, &workspace);
+    cx.update_window(window, |_, window, cx| workspace.update(cx, |workspace, cx| workspace.close_pane(&pane, window, cx).expect("close"))).unwrap();
+    cx.update(|cx| {
+        assert_eq!(workspace.read(cx).pane_count(), 0);
+        assert_eq!(jobs.read(cx).running_count(), 1, "closing the pane did not stop the job");
+    });
+    // Let it finish: the result is installed, the person is told.
+    settle(cx, window);
+    cx.update(|cx| {
+        assert_eq!(jobs.read(cx).running_count(), 0);
+        let job = jobs.read(cx).jobs().last().cloned().expect("the job is listed");
+        assert!(matches!(job.state, atlas_workspace::JobState::Completed { .. }), "{job:?}");
+        assert_eq!(job.source, "sensitivity");
+        assert!(!app.read(cx).sensitivity_pending(), "the result on show is up to date");
+        let model = app.read(cx).assumptions().expect("the model the job computed");
+        assert_eq!(model.sensitivity.boundary, atlas_core::liquidity::Boundary::Account(atlas_core::fixtures::ids::PERSON_A_CURRENT));
+    });
+    cx.update_window(window, |_, window, cx| {
+        assert!(!window.notifications(cx).is_empty(), "a toast says the job finished although its pane is gone");
+        assert!(window.find("jobs").visible(), "the indicator stays, showing the outcome");
+    })
+    .unwrap();
+    // The jobs list leads back to the job's screen: reopened, showing the new result.
+    cx.update_window(window, |_, window, cx| window.click("jobs", cx)).unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("popup-menu").visible(), "the indicator lists the jobs");
+        window.within("popup-menu").click(0usize, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 1);
+    cx.update_window(window, |_, window, _| {
+        assert!(window.find("screen-sensitivity").visible(), "the job's screen opened again");
+        assert!(window.find("sensitivity-summary").visible());
+    })
+    .unwrap();
+    cx.update(|cx| assert_eq!(app.read(cx).route(), Route::Sensitivity));
+}
+
+#[gpui_kit::test]
+fn a_second_run_while_one_is_running_is_ignored_and_an_edit_supersedes_the_result(cx: &mut TestAppContext) {
+    let (handle, app, _workspace) = open_workspace(cx, sample(Route::Sensitivity));
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    let jobs = cx.update(|cx| app.read(cx).jobs().clone());
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.select_sensitivity_boundary(atlas_core::liquidity::Boundary::Account(atlas_core::fixtures::ids::PERSON_A_CURRENT), cx);
+            app.run_sensitivity(cx);
+            app.run_sensitivity(cx);
+        });
+        assert_eq!(jobs.read(cx).running_count(), 1, "one job, not two");
+        // An edit while the job runs: its result is out of date when it lands.
+        app.update(cx, |app, _| app.mark_dirty());
+    });
+    settle(cx, window);
+    cx.update(|cx| {
+        assert_eq!(jobs.read(cx).running_count(), 0);
+        let job = jobs.read(cx).jobs().last().cloned().unwrap();
+        assert!(matches!(&job.state, atlas_workspace::JobState::Completed { summary } if summary.contains("superseded")), "{job:?}");
+        // The screen computes afresh on its next look, with the chosen scope.
+        let model = app.read(cx).assumptions().expect("recomputed on demand");
+        assert_eq!(model.sensitivity.boundary, atlas_core::liquidity::Boundary::Account(atlas_core::fixtures::ids::PERSON_A_CURRENT));
+    });
+}
+
 #[test]
 fn every_route_round_trips_through_the_pane_registry() {
     for slug in Route::slugs() {

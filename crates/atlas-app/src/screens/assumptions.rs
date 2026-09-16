@@ -494,11 +494,28 @@ const BREAKPOINT_LANES: [(&str, Lane); 5] = [
 
 pub fn render_sensitivity(app: &AtlasApp, model: &AssumptionsModel, household: &Household, cx: &mut Context<AtlasApp>) -> AnyElement {
     let report = &model.sensitivity;
-    let pending = app.sensitivity_pending;
+    let running = app.sensitivity_running(cx);
+    let pending = app.sensitivity_pending && !running;
     let header = workspace_header(
         Destination::Forecast,
         Route::Sensitivity,
-        vec![Button::new("run-sensitivity").small().primary().icon(IconName::Play).label("Run sensitivity").disabled(!pending).tooltip(if pending { "Recompute for the scope chosen below" } else { "The result below matches the scope" }).on_click(cx.listener(|this, _, _, cx| this.run_sensitivity(cx))).into_any_element()],
+        vec![
+            Button::new("run-sensitivity")
+                .small()
+                .primary()
+                .icon(IconName::Play)
+                .label(if running { "Recomputing…" } else { "Run sensitivity" })
+                .disabled(!pending)
+                .tooltip(if running {
+                    "The report is being recomputed; it arrives even if this pane closes"
+                } else if pending {
+                    "Recompute for the scope chosen below"
+                } else {
+                    "The result below matches the scope"
+                })
+                .on_click(cx.listener(|this, _, _, cx| this.run_sensitivity(cx)))
+                .into_any_element(),
+        ],
         cx,
     );
     let theme = cx.theme();
@@ -703,12 +720,51 @@ impl AtlasApp {
         cx.notify();
     }
 
-    /// Recomputes sensitivity for the chosen scope.
+    /// Recomputes sensitivity for the chosen scope — as a job of the
+    /// workspace, off the UI thread. The result is installed when it arrives
+    /// unless the household was edited meanwhile, in which case it is out of
+    /// date and the next look at the screen computes afresh. The job outlives
+    /// the pane: close the Assumptions pane and it still finishes, and the
+    /// title bar says so.
     pub fn run_sensitivity(&mut self, cx: &mut Context<Self>) {
+        if self.sensitivity_running(cx) {
+            log::info!("sensitivity run asked while one is running; ignored");
+            return;
+        }
         log::info!("sensitivity run: {:?} scenario={}", self.sensitivity_boundary, self.sensitivity_scenario);
         self.sensitivity_pending = false;
         self.sensitivity_expanded = None;
-        self.refresh_assumptions();
+        let runner: crate::workspace::jobs::Runner = std::rc::Rc::new(|_ticket, _, cx| crate::app::with_app(cx, |app, cx| app.run_sensitivity(cx)));
+        let job = self.jobs.update(cx, |jobs, cx| jobs.start("Recompute sensitivity", "sensitivity", Some(Route::Sensitivity), false, Some(runner), cx));
+        let household = self.household.clone();
+        let viewer = self.viewer;
+        let derivation_series = self.derivation_series;
+        let derivation = self.derivation;
+        let boundary = self.sensitivity_boundary;
+        let scenario = self.sensitivity_scenario;
+        let horizon = self.horizon();
+        let edits = self.edits;
+        let jobs = self.jobs.clone();
+        jobs.update(cx, |jobs, cx| jobs.progress(job.id, 0, None, Some("computing".into()), cx));
+        let compute = cx.background_spawn(async move { AssumptionsModel::compute(&household, viewer, derivation_series, derivation, boundary, scenario, horizon) });
+        cx.spawn(async move |this, cx| {
+            let result = compute.await;
+            let _ = this.update(cx, |app, cx| {
+                if app.edits != edits {
+                    log::info!("sensitivity result arrived after an edit; dropped, the screen recomputes on its next look");
+                    app.refresh_assumptions();
+                    jobs.update(cx, |jobs, cx| jobs.complete(job.id, "Recomputed, then superseded by an edit", cx));
+                } else {
+                    match &result {
+                        Ok(_) => jobs.update(cx, |jobs, cx| jobs.complete(job.id, "Sensitivity recomputed", cx)),
+                        Err(err) => jobs.update(cx, |jobs, cx| jobs.fail(job.id, err.to_string(), true, cx)),
+                    }
+                    app.assumptions.set(result);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
