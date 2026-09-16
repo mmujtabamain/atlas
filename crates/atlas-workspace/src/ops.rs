@@ -18,7 +18,13 @@
 //! - **beside** any node — a stack, a split, i.e. a whole group — → a new
 //!   single-pane stack on that side ([`DockTarget::Beside`]). Docking beside a
 //!   split is "ancestor docking": the pane spans the whole group;
-//! - **beside the window** → beside the root ([`DockTarget::WindowEdge`]).
+//! - **beside the window** → beside the root ([`DockTarget::WindowEdge`]);
+//! - **beside a run of siblings** in a split ([`DockTarget::BesideRange`]):
+//!   a same-axis split is always flattened, so `1|2|3` has no "2–3 group" to
+//!   dock beneath; the range target wraps children `from..=to` in a group of
+//!   their own and docks beside that group, so 4 can span 2 and 3 alone
+//!   (`123/123/144`). The levels a drag can offer for one pane and side are
+//!   listed by [`ancestor_targets`].
 //!
 //! The weight rule: the new pane takes `share` of the target (default
 //! [`DEFAULT_SHARE`], clamped to `0.15..=0.85`). When the target already sits
@@ -77,6 +83,13 @@ pub enum DockTarget {
     /// A new single-pane stack on `side` of the whole window (beside the root).
     /// On an empty window this makes the first stack.
     WindowEdge { side: Side, share: Option<f64> },
+    /// A new single-pane stack on `side` of the run of children `from..=to`
+    /// of the split `split`, which is perpendicular to `side` (a split of
+    /// columns takes a range target above or below; a split of rows, left or
+    /// right). The run is wrapped in a group of its own first, so the pane
+    /// spans exactly those siblings. A range of one child is `Beside` that
+    /// child; the whole range is `Beside` the split.
+    BesideRange { split: NodeId, from: usize, to: usize, side: Side, share: Option<f64> },
 }
 
 impl DockTarget {
@@ -99,7 +112,16 @@ impl DockTarget {
     pub fn node(&self) -> Option<&NodeId> {
         match self {
             DockTarget::Stack { node, .. } | DockTarget::Beside { node, .. } => Some(node),
+            DockTarget::BesideRange { split, .. } => Some(split),
             DockTarget::WindowEdge { .. } => None,
+        }
+    }
+
+    /// The side a beside-target docks on; `None` for tab docking.
+    pub fn side(&self) -> Option<Side> {
+        match self {
+            DockTarget::Stack { .. } => None,
+            DockTarget::Beside { side, .. } | DockTarget::WindowEdge { side, .. } | DockTarget::BesideRange { side, .. } => Some(*side),
         }
     }
 
@@ -118,7 +140,35 @@ impl DockTarget {
                 share: *share,
             },
             DockTarget::WindowEdge { .. } => self.clone(),
+            DockTarget::BesideRange { from, to, side, share, .. } => DockTarget::BesideRange { split: new_node, from: *from, to: *to, side: *side, share: *share },
         }
+    }
+
+    /// A range target reduced to what it means: `Beside` the one child when
+    /// the range has one member, `Beside` the split when it covers every
+    /// child, itself otherwise. `Err` when the range or the axis is wrong.
+    pub fn simplified(&self, tree: &LayoutNode) -> Result<DockTarget, OpError> {
+        let DockTarget::BesideRange { split, from, to, side, share } = self else {
+            return Ok(self.clone());
+        };
+        let node = tree.find(split).ok_or_else(|| OpError::UnknownNode(split.clone()))?;
+        let children = node.children();
+        if children.is_empty() {
+            return Err(OpError::NotASplit(split.clone()));
+        }
+        if node.axis() == Some(side.axis()) {
+            return Err(OpError::InvalidRange { split: split.clone(), reason: format!("the split runs along the same axis as the {side:?} side; a range can only be docked across it") });
+        }
+        if from > to || *to >= children.len() {
+            return Err(OpError::InvalidRange { split: split.clone(), reason: format!("children {from}..={to} do not exist (the split has {} children)", children.len()) });
+        }
+        if *from == 0 && *to + 1 == children.len() {
+            return Ok(DockTarget::Beside { node: split.clone(), side: *side, share: *share });
+        }
+        if from == to {
+            return Ok(DockTarget::Beside { node: children[*from].id().clone(), side: *side, share: *share });
+        }
+        Ok(self.clone())
     }
 }
 
@@ -180,6 +230,8 @@ pub enum OpError {
     NotStacked(PaneId),
     #[error("cannot detach pane {0}: it is already the only pane of its floating window")]
     AlreadyDetached(PaneId),
+    #[error("invalid sibling range in split {split}: {reason}")]
+    InvalidRange { split: NodeId, reason: String },
 }
 
 /// What [`normalize`] did. `replacements` records every node id that
@@ -305,7 +357,7 @@ pub fn move_pane(root: &mut Option<LayoutNode>, ids: &mut IdSource, pane: &PaneI
         hand_over_slot(&mut work, handover);
     }
     let aimed = match target.node() {
-        Some(node) => target.with_node(removed.report.resolve(node)),
+        Some(node) => range_after_removal(target, tree, &source_stack)?.with_node(removed.report.resolve(node)),
         None => target.clone(),
     };
     insert_into(&mut work, &mut work_ids, pane, &aimed)?;
@@ -319,6 +371,78 @@ pub fn move_pane(root: &mut Option<LayoutNode>, ids: &mut IdSource, pane: &PaneI
     *root = work;
     *ids = work_ids;
     Ok(())
+}
+
+/// A range target after the moved pane's stack left the tree: when that
+/// stack was a direct child of the range's split, the children after it
+/// shift down by one, so the range does too. A range that named only the
+/// moved pane's own stack is refused — there is nothing left to dock beside.
+fn range_after_removal(target: &DockTarget, tree: &LayoutNode, source_stack: &NodeId) -> Result<DockTarget, OpError> {
+    let DockTarget::BesideRange { split, from, to, side, share } = target else {
+        return Ok(target.clone());
+    };
+    let Some((parent, index)) = tree.position_of(source_stack) else {
+        return Ok(target.clone());
+    };
+    let alone = tree.find(source_stack).map(LayoutNode::stack_panes).is_some_and(|panes| panes.len() == 1);
+    if parent != *split || !alone {
+        return Ok(target.clone());
+    }
+    let (from, to) = if index < *from {
+        (from - 1, to - 1)
+    } else if index <= *to {
+        if from == to {
+            return Err(OpError::InvalidRange { split: split.clone(), reason: "the range names only the pane being moved".to_string() });
+        }
+        (*from, to - 1)
+    } else {
+        (*from, *to)
+    };
+    Ok(DockTarget::BesideRange { split: split.clone(), from, to, side: *side, share: *share })
+}
+
+/// The dock targets a drag can offer for `pane` on `side`, from the narrowest
+/// to the broadest: beside the pane's own stack; then, when the stack sits in
+/// a split that runs across `side`, beside the runs of siblings that include
+/// the stack — growing towards the first child, then towards the last — as
+/// [`DockTarget::BesideRange`]; then beside each further ancestor split; and
+/// finally the window's edge. Levels that would produce the same tree as an
+/// earlier one (a full range is the split itself; the root split is the
+/// window) are left out, so every entry is a different result.
+pub fn ancestor_targets(root: &LayoutNode, pane: &PaneId, side: Side) -> Vec<DockTarget> {
+    let Some(stack) = root.find_stack_of(pane) else {
+        return Vec::new();
+    };
+    let mut levels: Vec<DockTarget> = vec![DockTarget::beside(stack.clone(), side)];
+    let mut node = stack;
+    while let Some((parent_id, index)) = root.position_of(&node) {
+        let Some(parent) = root.find(&parent_id) else {
+            break;
+        };
+        let count = parent.children().len();
+        if parent.axis() != Some(side.axis()) && count > 1 {
+            // Runs ending at this child, growing towards the first sibling…
+            for from in (0..index).rev() {
+                if from == 0 && index + 1 == count {
+                    break;
+                }
+                levels.push(DockTarget::BesideRange { split: parent_id.clone(), from, to: index, side, share: None });
+            }
+            // …then runs starting at this child, growing towards the last.
+            for to in index + 1..count {
+                if index == 0 && to + 1 == count {
+                    break;
+                }
+                levels.push(DockTarget::BesideRange { split: parent_id.clone(), from: index, to, side, share: None });
+            }
+        }
+        if parent_id != *root.id() {
+            levels.push(DockTarget::beside(parent_id.clone(), side));
+        }
+        node = parent_id;
+    }
+    levels.push(DockTarget::edge(side));
+    levels
 }
 
 /// The slot a moved pane frees, and the former sibling that takes it: the
@@ -499,9 +623,46 @@ fn insert_into(root: &mut Option<LayoutNode>, ids: &mut IdSource, pane: &PaneId,
                 place_beside(tree, ids, &root_id, *side, clamp_share(*share), new_stack)?;
             }
         },
+        DockTarget::BesideRange { split, .. } => {
+            let tree = root.as_mut().ok_or_else(|| OpError::UnknownNode(split.clone()))?;
+            match target.simplified(tree)? {
+                DockTarget::BesideRange { split, from, to, side, share } => {
+                    let group = group_range(tree, ids, &split, from, to)?;
+                    let new_stack = LayoutNode::single(ids.mint_node(), pane.clone());
+                    place_beside(tree, ids, &group, side, clamp_share(share), new_stack)?;
+                }
+                // A range of one child or of every child is plain beside-docking.
+                simpler => return insert_into(root, ids, pane, &simpler),
+            }
+        }
     }
     normalize(root);
     Ok(())
+}
+
+/// Wraps children `from..=to` of `split` in a new split of the same axis and
+/// returns the new group's id. The group takes the sum of the children's
+/// weights and the children keep their ratios inside it. The caller has
+/// already checked the range.
+fn group_range(tree: &mut LayoutNode, ids: &mut IdSource, split: &NodeId, from: usize, to: usize) -> Result<NodeId, OpError> {
+    let Some(LayoutNode::Split { axis, children, weights, .. }) = tree.find_mut(split) else {
+        return Err(OpError::NotASplit(split.clone()));
+    };
+    if from > to || to >= children.len() {
+        return Err(OpError::InvalidRange { split: split.clone(), reason: format!("children {from}..={to} do not exist (the split has {} children)", children.len()) });
+    }
+    let shares = effective_weights(weights, children.len());
+    let group_id = ids.mint_node();
+    let grouped: Vec<LayoutNode> = children.drain(from..=to).collect();
+    let group_shares: Vec<f64> = shares[from..=to].to_vec();
+    let group_weight: f64 = group_shares.iter().sum();
+    let group = LayoutNode::Split { id: group_id.clone(), axis: *axis, children: grouped, weights: effective_weights(&group_shares, to - from + 1) };
+    children.insert(from, group);
+    let mut new_weights: Vec<f64> = shares[..from].to_vec();
+    new_weights.push(group_weight);
+    new_weights.extend_from_slice(&shares[to + 1..]);
+    *weights = new_weights;
+    Ok(group_id)
 }
 
 /// Puts `new_node` on `side` of `target`: as a sibling when the parent split
@@ -679,6 +840,13 @@ fn is_noop(tree: &LayoutNode, pane: &PaneId, source_stack: &NodeId, target: &Doc
             }
             at_edge_of(tree, tree.id(), source_stack, *side)
         }
+        // A proper range wraps siblings that are not grouped today, so the
+        // tree always changes; the one- and all-children forms are judged as
+        // the beside-targets they simplify to.
+        DockTarget::BesideRange { .. } => match target.simplified(tree) {
+            Ok(DockTarget::BesideRange { .. }) | Err(_) => false,
+            Ok(simpler) => is_noop(tree, pane, source_stack, &simpler),
+        },
     }
 }
 
@@ -1104,5 +1272,144 @@ mod tests {
         assert_eq!(clamp_share(Some(0.01)), MIN_SHARE_ARG);
         assert_eq!(clamp_share(Some(0.99)), MAX_SHARE_ARG);
         assert_eq!(clamp_share(Some(0.5)), 0.5);
+    }
+
+    /// The tree as a picture, every pane labelled by its own number.
+    fn picture(root: &Option<LayoutNode>, cols: usize, rows: usize) -> String {
+        crate::grid::render(root.as_ref().expect("a tree"), cols, rows, |pane| pane.minted_counter().and_then(|n| char::from_digit((n % 10) as u32, 10)).unwrap_or('?'))
+    }
+
+    #[test]
+    fn a_range_target_spans_exactly_those_siblings() {
+        // 4 below 2 and 3 only: 1 keeps its full height and its width.
+        let (mut root, mut ids) = equal_thirds();
+        let root_id = root.as_ref().unwrap().id().clone();
+        let target = DockTarget::BesideRange { split: root_id.clone(), from: 1, to: 2, side: Side::Bottom, share: Some(1.0 / 3.0) };
+        insert(&mut root, &mut ids, &pane(4), &target, &SplitLimits::default()).unwrap();
+        assert_eq!(picture(&root, 3, 3), "123\n123\n144");
+        let tree = root.as_ref().unwrap();
+        assert_eq!(tree.axis(), Some(Axis::Horizontal));
+        assert!(close_to(tree.weights(), &[1.0 / 3.0, 2.0 / 3.0]), "{:?}", tree.weights());
+        let column = &tree.children()[1];
+        assert_eq!(column.axis(), Some(Axis::Vertical));
+        assert_eq!(column.panes(), [pane(2), pane(3), pane(4)]);
+        assert!(close_to(column.weights(), &[2.0 / 3.0, 1.0 / 3.0]), "{:?}", column.weights());
+        let row = &column.children()[0];
+        assert_eq!(row.axis(), Some(Axis::Horizontal));
+        assert!(close_to(row.weights(), &[0.5, 0.5]), "2 and 3 keep their ratio: {:?}", row.weights());
+
+        // The whole range is the split itself: the same as the window's edge.
+        let (mut root, mut ids) = equal_thirds();
+        let root_id = root.as_ref().unwrap().id().clone();
+        let target = DockTarget::BesideRange { split: root_id, from: 0, to: 2, side: Side::Bottom, share: Some(1.0 / 3.0) };
+        insert(&mut root, &mut ids, &pane(4), &target, &SplitLimits::default()).unwrap();
+        assert_eq!(picture(&root, 3, 3), "123\n123\n444");
+
+        // A range of one child is that child.
+        let (mut root, mut ids) = equal_thirds();
+        let root_id = root.as_ref().unwrap().id().clone();
+        let target = DockTarget::BesideRange { split: root_id, from: 0, to: 0, side: Side::Bottom, share: Some(1.0 / 3.0) };
+        insert(&mut root, &mut ids, &pane(4), &target, &SplitLimits::default()).unwrap();
+        assert_eq!(picture(&root, 3, 3), "123\n123\n423");
+    }
+
+    #[test]
+    fn a_range_along_the_splits_own_axis_or_out_of_bounds_is_refused_unchanged() {
+        let (mut root, mut ids) = equal_thirds();
+        let root_id = root.as_ref().unwrap().id().clone();
+        let before = root.clone();
+        let along = DockTarget::BesideRange { split: root_id.clone(), from: 0, to: 1, side: Side::Right, share: None };
+        assert!(matches!(insert(&mut root, &mut ids, &pane(4), &along, &SplitLimits::default()), Err(OpError::InvalidRange { .. })));
+        let beyond = DockTarget::BesideRange { split: root_id.clone(), from: 1, to: 3, side: Side::Bottom, share: None };
+        assert!(matches!(insert(&mut root, &mut ids, &pane(4), &beyond, &SplitLimits::default()), Err(OpError::InvalidRange { .. })));
+        let backwards = DockTarget::BesideRange { split: root_id, from: 2, to: 1, side: Side::Bottom, share: None };
+        assert!(matches!(insert(&mut root, &mut ids, &pane(4), &backwards, &SplitLimits::default()), Err(OpError::InvalidRange { .. })));
+        let stack = root.as_ref().unwrap().find_stack_of(&pane(1)).unwrap();
+        let not_a_split = DockTarget::BesideRange { split: stack, from: 0, to: 0, side: Side::Bottom, share: None };
+        assert!(matches!(insert(&mut root, &mut ids, &pane(4), &not_a_split, &SplitLimits::default()), Err(OpError::NotASplit(_))));
+        assert_eq!(root, before, "every refusal leaves the tree as it was");
+    }
+
+    #[test]
+    fn moving_a_pane_to_a_range_accounts_for_the_slot_it_leaves() {
+        // 1 moves below 2 and 3: once 1 is gone the range is the whole row,
+        // so 1 spans the window.
+        let (mut root, mut ids) = equal_thirds();
+        let root_id = root.as_ref().unwrap().id().clone();
+        let target = DockTarget::BesideRange { split: root_id, from: 1, to: 2, side: Side::Bottom, share: Some(1.0 / 3.0) };
+        move_pane(&mut root, &mut ids, &pane(1), &target, &SplitLimits::default()).unwrap();
+        assert_eq!(picture(&root, 2, 3), "23\n23\n11");
+
+        // 2 moves below "2 and 3": without itself the range is just 3.
+        let (mut root, mut ids) = equal_thirds();
+        let root_id = root.as_ref().unwrap().id().clone();
+        let target = DockTarget::BesideRange { split: root_id, from: 1, to: 2, side: Side::Bottom, share: Some(0.5) };
+        move_pane(&mut root, &mut ids, &pane(2), &target, &SplitLimits::default()).unwrap();
+        assert_eq!(picture(&root, 2, 2), "13\n12");
+
+        // A range naming only the moved pane is docking the pane beside
+        // itself: nothing would change.
+        let (mut root, mut ids) = equal_thirds();
+        let root_id = root.as_ref().unwrap().id().clone();
+        let before = root.clone();
+        let target = DockTarget::BesideRange { split: root_id, from: 1, to: 1, side: Side::Bottom, share: None };
+        assert_eq!(move_pane(&mut root, &mut ids, &pane(2), &target, &SplitLimits::default()), Err(OpError::NoOp));
+        assert_eq!(root, before);
+
+        // 4, a tab of 3, moves below 2 and 3: the plan's cross-column case
+        // reached from a drag.
+        let (mut root, mut ids) = equal_thirds();
+        let stack3 = root.as_ref().unwrap().find_stack_of(&pane(3)).unwrap();
+        insert(&mut root, &mut ids, &pane(4), &DockTarget::tab(stack3), &SplitLimits::default()).unwrap();
+        let root_id = root.as_ref().unwrap().id().clone();
+        let target = DockTarget::BesideRange { split: root_id, from: 1, to: 2, side: Side::Bottom, share: Some(1.0 / 3.0) };
+        move_pane(&mut root, &mut ids, &pane(4), &target, &SplitLimits::default()).unwrap();
+        assert_eq!(picture(&root, 3, 3), "123\n123\n144");
+    }
+
+    #[test]
+    fn ancestor_targets_list_every_distinct_level_from_narrow_to_broad() {
+        let (root, _) = equal_thirds();
+        let tree = root.as_ref().unwrap();
+        let root_id = tree.id().clone();
+        let stack3 = tree.find_stack_of(&pane(3)).unwrap();
+        // Below 3: 3 itself, 3 with 2, then the window (3 with 1 and 2 is the window).
+        assert_eq!(
+            ancestor_targets(tree, &pane(3), Side::Bottom),
+            vec![
+                DockTarget::beside(stack3.clone(), Side::Bottom),
+                DockTarget::BesideRange { split: root_id.clone(), from: 1, to: 2, side: Side::Bottom, share: None },
+                DockTarget::edge(Side::Bottom),
+            ]
+        );
+        // Below 2, in the middle: with 1, then with 3, then the window.
+        let stack2 = tree.find_stack_of(&pane(2)).unwrap();
+        assert_eq!(
+            ancestor_targets(tree, &pane(2), Side::Bottom),
+            vec![
+                DockTarget::beside(stack2, Side::Bottom),
+                DockTarget::BesideRange { split: root_id.clone(), from: 0, to: 1, side: Side::Bottom, share: None },
+                DockTarget::BesideRange { split: root_id, from: 1, to: 2, side: Side::Bottom, share: None },
+                DockTarget::edge(Side::Bottom),
+            ]
+        );
+        // Right of 3: the row runs the same way, so there are no runs; the
+        // root is the window.
+        assert_eq!(ancestor_targets(tree, &pane(3), Side::Right), vec![DockTarget::beside(stack3, Side::Right), DockTarget::edge(Side::Right)]);
+        assert!(ancestor_targets(tree, &pane(9), Side::Right).is_empty());
+
+        // `1 | [2 / 3]`: right of 3 offers 3, the column, the window.
+        let (mut root, mut ids) = equal_thirds();
+        let root_id = root.as_ref().unwrap().id().clone();
+        move_pane(&mut root, &mut ids, &pane(3), &DockTarget::BesideRange { split: root_id, from: 1, to: 1, side: Side::Bottom, share: Some(0.5) }, &SplitLimits::default()).unwrap();
+        let tree = root.as_ref().unwrap();
+        assert_eq!(picture(&root, 2, 2), "12\n13");
+        let stack3 = tree.find_stack_of(&pane(3)).unwrap();
+        let column = tree.position_of(&stack3).unwrap().0;
+        assert_eq!(ancestor_targets(tree, &pane(3), Side::Right), vec![DockTarget::beside(stack3.clone(), Side::Right), DockTarget::beside(column.clone(), Side::Right), DockTarget::edge(Side::Right)]);
+        // Below 3: the column runs the same way (no runs), then the row above
+        // it where the column is the last of two children (no partial run),
+        // then the window.
+        assert_eq!(ancestor_targets(tree, &pane(3), Side::Bottom), vec![DockTarget::beside(stack3, Side::Bottom), DockTarget::beside(column, Side::Bottom), DockTarget::edge(Side::Bottom)]);
     }
 }

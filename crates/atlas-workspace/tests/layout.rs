@@ -620,7 +620,7 @@ fn random_target(rng: &mut XorShift, ws: &WorkspaceLayout, window: &WindowId) ->
     };
     let nodes = tree.node_ids();
     let node = rng.pick(&nodes).cloned().unwrap_or_else(|| tree.id().clone());
-    match rng.below(10) {
+    match rng.below(12) {
         0 | 1 => DockTarget::WindowEdge {
             side: random_side(rng),
             share: Some(0.1 + rng.unit() * 0.8),
@@ -630,6 +630,25 @@ fn random_target(rng: &mut XorShift, ws: &WorkspaceLayout, window: &WindowId) ->
             side: random_side(rng),
             share: if rng.below(2) == 0 { None } else { Some(rng.unit()) },
         },
+        // A run of siblings across a split: sometimes deliberately invalid
+        // (along the split's own axis, or out of range), which must be refused
+        // without a trace.
+        6 | 7 => {
+            let split = match tree.find(&node) {
+                Some(found) if !found.is_stack() => node,
+                _ => tree.id().clone(),
+            };
+            let count = tree.find(&split).map(|found| found.children().len()).unwrap_or(0).max(1);
+            let from = rng.below(count + 1);
+            let to = from + rng.below(count.saturating_sub(from) + 1);
+            DockTarget::BesideRange {
+                split,
+                from,
+                to,
+                side: random_side(rng),
+                share: if rng.below(2) == 0 { None } else { Some(rng.unit()) },
+            }
+        }
         _ => match tree.find(&node) {
             Some(found) if found.is_stack() => DockTarget::Stack {
                 node,
