@@ -1,9 +1,9 @@
 //! UI integration tests: the production `AtlasApp` view in a headless window,
 //! driven through real pointer and keyboard events (gpui-kit `test-support`).
 //!
-//! Sidebar items are registered by gpui-kit as `<group>-0-<item>` inside the
-//! `main-sidebar` scope. The groups follow `Destination::GROUPS`: Today is
-//! `0-0-0`, Accounts is `1-0-0`, Rules & taxes is `2-0-0`.
+//! The launcher strip under the title bar carries one `launcher-<slug>`
+//! button per destination (`launcher-today`, `launcher-accounts`, …) inside
+//! a `launcher-item-<slug>` element that is also the drag handle.
 
 mod common;
 
@@ -37,7 +37,7 @@ fn scroll_to_and_click(window: &mut gpui_kit::Window, anchor: &'static str, id: 
 #[gpui_kit::test]
 fn welcome_offers_the_three_ways_in(cx: &mut TestAppContext) {
     // With no household on the command line the app opens on Welcome, with no
-    // sidebar and no sample data loaded behind it.
+    // launcher and no sample data loaded behind it.
     let (handle, app) = open_app(cx, Launch::default());
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -45,7 +45,7 @@ fn welcome_offers_the_three_ways_in(cx: &mut TestAppContext) {
         assert!(window.find("welcome-create").visible());
         assert!(window.find("welcome-open").visible());
         assert!(window.find("welcome-sample").visible());
-        assert!(window.try_find("main-sidebar").is_none(), "no navigation until a household is open");
+        assert!(window.try_find("launcher").is_none(), "no launcher until a household is open");
     })
     .unwrap();
     cx.update(|cx| {
@@ -72,14 +72,13 @@ fn the_sample_asks_who_is_looking_before_showing_anything(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
-fn sidebar_and_workspace_tabs_navigate(cx: &mut TestAppContext) {
+fn launcher_and_workspace_tabs_navigate(cx: &mut TestAppContext) {
     let (handle, app) = open_app(cx, sample(Route::Today));
     let window = handle.into();
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("screen-today").visible());
-        // Accounts is the first item of the second group.
-        window.within("main-sidebar").click("1-0-0", cx);
+        window.click("launcher-accounts", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -99,7 +98,7 @@ fn sidebar_and_workspace_tabs_navigate(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let app = app.read(cx);
         assert_eq!(app.route(), Route::Earmarks);
-        assert_eq!(app.destination(), Some(Destination::Accounts), "the sidebar stays on Accounts");
+        assert_eq!(app.destination(), Some(Destination::Accounts), "the launcher stays on Accounts");
     });
 }
 
@@ -1167,28 +1166,28 @@ fn move_pointer_to(window: &mut gpui_kit::Window, scope: Option<&'static str>, i
 
 #[gpui_kit::test]
 fn shell_reuses_cached_views_between_frames(cx: &mut TestAppContext) {
-    // The sidebar and the content — the pane workspace — are separate cached
+    // The launcher and the content — the pane workspace — are separate cached
     // views, and each pane is a cached view inside the workspace. A frame
     // re-renders only the views that were notified; the rest reuse their
     // previous layout and paint. `render_frame` refreshes the window (which
     // bypasses every cache), so the frames under test are drawn directly, and
     // a frame's figures are read once the next frame has closed it.
     let (handle, shell) = open_shell(cx, sample(Route::Today));
-    let (app, sidebar, workspace) = cx.update(|cx| {
+    let (app, launcher, workspace) = cx.update(|cx| {
         let shell = shell.read(cx);
-        (shell.app().clone(), shell.sidebar().clone(), shell.workspace().clone())
+        (shell.app().clone(), shell.launcher().clone(), shell.workspace().clone())
     });
     let window: gpui_kit::AnyWindowHandle = handle.into();
 
     // Nothing changed between two frames: every cached view is reused.
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
-        let renders = sidebar.read(cx).renders();
-        assert!(renders >= 1, "the first frame rendered the sidebar");
+        let renders = launcher.read(cx).renders();
+        assert!(renders >= 1, "the first frame rendered the launcher");
         let workspace_renders = workspace.read(cx).renders();
         assert!(workspace_renders >= 1, "the first frame rendered the workspace");
         window.draw(cx).clear(cx);
-        assert_eq!(sidebar.read(cx).renders(), renders, "an unchanged frame reuses the sidebar");
+        assert_eq!(launcher.read(cx).renders(), renders, "an unchanged frame reuses the launcher");
         assert_eq!(workspace.read(cx).renders(), workspace_renders, "an unchanged frame reuses the workspace");
         window.draw(cx).clear(cx);
         let last = app.read(cx).perf().last().expect("the previous frame is closed");
@@ -1201,48 +1200,48 @@ fn shell_reuses_cached_views_between_frames(cx: &mut TestAppContext) {
     })
     .unwrap();
 
-    // Hovering a sidebar item re-renders the sidebar, not the workspace or
+    // Hovering a launcher item re-renders the launcher, not the workspace or
     // the screen inside it.
     cx.update_window(window, |_, window, cx| {
-        let renders = sidebar.read(cx).renders();
+        let renders = launcher.read(cx).renders();
         let workspace_renders = workspace.read(cx).renders();
-        move_pointer_to(window, Some("main-sidebar"), "0-0-1", cx);
+        move_pointer_to(window, None, "launcher-purchase", cx);
         window.draw(cx).clear(cx);
-        assert_eq!(sidebar.read(cx).renders(), renders + 1, "the hover re-renders the sidebar");
-        assert_eq!(workspace.read(cx).renders(), workspace_renders, "a sidebar hover leaves the workspace cached");
+        assert_eq!(launcher.read(cx).renders(), renders + 1, "the hover re-renders the launcher");
+        assert_eq!(workspace.read(cx).renders(), workspace_renders, "a launcher hover leaves the workspace cached");
         window.draw(cx).clear(cx);
         let last = app.read(cx).perf().last().unwrap();
-        assert_eq!(last.content_render, None, "a sidebar hover does not rebuild the screen: {last:?}");
+        assert_eq!(last.content_render, None, "a launcher hover does not rebuild the screen: {last:?}");
     })
     .unwrap();
 
-    // Hovering a button on the screen re-renders the content, not the sidebar
-    // (the pointer leaves the sidebar first, which un-hovers its item).
+    // Hovering a button on the screen re-renders the content, not the launcher
+    // (the pointer leaves the launcher first, which un-hovers its item).
     cx.update_window(window, |_, window, cx| {
         move_pointer_to(window, None, "perf-counter", cx);
         window.draw(cx).clear(cx);
-        let renders = sidebar.read(cx).renders();
+        let renders = launcher.read(cx).renders();
         move_pointer_to(window, None, "explain-free-cash", cx);
         window.draw(cx).clear(cx);
-        assert_eq!(sidebar.read(cx).renders(), renders, "a content hover leaves the sidebar cached");
+        assert_eq!(launcher.read(cx).renders(), renders, "a content hover leaves the launcher cached");
         window.draw(cx).clear(cx);
         let last = app.read(cx).perf().last().unwrap();
         assert!(last.content_render.is_some(), "the hover re-rendered the content: {last:?}");
     })
     .unwrap();
 
-    // Scrolling the screen re-renders the content, not the sidebar.
+    // Scrolling the screen re-renders the content, not the launcher.
     cx.update_window(window, |_, window, cx| {
         move_pointer_to(window, None, "perf-counter", cx);
         window.draw(cx).clear(cx);
-        let renders = sidebar.read(cx).renders();
+        let renders = launcher.read(cx).renders();
         let position = window.find("figure-free-cash").bounds().center();
         window.dispatch_event(
             PlatformInput::ScrollWheel(ScrollWheelEvent { position, delta: ScrollDelta::Pixels(point(px(0.), px(-300.))), modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved }),
             cx,
         );
         window.draw(cx).clear(cx);
-        assert_eq!(sidebar.read(cx).renders(), renders, "a scroll tick leaves the sidebar cached");
+        assert_eq!(launcher.read(cx).renders(), renders, "a scroll tick leaves the launcher cached");
         window.draw(cx).clear(cx);
         let last = app.read(cx).perf().last().unwrap();
         assert!(last.content_render.is_some(), "the scroll re-rendered the content: {last:?}");
@@ -1250,24 +1249,24 @@ fn shell_reuses_cached_views_between_frames(cx: &mut TestAppContext) {
     })
     .unwrap();
 
-    // A state change the sidebar does not show (the earmarks boundary) leaves
+    // A state change the launcher does not show (the earmarks boundary) leaves
     // it cached; one it does show (the destination) re-renders it.
     let renders = cx.update(|cx| {
-        let renders = sidebar.read(cx).renders();
+        let renders = launcher.read(cx).renders();
         app.update(cx, |app, cx| app.select_boundary(atlas_core::liquidity::Boundary::Person(fixtures::ids::PERSON_A), cx));
         renders
     });
     cx.update_window(window, |_, window, cx| {
         window.draw(cx).clear(cx);
-        assert_eq!(sidebar.read(cx).renders(), renders, "a boundary change does not touch the sidebar");
-        assert_eq!(sidebar.read(cx).snapshot().destination, Some(Destination::Today));
+        assert_eq!(launcher.read(cx).renders(), renders, "a boundary change does not touch the launcher");
+        assert_eq!(launcher.read(cx).snapshot().destination, Some(Destination::Today));
     })
     .unwrap();
     cx.update(|cx| app.update(cx, |app, cx| app.navigate(Route::People, cx)));
     cx.update_window(window, |_, window, cx| {
         window.draw(cx).clear(cx);
-        assert_eq!(sidebar.read(cx).renders(), renders + 1, "navigation re-renders the sidebar");
-        assert_eq!(sidebar.read(cx).snapshot().destination, Some(Destination::Household));
+        assert_eq!(launcher.read(cx).renders(), renders + 1, "navigation re-renders the launcher");
+        assert_eq!(launcher.read(cx).snapshot().destination, Some(Destination::Household));
         assert!(window.try_find("screen-people").is_some(), "and the content shows the new screen");
     })
     .unwrap();

@@ -1,10 +1,10 @@
-//! Navigation: eight sidebar destinations, the routes inside them, and the
+//! Navigation: eight launcher destinations, the routes inside them, and the
 //! stable slugs `--screen`, element ids and tests address them by.
 //!
-//! A [`Destination`] is a sidebar entry; a [`Route`] is one addressable
+//! A [`Destination`] is a launcher entry; a [`Route`] is one addressable
 //! surface (a screen, a detail of one object, or a stage of a flow). Every
 //! route knows its destination and its local tab, so the shell can highlight
-//! the sidebar and each workspace can draw its tab bar from the same value.
+//! the launcher and each workspace can draw its tab bar from the same value.
 
 use atlas_core::authz::Viewer;
 use atlas_core::ids::{AccountId, CompanyId, ObjectRef, PersonId, RuleId, SeriesId};
@@ -12,7 +12,7 @@ use atlas_core::model::Household;
 use atlas_core::Disclosure;
 use gpui_kit::assets::IconName;
 
-/// The sidebar entries, in order. `Settings` lives in the footer.
+/// The launcher entries, in order. `Settings` lives in the title bar.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Destination {
     Today,
@@ -65,7 +65,7 @@ impl Destination {
         }
     }
 
-    /// The route a sidebar click opens.
+    /// The route a launcher click opens.
     pub fn home(self) -> Route {
         match self {
             Destination::Today => Route::Today,

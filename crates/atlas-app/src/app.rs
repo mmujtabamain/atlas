@@ -3,9 +3,9 @@
 //! household is open the screens show inside the panes of
 //! [`crate::workspace::WorkspaceView`], each pane calling
 //! [`AtlasApp::render_route`] for its own route, and `route()` answers with
-//! the active pane's route (the sidebar highlight and the frame label follow
+//! the active pane's route (the launcher highlight and the frame label follow
 //! it). Before that — Welcome, the viewer gate — this view is the content
-//! itself. The window's root view — title bar, sidebar, status bar — is
+//! itself. The window's root view — title bar, launcher, status bar — is
 //! [`crate::shell::Shell`], which embeds whichever of the two is the content,
 //! cached.
 
@@ -195,7 +195,6 @@ pub struct AtlasApp {
     /// The `Plan` selectors of every analysis that accepts the overlay.
     pub(crate) plan_choices: PlanChoices,
     pub(crate) horizon: NaiveDate,
-    pub(crate) sidebar_collapsed: bool,
     /// Derived models: dropped when their inputs change, computed on first
     /// use (see `derived`). Screens only read them.
     pub(crate) overview: Lazy<HouseholdOverview>,
@@ -636,7 +635,6 @@ impl AtlasApp {
             earmarks_released_tab: false,
             plan_choices,
             horizon,
-            sidebar_collapsed: false,
             overview: Lazy::stale(),
             entities: Lazy::stale(),
             liquidity: Lazy::stale(),
@@ -1867,7 +1865,7 @@ impl AtlasApp {
             if self.route != route {
                 log::info!("navigate: {} → {} (active pane)", self.route.slug(), route.slug());
             }
-            // The chrome (sidebar highlight, frame label) follows at once; the
+            // The chrome (launcher highlight, frame label) follows at once; the
             // workspace only changes the pane and never calls back into this
             // view, which is being updated right now.
             self.route = route;
@@ -1905,7 +1903,7 @@ impl AtlasApp {
         cx.notify();
     }
 
-    /// The workspace's word on what the active pane shows: the sidebar
+    /// The workspace's word on what the active pane shows: the launcher
     /// highlight and the frame label follow it. Called by the workspace when
     /// the active pane or its route changed on its side (a click in another
     /// pane, in-pane Back from the pane's menu, a closed pane).
@@ -2071,11 +2069,6 @@ impl AtlasApp {
     /// The virtualised tables' retained state (tests read their rows).
     pub fn grids(&self) -> &Grids {
         &self.grids
-    }
-
-    /// Whether the sidebar is collapsed to its icon column.
-    pub fn sidebar_collapsed(&self) -> bool {
-        self.sidebar_collapsed
     }
 
     // ----- content ----------------------------------------------------------------

@@ -16,7 +16,7 @@ fn main() {
     let launch = Launch::parse(std::env::args().skip(1));
     log::info!("launching Atlas Financer: {launch:?}");
 
-    // The full Lucide catalog: the sidebar and screens use finance icons that
+    // The full Lucide catalog: the launcher and screens use finance icons that
     // are not among the 101 default component icons.
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     let reopen_launch = launch.clone();

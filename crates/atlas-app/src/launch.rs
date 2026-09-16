@@ -61,7 +61,18 @@ pub struct Launch {
     /// Off unless `--perf-overlay` or `ATLAS_PERF_OVERLAY=1` asks for it; the
     /// status bar keeps gpui's fps reading either way.
     pub perf_overlay: bool,
+    /// Where the app keeps its own files (the launcher's arrangement, later
+    /// workspace sessions and saved layouts): `--data-dir`, else
+    /// `ATLAS_DATA_DIR`, else the platform's per-user application directory.
+    /// `None` — the default for a `Launch` built in code, as the tests do —
+    /// keeps everything for this run only and writes nothing.
+    pub data_dir: Option<std::path::PathBuf>,
 }
+
+/// The app's directory name inside the platform's per-user application directory.
+pub const APP_DIR: &str = "atlas-financer";
+/// The environment variable that overrides where the app keeps its files.
+pub const DATA_DIR_ENV: &str = "ATLAS_DATA_DIR";
 
 impl Default for Launch {
     fn default() -> Self {
@@ -76,6 +87,7 @@ impl Default for Launch {
             viewer: None,
             viewer_id: None,
             start: Start::Welcome,
+            data_dir: None,
             as_of: None,
             owner: std::env::var("USER").unwrap_or_else(|_| "user".into()),
             take_over: false,
@@ -172,9 +184,16 @@ impl Launch {
                 "--take-over" => launch.take_over = true,
                 "--perf-overlay" => launch.perf_overlay = true,
                 "--no-perf-overlay" => launch.perf_overlay = false,
+                "--data-dir" => {
+                    i += 1;
+                    match args.get(i) {
+                        Some(dir) => launch.data_dir = Some(std::path::PathBuf::from(dir)),
+                        None => log::warn!("--data-dir needs a directory"),
+                    }
+                }
                 "-h" | "--help" => {
                     println!(
-                        "atlas [--theme light|dark] [--size WxH] [--screen {}] [--open <slug>|+<slug>]... [--viewer a|b|<person id>] [--household FILE.atlas.sqlite | --new | --sample] [--as-of YYYY-MM-DD] [--owner NAME] [--take-over] [--perf-overlay]\n\n--open adds a pane to the right of the previous one; +slug adds it as a tab of the previous pane.\nLogs go to stderr and logs.log (ATLAS_LOG_FILE=path|off, RUST_LOG=filter, ATLAS_LOG_FILE_FILTER=filter); the status bar shows gpui's frame timing.",
+                        "atlas [--theme light|dark] [--size WxH] [--screen {}] [--open <slug>|+<slug>]... [--viewer a|b|<person id>] [--household FILE.atlas.sqlite | --new | --sample] [--as-of YYYY-MM-DD] [--owner NAME] [--take-over] [--perf-overlay] [--data-dir DIR]\n\n--open adds a pane to the right of the previous one; +slug adds it as a tab of the previous pane.\n--data-dir is where the app keeps the launcher's arrangement and its workspaces (default: ATLAS_DATA_DIR, else the per-user application directory).\nLogs go to stderr and logs.log (ATLAS_LOG_FILE=path|off, RUST_LOG=filter, ATLAS_LOG_FILE_FILTER=filter); the status bar shows gpui's frame timing.",
                         [Route::slugs(), crate::nav::FirstDetail::slugs()].concat().join("|")
                     );
                     std::process::exit(0);
@@ -182,6 +201,11 @@ impl Launch {
                 other => log::warn!("ignoring unknown argument {other}"),
             }
             i += 1;
+        }
+        // A launch from the command line keeps its files somewhere; one built
+        // in code (the tests) keeps nothing unless it says where.
+        if launch.data_dir.is_none() {
+            launch.data_dir = Some(atlas_workspace::persist::app_data_dir(APP_DIR, DATA_DIR_ENV));
         }
         launch
     }
@@ -216,6 +240,9 @@ mod tests {
         assert!(!launch.perf_overlay, "the overlay is off unless asked for");
         assert!(Launch::parse(["--perf-overlay"].map(String::from)).perf_overlay);
         assert!(!Launch::parse(["--perf-overlay", "--no-perf-overlay"].map(String::from)).perf_overlay);
+        assert!(Launch::default().data_dir.is_none(), "a launch built in code keeps nothing on disk");
+        assert!(Launch::parse(Vec::<String>::new()).data_dir.is_some(), "a command-line launch always has a data directory");
+        assert_eq!(Launch::parse(["--data-dir", "/tmp/atlas-here"].map(String::from)).data_dir, Some(std::path::PathBuf::from("/tmp/atlas-here")));
         let panes = Launch::parse(["--screen", "today", "--open", "accounts", "--open", "+rules", "--open", "forecast", "--open", "nonsense"].map(String::from));
         assert_eq!(panes.extra, vec![Route::Accounts, Route::ForecastPath], "unknown slugs are skipped");
         assert_eq!(panes.stacked, vec![(1, Route::Rules)], "a +slug stacks onto the pane opened just before it");

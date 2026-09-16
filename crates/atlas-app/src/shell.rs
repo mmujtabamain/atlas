@@ -4,7 +4,7 @@
 //! and a hover, a tooltip, a scroll tick or a keystroke in a dialog all notify
 //! the view that rendered the element under the pointer. With one view for the
 //! whole window every such event re-laid-out and re-painted the title bar,
-//! the sidebar, the entire screen and the status bar.
+//! the launcher, the entire screen and the status bar.
 //!
 //! This module splits the window into views that gpui can cache independently
 //! ([`Entity::cached`] reuses a view's layout and paint while the view is not
@@ -13,37 +13,37 @@
 //! | view | notified by | cost when something else changes |
 //! |---|---|---|
 //! | [`Shell`] (root) | always renders | title bar + status bar, ~40 nodes |
-//! | [`SidebarView`] | hover/click on the sidebar; the app, when what the sidebar shows changed | cached |
+//! | [`LauncherView`] | hover/click on the strip; the app, when the active pane's destination changed; its own rearrangement | cached |
 //! | [`WorkspaceView`] (content while a household is usable) | a pane inside it; every layout change | cached; each pane is a cached view of its own inside gpui-kit's dock |
 //! | [`AtlasApp`] (content before that: Welcome, the viewer gate) | hover/scroll/click inside the screen; every state change | cached |
 //!
-//! The sidebar does not simply observe the content view — a scroll tick
-//! notifies the content view too, and re-rendering the sidebar on every tick
-//! would be pointless. Instead it keeps a [`SidebarSnapshot`] of what it shows
-//! and re-renders only when that snapshot changes.
+//! The launcher does not simply observe the content view — a scroll tick
+//! notifies the content view too, and re-rendering the strip on every tick
+//! would be pointless. It keeps a snapshot of what it shows and re-renders
+//! only when that changes (see [`crate::workspace::launcher`]).
 //!
 //! What the shell shows follows the design, and **each fact is stated once**:
 //!
 //! | region | states |
 //! |---|---|
-//! | title bar, leading | the household — its name and file menu, the sample marker |
-//! | title bar, trailing | the file state with `Save` beside it, the viewer, the theme |
-//! | sidebar | the app's own name, the eight destinations, Figure meanings and Settings |
+//! | title bar, leading | the app's name, the household — its name and file menu — the sample marker, the layout menu |
+//! | title bar, trailing | the file state with `Save` beside it, the viewer, Figure meanings, the theme, Settings |
+//! | launcher strip | the screens, as panes to open or focus; the `+` and `…` menus |
 //! | status bar | currency, the two dates, the last result, the file's path, gpui's frame reading |
 //!
-//! The household is named in the title bar and nowhere else; the app is named
-//! in the sidebar, and in the title bar only while there is no sidebar (before
-//! a household is open, and while the viewer gate is up). Saving is the most
-//! used command in the app, so it sits in the chrome next to the state it acts
-//! on, and the footer names the file that state is about.
+//! The household is named in the title bar and nowhere else. Saving is the
+//! most used command in the app, so it sits in the chrome next to the state
+//! it acts on, and the footer names the file that state is about. The layout
+//! menu sits beside the household because a layout is workspace-level state:
+//! it belongs to the window, not to any pane.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Collapsible, Disableable as _, Icon, Root, Sizable as _, Theme, ThemeMode, TitleBar,
+    ActiveTheme as _, Disableable as _, Icon, Root, Sizable as _, Theme, ThemeMode, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
+    menu::{DropdownMenu as _, PopupMenuItem},
     separator::Separator,
-    sidebar::{Sidebar, SidebarFooter, SidebarHeader, SidebarItem, SidebarMenu, SidebarMenuItem},
     status_bar::StatusBar,
     tag::Tag,
     v_flex,
@@ -53,13 +53,10 @@ use gpui_kit::*;
 
 use crate::app::AtlasApp;
 use crate::launch::Launch;
-use crate::nav::{Destination, Route};
+use crate::nav::Route;
+use crate::workspace::launcher::{LAUNCHER_HEIGHT, LauncherView};
 use crate::workspace::{WorkspaceView, commands};
-
-/// Width of the sidebar column: gpui-kit's `w_64` expanded, its icon width collapsed.
-pub fn sidebar_width(collapsed: bool) -> Pixels {
-    if collapsed { px(48.) } else { px(256.) }
-}
+use atlas_workspace::resolver::Intent;
 
 /// The file facts the chrome states, read once per frame (the shell renders on
 /// every one of them, so `file_state_text` is formatted once and split, not
@@ -93,20 +90,20 @@ impl FileChrome {
 /// The window's root view.
 pub struct Shell {
     app: Entity<AtlasApp>,
-    sidebar: Entity<SidebarView>,
     workspace: Entity<WorkspaceView>,
+    launcher: Entity<LauncherView>,
 }
 
 impl Shell {
     /// Creates the content view, the workspace that shows its screens as
-    /// panes, and the shell around them.
+    /// panes, the launcher, and the shell around them.
     pub fn new(launch: &Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let app = cx.new(|cx| AtlasApp::new(launch, window, cx));
-        let sidebar = cx.new(|cx| SidebarView::new(app.clone(), cx));
         commands::bind_keys(cx);
         let workspace = cx.new(|cx| WorkspaceView::new(app.clone(), launch, window, cx));
         app.update(cx, |app, _| app.attach_workspace(workspace.downgrade()));
-        Shell { app, sidebar, workspace }
+        let launcher = cx.new(|cx| LauncherView::new(app.clone(), workspace.clone(), launch.data_dir.clone(), cx));
+        Shell { app, workspace, launcher }
     }
 
     /// The content view: the household, the derived models, every screen.
@@ -120,9 +117,9 @@ impl Shell {
         &self.workspace
     }
 
-    /// The sidebar view (tests check that it is reused between frames).
-    pub fn sidebar(&self) -> &Entity<SidebarView> {
-        &self.sidebar
+    /// The launcher strip (tests check that it is reused between frames).
+    pub fn launcher(&self) -> &Entity<LauncherView> {
+        &self.launcher
     }
 
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -132,30 +129,70 @@ impl Shell {
         cx.notify();
     }
 
+    /// The layout menu: the workspace-level commands. Undo and redo name the
+    /// step they would take back; saved layouts join this menu once they exist.
+    fn render_layout_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let workspace = self.workspace.clone();
+        let (undo, redo) = {
+            let history = self.workspace.read(cx).history();
+            (history.undo_label().map(str::to_owned), history.redo_label().map(str::to_owned))
+        };
+        Button::new("layout-menu").small().ghost().compact().icon(IconName::LayoutGrid).label("Layout").tooltip("Arrange the workspace: undo, redo, reset").dropdown_menu(move |menu, _, _| {
+            let undo_workspace = workspace.clone();
+            let redo_workspace = workspace.clone();
+            let reset_workspace = workspace.clone();
+            menu.item(PopupMenuItem::new(match &undo {
+                Some(label) => format!("Undo: {label}"),
+                None => "Nothing to undo".to_string(),
+            })
+            .icon(IconName::Undo2)
+            .disabled(undo.is_none())
+            .on_click(move |_, window, cx| {
+                undo_workspace.update(cx, |workspace, cx| {
+                    workspace.undo(window, cx);
+                });
+            }))
+            .item(PopupMenuItem::new(match &redo {
+                Some(label) => format!("Redo: {label}"),
+                None => "Nothing to redo".to_string(),
+            })
+            .icon(IconName::Redo2)
+            .disabled(redo.is_none())
+            .on_click(move |_, window, cx| {
+                redo_workspace.update(cx, |workspace, cx| {
+                    workspace.redo(window, cx);
+                });
+            }))
+            .separator()
+            .item(PopupMenuItem::new("Reset layout").icon(IconName::RotateCcw).on_click(move |_, window, cx| {
+                reset_workspace.update(cx, |workspace, cx| workspace.reset_layout(window, cx));
+            }))
+        })
+    }
+
     fn render_title_bar(&self, fullscreen: bool, file: &FileChrome, cx: &mut Context<Self>) -> impl IntoElement {
         let is_dark = cx.theme().is_dark();
         let muted = cx.theme().muted_foreground;
         let app = self.app.read(cx);
         let opened = app.is_opened();
+        let usable = opened && !app.viewer_pending();
         let is_sample = app.is_sample();
-        // The sidebar names the app whenever it is on screen; the title bar
-        // then leads with the household instead of repeating the app's name.
-        let named_in_sidebar = opened && !app.viewer_pending();
         let viewer_label = if opened { format!("Who is looking: {}", app.viewer_display_name()) } else { String::new() };
         let menu = app.render_household_menu(self.app.downgrade());
         let picker = self.app.clone();
         let save = self.app.clone();
+        let meanings = self.app.clone();
+        let settings = self.workspace.clone();
         TitleBar::new()
             .when(fullscreen, |bar| bar.pl_0())
             .child(
                 h_flex()
                     .items_center()
                     .gap_3()
-                    .when(!named_in_sidebar, |this| {
-                        this.child(Icon::new(IconName::Wallet).small()).child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer"))
-                    })
+                    .child(h_flex().items_center().gap_2().child(Icon::new(IconName::Wallet).small()).child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Atlas Financer")))
                     .when(opened, |this| this.child(menu))
-                    .when(opened && is_sample, |this| this.child(Tag::secondary().xsmall().outline().child("Fictitious sample"))),
+                    .when(opened && is_sample, |this| this.child(Tag::secondary().xsmall().outline().child("Fictitious sample")))
+                    .when(usable, |this| this.child(self.render_layout_menu(cx))),
             )
             .child(
                 h_flex()
@@ -195,6 +232,17 @@ impl Shell {
                                 .on_click(move |_, window, cx| picker.update(cx, |app, cx| app.open_viewer_picker(window, cx))),
                         )
                     })
+                    .when(usable, |this| {
+                        this.child(
+                            Button::new("title-figure-meanings")
+                                .small()
+                                .ghost()
+                                .compact()
+                                .icon(IconName::BookOpen)
+                                .tooltip("What the tags on every figure mean")
+                                .on_click(move |_, window, cx| meanings.update(cx, |app, cx| app.open_figure_meanings(None, window, cx))),
+                        )
+                    })
                     .child(
                         Button::new("theme")
                             .small()
@@ -203,7 +251,22 @@ impl Shell {
                             .icon(if is_dark { IconName::Sun } else { IconName::Moon })
                             .tooltip(if is_dark { "Switch to light theme" } else { "Switch to dark theme" })
                             .on_click(cx.listener(|this, _, window, cx| this.toggle_theme(window, cx))),
-                    ),
+                    )
+                    .when(usable, |this| {
+                        this.child(
+                            Button::new("title-settings")
+                                .small()
+                                .ghost()
+                                .compact()
+                                .icon(IconName::Settings)
+                                .tooltip("Open Settings in a pane")
+                                .on_click(move |_, window, cx| {
+                                    settings.update(cx, |workspace, cx| {
+                                        let _ = workspace.open(Route::Settings, Intent::Open, window, cx);
+                                    })
+                                }),
+                        )
+                    }),
             )
     }
 
@@ -263,28 +326,27 @@ impl Render for Shell {
         // Close the previous frame (its paint probe has fired by now), open this
         // one, and write the once-a-second summary when due.
         let is_dark = cx.theme().is_dark();
-        let (collapsed, show_sidebar) = self.app.update(cx, |app, _| {
+        let usable = self.app.update(cx, |app, _| {
             app.perf.begin_frame(app.route().slug());
             app.perf.log_window_info(window, is_dark);
             app.perf.log_summary_if_due(window);
             // The summary (histogram snapshot + file write) costs a few ms in a
             // debug build; keep it out of this frame's `build` figure.
             app.perf.restart_build_clock();
-            (app.sidebar_collapsed(), app.is_opened() && !app.viewer_pending())
+            app.is_opened() && !app.viewer_pending()
         });
         // One read for both bars: the title bar states the file's state, the
         // status bar names the file.
         let file = FileChrome::of(self.app.read(cx));
-        let sidebar_width = if show_sidebar { sidebar_width(collapsed) } else { px(0.) };
         // The content column's width is set in pixels rather than `flex_1()` on
         // purpose: with an auto width taffy sizes the whole screen from its
         // content on every pass of every ancestor (docs/perf.md §2).
-        let content_width = window.viewport_size().width - sidebar_width;
+        let content_width = window.viewport_size().width;
         let content_style = StyleRefinement::default().w(content_width).h_full().flex_none();
         // The workspace shows the screens as panes once there is a household
         // and someone looking; before that the content view shows Welcome or
-        // the viewer gate itself.
-        let content: AnyElement = if show_sidebar { self.workspace.clone().cached(content_style).into_any_element() } else { self.app.clone().cached(content_style).into_any_element() };
+        // the viewer gate itself, and there is no launcher.
+        let content: AnyElement = if usable { self.workspace.clone().cached(content_style).into_any_element() } else { self.app.clone().cached(content_style).into_any_element() };
         let tree = v_flex()
             .size_full()
             .bg(cx.theme().background)
@@ -294,16 +356,10 @@ impl Render for Shell {
             .on_mouse_move(cx.listener(|this, _, _, cx| this.app.read(cx).perf().count_mouse_move()))
             .on_scroll_wheel(cx.listener(|this, _, _, cx| this.app.read(cx).perf().count_wheel()))
             .child(self.render_title_bar(window.is_fullscreen(), &file, cx))
-            .child(
-                h_flex()
-                    .items_stretch()
-                    .flex_1()
-                    .min_h_0()
-                    // Cached views are laid out from the style given here (their
-                    // contents are not measured), so both get a definite size.
-                    .when(show_sidebar, |this| this.child(self.sidebar.clone().cached(StyleRefinement::default().w(sidebar_width).h_full().flex_none())))
-                    .child(content),
-            )
+            // Cached views are laid out from the style given here (their
+            // contents are not measured), so each gets a definite size.
+            .when(usable, |this| this.child(self.launcher.clone().cached(StyleRefinement::default().w(content_width).h(LAUNCHER_HEIGHT).flex_none())))
+            .child(h_flex().items_stretch().flex_1().min_h_0().child(content))
             .child(self.render_status_bar(&file, cx))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
@@ -313,162 +369,5 @@ impl Render for Shell {
         let probed = self.app.read(cx).perf().phase_probe(tree.into_any_element());
         self.app.update(cx, |app, _| app.perf.end_build());
         probed
-    }
-}
-
-/// What the sidebar shows. The sidebar re-renders only when this changes.
-///
-/// It is the destination and the collapse state and nothing else: the sidebar
-/// states the app's own name, which never changes, so a new viewer, a renamed
-/// household or a different currency no longer costs a sidebar frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SidebarSnapshot {
-    pub destination: Option<Destination>,
-    pub collapsed: bool,
-}
-
-impl SidebarSnapshot {
-    fn of(app: &AtlasApp) -> Self {
-        SidebarSnapshot { destination: app.destination(), collapsed: app.sidebar_collapsed() }
-    }
-}
-
-/// One group of destinations, and the hairline that divides it from the group
-/// before it.
-///
-/// gpui-kit's `SidebarGroup` spends a 32 px label row on every group whether or
-/// not the group is named — and none of these are, because naming only the
-/// first group (as the design's illustrations do) names nothing. It is the
-/// index of the sidebar's child that names the items inside it: `main-sidebar`
-/// ▸ `1-0-0` is the second group's first destination, which is how
-/// `crates/atlas-app/tests/ui.rs` clicks them. This renders the menu under
-/// exactly the id the group would have given it, and spends the band on the
-/// rule instead.
-#[derive(Clone)]
-struct NavGroup {
-    /// Draw the dividing rule above this group.
-    rule: bool,
-    collapsed: bool,
-    menu: SidebarMenu,
-}
-
-impl Collapsible for NavGroup {
-    fn is_collapsed(&self) -> bool {
-        self.collapsed
-    }
-
-    fn collapsed(mut self, collapsed: bool) -> Self {
-        self.collapsed = collapsed;
-        self
-    }
-}
-
-impl SidebarItem for NavGroup {
-    fn render(self, id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let menu_id = SharedString::from(format!("{}-0", id.into()));
-        let hairline = cx.theme().sidebar_border;
-        v_flex()
-            .when(self.rule, |this| this.child(div().w_full().my_2().h(px(1.)).bg(hairline)))
-            .child(self.menu.collapsed(self.collapsed).render(menu_id, window, cx))
-    }
-}
-
-/// The navigation sidebar, as its own cached view.
-pub struct SidebarView {
-    app: Entity<AtlasApp>,
-    snapshot: SidebarSnapshot,
-    /// Renders since creation — how tests see that a frame reused the cache.
-    renders: u64,
-    _observe: Subscription,
-}
-
-impl SidebarView {
-    fn new(app: Entity<AtlasApp>, cx: &mut Context<Self>) -> Self {
-        let snapshot = SidebarSnapshot::of(app.read(cx));
-        // Every notify of the content view lands here (hover, scroll, edits);
-        // only a changed snapshot is worth a re-render.
-        let _observe = cx.observe(&app, |this, app, cx| {
-            let next = SidebarSnapshot::of(app.read(cx));
-            if next != this.snapshot {
-                log::debug!("perf: sidebar re-renders (destination={:?} collapsed={})", next.destination, next.collapsed);
-                this.snapshot = next;
-                cx.notify();
-            }
-        });
-        SidebarView { app, snapshot, renders: 0, _observe }
-    }
-
-    /// How many times the sidebar has been rendered.
-    pub fn renders(&self) -> u64 {
-        self.renders
-    }
-
-    pub fn snapshot(&self) -> &SidebarSnapshot {
-        &self.snapshot
-    }
-}
-
-impl Render for SidebarView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.renders += 1;
-        let collapsed = self.snapshot.collapsed;
-        let active = self.snapshot.destination;
-        let theme = cx.theme();
-        // The header is the app's own mark and name. The household is named in
-        // the title bar, which is where its menu and its file commands are.
-        let mut sidebar = Sidebar::new("main-sidebar").collapsed(collapsed).w_64().header(
-            SidebarHeader::new()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size_8()
-                        .flex_shrink_0()
-                        .rounded(theme.radius)
-                        .bg(theme.sidebar_primary)
-                        .text_color(theme.sidebar_primary_foreground)
-                        .child(Icon::new(IconName::Wallet)),
-                )
-                .when(!collapsed, |this| this.child(div().flex_1().overflow_hidden().text_sm().font_weight(FontWeight::SEMIBOLD).child("Atlas Financer"))),
-        );
-        for (index, group) in Destination::GROUPS.iter().enumerate() {
-            let menu = SidebarMenu::new().children(group.iter().map(|destination| {
-                let destination = *destination;
-                SidebarMenuItem::new(destination.label())
-                    .icon(destination.icon())
-                    .active(active == Some(destination))
-                    .on_click(cx.listener(move |this, _, _, cx| this.app.update(cx, |app, cx| app.navigate(destination.home(), cx))))
-            }));
-            sidebar = sidebar.child(NavGroup { rule: index > 0, collapsed, menu });
-        }
-        let meanings = self.app.clone();
-        sidebar.footer(
-            SidebarFooter::new().child(
-                v_flex()
-                    .w_full()
-                    .gap_1()
-                    .child(
-                        Button::new("sidebar-figure-meanings")
-                            .small()
-                            .ghost()
-                            .compact()
-                            .icon(IconName::BookOpen)
-                            .when(!collapsed, |b| b.label("Figure meanings…"))
-                            .tooltip("What the tags on every figure mean")
-                            .on_click(move |_, window, cx| meanings.update(cx, |app, cx| app.open_figure_meanings(None, window, cx))),
-                    )
-                    .child(
-                        Button::new("sidebar-settings")
-                            .small()
-                            .ghost()
-                            .compact()
-                            .icon(IconName::Settings)
-                            .when(!collapsed, |b| b.label("Settings"))
-                            .when(active == Some(Destination::Settings), |b| b.primary())
-                            .on_click(cx.listener(|this, _, _, cx| this.app.update(cx, |app, cx| app.navigate(Route::Settings, cx)))),
-                    ),
-            ),
-        )
     }
 }

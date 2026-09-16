@@ -478,6 +478,7 @@ dependencies = [
  "env_filter",
  "gpui-kit",
  "log",
+ "serde",
  "serde_json",
  "ureq",
 ]

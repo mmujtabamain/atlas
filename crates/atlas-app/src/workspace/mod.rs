@@ -2,7 +2,7 @@
 //!
 //! Every screen of the app shows inside a **pane**. Panes sit side by side in
 //! horizontal and vertical splits with draggable dividers, stack as tabs, and
-//! one of them is the **active** pane: the one the sidebar, the keyboard
+//! one of them is the **active** pane: the one the launcher, the keyboard
 //! commands and in-pane Back act on. Closing the last pane leaves an empty
 //! workspace that offers to open one.
 //!
@@ -33,6 +33,7 @@
 //! | [`kinds`] | the pane registry: a route as a pane definition (`kind` + `resource`) and back; titles and icons |
 //! | [`mirror`] | reading the engine's dumped layout back into a model tree |
 //! | [`dock_targets`] | the drag-target overlay: bands for docking beside a group, a run of siblings, or the window |
+//! | [`launcher`] | the pane launcher strip under the title bar, and its saved arrangement |
 //! | [`commands`] | the keyboard commands: split, close, next pane, back |
 //!
 //! Dragging a pane onto another pane (its centre for a tab, an edge for a
@@ -46,9 +47,11 @@
 pub mod commands;
 pub mod dock_targets;
 pub mod kinds;
+pub mod launcher;
 pub mod mirror;
 pub mod pane;
 pub mod view;
 
+pub use launcher::LauncherView;
 pub use pane::PaneView;
 pub use view::WorkspaceView;

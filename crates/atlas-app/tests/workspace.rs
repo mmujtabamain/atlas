@@ -1,6 +1,6 @@
 //! UI integration tests of the pane workspace: the production `Shell` with its
 //! `WorkspaceView` in a headless window (gpui-kit `test-support`), driven
-//! through the workspace's own commands, the sidebar, and pointer events.
+//! through the workspace's own commands, the launcher, and pointer events.
 //!
 //! The layout model is checked through its character grid
 //! (`atlas_workspace::grid::render_numbered`: panes numbered in reading
@@ -15,7 +15,7 @@
 
 mod common;
 
-use atlas_app::nav::Route;
+use atlas_app::nav::{Destination, Route};
 use atlas_app::workspace::pane::MIN_CONTENT_WIDTH;
 use atlas_app::workspace::view::{REFUSED_SPLIT_MESSAGE, REFUSED_SPLIT_TOAST_ID};
 use atlas_app::workspace::{WorkspaceView, kinds};
@@ -200,7 +200,7 @@ fn split_right_opens_a_second_pane_beside_the_first(cx: &mut TestAppContext) {
     assert_eq!(grid(cx, &workspace, 2, 1), "12");
     cx.update(|cx| {
         assert_eq!(workspace.read(cx).active_route(cx), Some(Route::Accounts), "the new pane is the active one");
-        assert_eq!(app.read(cx).route(), Route::Accounts, "the sidebar follows the active pane");
+        assert_eq!(app.read(cx).route(), Route::Accounts, "the launcher follows the active pane");
     });
 
     // A state change in the household (here: the earmarks boundary) is not a
@@ -276,7 +276,7 @@ fn open_focuses_an_existing_pane_and_new_instance_adds_a_tab(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
-fn a_press_in_a_pane_makes_it_active_and_the_sidebar_navigates_that_pane(cx: &mut TestAppContext) {
+fn a_press_in_a_pane_makes_it_active_and_the_launcher_navigates_that_pane(cx: &mut TestAppContext) {
     let (window, app, workspace) = today_and_accounts(cx);
     let order = cx.update(|cx| workspace.read(cx).panes_in_order());
     let today = order[0].clone();
@@ -288,26 +288,37 @@ fn a_press_in_a_pane_makes_it_active_and_the_sidebar_navigates_that_pane(cx: &mu
     assert_eq!(active(cx, &workspace), today, "the press made Today's pane the active one");
     cx.update(|cx| assert_eq!(app.read(cx).route(), Route::Today, "the chrome follows the active pane"));
 
-    // Rules & taxes is the first item of the third sidebar group.
+    // Rules & taxes, from the launcher: the launcher is not navigation. It
+    // opens Rules as a new pane in the *active* stack — Today's — and Today
+    // keeps its screen behind the new tab.
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
-        window.within("main-sidebar").click("2-0-0", cx);
+        window.click("launcher-rules", cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("screen-rules").visible(), "the active pane navigated");
+        assert!(window.find("screen-rules").visible(), "the new pane is displayed in the active stack");
         assert!(window.find("screen-accounts").visible(), "the other pane kept its screen");
-        assert!(window.try_find("screen-today").is_none(), "Today left with the navigation");
+        assert!(window.try_find("screen-today").is_none(), "Today is behind the Rules tab");
     })
     .unwrap();
+    assert_eq!(pane_count(cx, &workspace), 3);
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert_eq!(workspace.pane_route(&today, cx), Some(Route::Rules));
+        assert_eq!(workspace.pane_route(&today, cx), Some(Route::Today), "Today's pane still shows Today");
         assert_eq!(workspace.pane_route(&order[1], cx), Some(Route::Accounts));
+        let rules = workspace.active_pane().expect("the new pane is active");
+        assert_eq!(workspace.pane_route(&rules, cx), Some(Route::Rules));
+        assert_eq!(workspace.layout().stack_of(&rules), workspace.layout().stack_of(&today), "as a tab of Today's stack");
         assert_eq!(app.read(cx).route(), Route::Rules);
     });
+    // Clicking the same launcher item again focuses that pane instead of
+    // opening another; Shift-click opens another instance.
+    cx.update_window(window, |_, window, cx| window.click("launcher-rules", cx)).unwrap();
+    cx.run_until_parked();
+    assert_eq!(pane_count(cx, &workspace), 3, "a second click focuses the existing Rules pane");
 }
 
 #[gpui_kit::test]
@@ -382,7 +393,7 @@ fn closing_every_pane_shows_the_empty_workspace_that_opens_one_again(cx: &mut Te
         assert!(window.find("workspace-empty").visible(), "the empty state takes the column");
         assert!(window.find("workspace-add-pane").visible());
         assert!(window.try_find("screen-today").is_none());
-        assert!(window.within("main-sidebar").find("0-0-0").visible(), "the sidebar stays");
+        assert!(window.find("launcher-today").visible(), "the launcher stays");
         window.click("workspace-add-pane", cx);
     })
     .unwrap();
@@ -1083,6 +1094,231 @@ fn a_missing_record_shows_the_unavailable_placeholder(cx: &mut TestAppContext) {
         assert!(window.find("screen-accounts").visible());
     })
     .unwrap();
+}
+
+// ----- the launcher strip and the title bar --------------------------------------------
+
+/// Clicks `id` with Shift held (the test helpers' `click` has no modifiers).
+fn shift_click(window: &mut Window, id: &str, cx: &mut gpui_kit::App) {
+    let position = window.find(SharedString::from(id.to_string())).bounds().center();
+    let modifiers = gpui_kit::Modifiers { shift: true, ..Default::default() };
+    window.dispatch_event(MouseMoveEvent { position, pressed_button: None, modifiers }.to_platform_input(), cx);
+    window.render_frame(cx);
+    window.dispatch_event(MouseDownEvent { button: MouseButton::Left, position, modifiers, click_count: 1, first_mouse: false }.to_platform_input(), cx);
+    window.dispatch_event(MouseUpEvent { button: MouseButton::Left, position, modifiers, click_count: 1 }.to_platform_input(), cx);
+    window.render_frame(cx);
+}
+
+#[gpui_kit::test]
+fn shift_click_on_the_launcher_opens_another_instance(cx: &mut TestAppContext) {
+    let (handle, _app, workspace) = open_workspace(cx, sample(Route::Today));
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| window.click("launcher-today", cx)).unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 1, "a click on the screen already shown focuses it");
+    cx.update_window(window, |_, window, cx| shift_click(window, "launcher-today", cx)).unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 2, "Shift-click opens a second Today pane");
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.pane_route(&order[0], cx), Some(Route::Today));
+        assert_eq!(workspace.pane_route(&order[1], cx), Some(Route::Today));
+        assert_eq!(workspace.layout().stack_of(&order[0]), workspace.layout().stack_of(&order[1]), "in the active stack, as tabs");
+    });
+}
+
+#[gpui_kit::test]
+fn the_launcher_menu_opens_a_screen_to_the_right(cx: &mut TestAppContext) {
+    let (handle, _app, workspace) = open_workspace(cx, sample(Route::Today));
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click("launcher-item-forecast", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("popup-menu").visible(), "right-click opens the item's menu");
+        // Open, Open new instance, Open right, …
+        window.within("popup-menu").click(2usize, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 2);
+    assert_eq!(grid(cx, &workspace, 3, 1), "112", "Forecast opened beside Today, taking the default share");
+    let forecast = active(cx, &workspace);
+    assert_eq!(cx.update(|cx| workspace.read(cx).pane_route(&forecast, cx)), Some(Route::ForecastPath));
+}
+
+#[gpui_kit::test]
+fn a_screen_dragged_from_the_launcher_becomes_a_pane_where_it_is_dropped(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    // Onto the bottom edge zone of the Today pane: the engine reports the
+    // drop and a new Forecast pane opens under Today.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let handle = window.find("launcher-item-forecast").bounds().center();
+        let target = zone_point(window.find(pane_id(1)).bounds(), Zone::Bottom);
+        window.drag(handle, target, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 3);
+    let tree = root(cx, &workspace);
+    assert_eq!(tree.axis(), Some(Axis::Horizontal));
+    let column = &tree.children()[0];
+    assert_eq!(column.axis(), Some(Axis::Vertical), "Today's slot became a column: {tree:?}");
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    assert_eq!(cx.update(|cx| workspace.read(cx).pane_route(&order[1], cx)), Some(Route::ForecastPath));
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Open Forecast"));
+
+    // Onto the window's bottom band: a Rules pane along the whole window.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let handle = window.find("launcher-item-rules").bounds().center();
+        let over = window.find(pane_id(2)).bounds().center();
+        press_at(window, handle, cx);
+        move_pressed_to(window, handle + point(px(12.), px(4.)), cx);
+        move_pressed_to(window, over, cx);
+        window.render_frame(cx);
+        assert!(cx.has_active_drag());
+        assert!(window.try_find("dock-targets").is_some(), "the bands show for a launcher drag too");
+        let band = window.find("dock-band-bottom-0").bounds().center();
+        move_pressed_to(window, band, cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("dock-band-label").label(), Some("Dock along the bottom of the window"));
+        release_at(window, band, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 4);
+    let tree = root(cx, &workspace);
+    assert_eq!(tree.axis(), Some(Axis::Vertical), "the new pane spans the window's bottom: {tree:?}");
+    let order = cx.update(|cx| workspace.read(cx).panes_in_order());
+    assert_eq!(cx.update(|cx| workspace.read(cx).pane_route(order.last().unwrap(), cx)), Some(Route::Rules));
+}
+
+#[gpui_kit::test]
+fn the_launcher_can_be_rearranged_and_the_arrangement_is_kept(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("atlas-launcher-ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut launch = sample(Route::Today);
+    launch.data_dir = Some(dir.clone());
+    let (handle, shell) = open_shell(cx, launch);
+    let launcher = cx.update(|cx| shell.read(cx).launcher().clone());
+    let window: gpui_kit::AnyWindowHandle = handle.into();
+    settle(cx, window);
+
+    // Drag Sharing onto Today: Sharing moves to the front.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let from = window.find("launcher-item-policies").bounds().center();
+        let to = window.find("launcher-item-today").bounds().center();
+        window.drag(from, to, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    cx.update(|cx| {
+        let config = launcher.read(cx).config().clone();
+        assert_eq!(config.pinned_destinations()[0], Destination::Sharing, "{:?}", config.pinned);
+        assert_eq!(config.pinned_destinations()[1], Destination::Today);
+    });
+
+    // Unpin Forecast from its menu: it leaves the strip for the … menu.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click("launcher-item-forecast", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        // Open, Open new instance, Open right, Open below, Open in new window, ─, Unpin.
+        window.within("popup-menu").click(6usize, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    cx.update_window(window, |_, window, _| assert!(window.try_find("launcher-forecast").is_none(), "Forecast is off the strip")).unwrap();
+    cx.update(|cx| assert_eq!(launcher.read(cx).config().hidden_destinations(), vec![Destination::Forecast]));
+
+    // The arrangement was written, and reads back the same.
+    let saved = atlas_app::workspace::launcher::LauncherConfig::load(Some(&dir));
+    cx.update(|cx| assert_eq!(&saved, launcher.read(cx).config()));
+
+    // The … menu offers Forecast back; pin it.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("launcher-more", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        // Forecast, Pin Forecast to the launcher, ─, Restore the default launcher.
+        window.within("popup-menu").click(1usize, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    cx.update_window(window, |_, window, _| assert!(window.find("launcher-forecast").visible(), "Forecast is back on the strip")).unwrap();
+    cx.update(|cx| assert!(launcher.read(cx).config().hidden.is_empty()));
+
+    // Restore the default: Today first again.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("launcher-more", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.within("popup-menu").click(0usize, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    cx.update(|cx| assert_eq!(launcher.read(cx).config(), &atlas_app::workspace::launcher::LauncherConfig::default()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[gpui_kit::test]
+fn the_title_bar_opens_settings_and_resets_the_layout(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("main-sidebar").is_none(), "the sidebar is gone");
+        assert!(window.find("launcher").visible());
+        window.click("title-settings", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 3);
+    cx.update_window(window, |_, window, _| assert!(window.find("screen-settings").visible(), "Settings opened as a pane")).unwrap();
+    // Layout ▾ → Reset layout: one pane, showing the active screen.
+    cx.update_window(window, |_, window, cx| window.click("layout-menu", cx)).unwrap();
+    cx.run_until_parked();
+    let_dialog_settle();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        // Undo, Redo, ─, Reset layout.
+        window.within("popup-menu").click(3usize, cx);
+    })
+    .unwrap();
+    settle(cx, window);
+    assert_eq!(pane_count(cx, &workspace), 1);
+    assert_eq!(grid(cx, &workspace, 1, 1), "1");
+    let only = active(cx, &workspace);
+    assert_eq!(cx.update(|cx| workspace.read(cx).pane_route(&only, cx)), Some(Route::Settings));
+    assert_eq!(history_labels(cx, &workspace).last().map(String::as_str), Some("Reset layout"));
+    // And undo brings the three panes back.
+    drive(cx, window, &workspace, |workspace, window, cx| assert!(workspace.undo(window, cx)));
+    assert_eq!(pane_count(cx, &workspace), 3);
 }
 
 #[test]

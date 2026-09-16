@@ -73,11 +73,12 @@ use gpui_kit::*;
 use std::cell::{Cell, RefCell};
 
 use super::commands::{self, Back, ClosePane, FocusNextPane, SplitBelow, SplitRight};
-use super::dock_targets::{self, Band, DragInFlight, Outcome};
+use super::dock_targets::{self, Band, DragInFlight, Dragged, Outcome};
 use super::kinds;
+use super::launcher::LaunchDrag;
 use super::mirror;
 use super::pane::{PaneBounds, PaneView};
-use gpui_kit::component::dock::DragPanel;
+use gpui_kit::component::dock::{AnyDrag, DragPanel, DropTarget};
 use crate::alerting::{self, Level};
 use crate::app::AtlasApp;
 use crate::launch::Launch;
@@ -172,7 +173,7 @@ impl WorkspaceView {
         skin.set_toggle_button_visible(false, cx);
         let area_events = cx.subscribe_in(&area, window, |this, _, event: &DockEvent, window, cx| match event {
             DockEvent::LayoutChanged => this.mirror_from_area(window, cx),
-            DockEvent::DragDrop { .. } => log::info!("workspace: something was dropped on the dock; dropping into the workspace is not wired yet"),
+            DockEvent::DragDrop { item, target } => this.item_dropped_on_dock(item, target, window, cx),
         });
         let app_changes = cx.observe_in(&app, window, |this, _, window, cx| this.follow_household(window, cx));
         // Escape while a pane (or a divider) is being dragged ends the drag
@@ -879,18 +880,109 @@ impl WorkspaceView {
         let Some(pane) = self.pane_of_panel(panel) else {
             return;
         };
-        let level_offset = self.drag.as_ref().filter(|drag| drag.pane == pane).map(|drag| drag.level_offset).unwrap_or(0);
-        let next = DragInFlight { pane, pointer, level_offset };
+        self.follow_dragged(Dragged::Pane(pane), pointer, cx);
+    }
+
+    /// The pointer moved while a screen is dragged off the launcher.
+    fn follow_launch_drag(&mut self, item: &AnyDrag, pointer: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(launch) = item.value().downcast_ref::<LaunchDrag>() else {
+            return;
+        };
+        self.follow_dragged(Dragged::New(launch.route), pointer, cx);
+    }
+
+    fn follow_dragged(&mut self, dragged: Dragged, pointer: Point<Pixels>, cx: &mut Context<Self>) {
+        let level_offset = self.drag.as_ref().filter(|drag| drag.dragged == dragged).map(|drag| drag.level_offset).unwrap_or(0);
+        let next = DragInFlight { dragged, pointer, level_offset };
         if self.drag.as_ref() != Some(&next) {
             self.drag = Some(next);
             cx.notify();
         }
     }
 
+    /// A screen from the launcher was dropped on one of the dock's tab groups:
+    /// the engine says which group and which zone; a new pane opens there.
+    fn item_dropped_on_dock(&mut self, item: &AnyDrag, target: &DropTarget, window: &mut Window, cx: &mut Context<Self>) {
+        self.end_drag_overlay(cx);
+        let Some(launch) = item.value().downcast_ref::<LaunchDrag>() else {
+            log::info!("workspace: something that is not a screen was dropped on the dock; ignoring it");
+            return;
+        };
+        let DropTarget::Group { node, placement } = target else {
+            log::info!("workspace: screen {} dropped on a canvas, which the workspace does not use; ignoring it", launch.route.slug());
+            return;
+        };
+        let Some(stack) = self.stack_of_group_any(*node, cx) else {
+            log::warn!("workspace: screen {} dropped on a group with no pane of this workspace; ignoring it", launch.route.slug());
+            return;
+        };
+        let dock_target = match placement {
+            None => DockTarget::tab(stack),
+            Some(placement) => DockTarget::Beside { node: stack, side: side_of(*placement), share: Some(DROP_SHARE) },
+        };
+        log::info!("workspace: screen {} dropped from the launcher at {dock_target:?}", launch.route.slug());
+        let result = self.create_pane(launch.route, kinds::definition_of(launch.route), &WindowId::main(), dock_target, window, cx);
+        self.report(&result, window, cx);
+    }
+
+    /// Opens a new pane for a screen dropped on a docking band.
+    fn open_on_band(&mut self, route: Route, band: &Band, window: &mut Window, cx: &mut Context<Self>) {
+        self.end_drag_overlay(cx);
+        if !band.accepts_drops() {
+            log::info!("workspace: screen {} dropped on a band that refuses it ({}); nothing changed", route.slug(), band.label);
+            return;
+        }
+        log::info!("workspace: screen {} dropped on band {} ({})", route.slug(), band.element_id(), band.label);
+        let result = self.create_pane(route, kinds::definition_of(route), &WindowId::main(), band.target.clone(), window, cx);
+        self.report(&result, window, cx);
+    }
+
+    /// The model stack shown by the engine group `node`, from any pane it displays.
+    fn stack_of_group_any(&self, node: gpui_kit::component::dock::NodeId, cx: &App) -> Option<NodeId> {
+        self.panes.iter().find_map(|(pane, view)| {
+            let group = view.read(cx).group()?.upgrade()?;
+            (group.read(cx).node() == node).then(|| self.layout.stack_of(pane)).flatten()
+        })
+    }
+
+    /// Everything back to one pane: the active screen (or Today) alone in the
+    /// window, as one undoable step. Application data is untouched.
+    pub fn reset_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let route = self.active_route(cx).unwrap_or(Route::Today);
+        let before = self.layout.clone();
+        let mut fresh = WorkspaceLayout::new("Main").with_scope(before.scope.clone());
+        fresh.set_limits(*before.limits());
+        self.layout = fresh;
+        match self.layout.open_pane(&WindowId::main(), kinds::definition_of(route), DockTarget::edge(Side::Right)) {
+            Ok(pane) => {
+                let workspace = cx.weak_entity();
+                let app = self.app.clone();
+                let bounds = self.pane_bounds.clone();
+                let view = cx.new(|cx| PaneView::new(pane.clone(), route, app, workspace, bounds, cx));
+                self.panes.clear();
+                self.panes.insert(pane, view);
+            }
+            Err(err) => log::warn!("workspace: reset could not open {}: {err}", route.slug()),
+        }
+        self.record("Reset layout", before);
+        log::info!("workspace: layout reset to a single {} pane", route.slug());
+        self.rebuild_area(window, cx);
+        self.focus_active(window, cx);
+        self.sync_chrome(cx);
+    }
+
     /// The drag is over (dropped, cancelled, released elsewhere): no overlay.
     fn end_drag_overlay(&mut self, cx: &mut Context<Self>) {
         if self.drag.take().is_some() {
             cx.notify();
+        }
+    }
+
+    /// A screen from the launcher was dropped on one of the overlay's bands.
+    fn drop_item_on_band(&mut self, item: &AnyDrag, band: &Band, window: &mut Window, cx: &mut Context<Self>) {
+        match item.value().downcast_ref::<LaunchDrag>() {
+            Some(launch) => self.open_on_band(launch.route, band, window, cx),
+            None => self.end_drag_overlay(cx),
         }
     }
 
@@ -961,11 +1053,17 @@ impl WorkspaceView {
                 .rounded(px(2.));
             // A refused band takes the drop as well — and then does nothing —
             // so the engine underneath does not treat it as a drop on the
-            // pane's own edge zone.
-            strip = strip.on_drop(cx.listener(move |this, dropped: &DragPanel, window, cx| {
-                cx.stop_propagation();
-                this.drop_on_band(dropped.panel(), &band_for_drop, window, cx);
-            }));
+            // pane's own edge zone. Panes and launcher screens both land here.
+            let band_for_item = band.clone();
+            strip = strip
+                .on_drop(cx.listener(move |this, dropped: &DragPanel, window, cx| {
+                    cx.stop_propagation();
+                    this.drop_on_band(dropped.panel(), &band_for_drop, window, cx);
+                }))
+                .on_drop(cx.listener(move |this, dropped: &AnyDrag, window, cx| {
+                    cx.stop_propagation();
+                    this.drop_item_on_band(dropped, &band_for_item, window, cx);
+                }));
             overlay = overlay.child(strip);
         }
         if let Some(band) = hovered {
@@ -1166,8 +1264,7 @@ impl WorkspaceView {
             return measured;
         }
         let viewport = window.viewport_size();
-        let sidebar = crate::shell::sidebar_width(self.app.read(cx).sidebar_collapsed());
-        size((viewport.width - sidebar).max(px(1.)), viewport.height.max(px(1.)))
+        size(viewport.width.max(px(1.)), viewport.height.max(px(1.)))
     }
 
     /// The engine's description of a model subtree over `extent`.
@@ -1371,6 +1468,10 @@ impl Render for WorkspaceView {
             .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DragPanel>, _, cx| {
                 let panel = event.drag(cx).panel();
                 this.follow_drag(panel, event.event.position, cx);
+            }))
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<AnyDrag>, _, cx| {
+                let item = event.drag(cx).clone();
+                this.follow_launch_drag(&item, event.event.position, cx);
             }))
             .capture_any_mouse_up(cx.listener(|this, _, _, cx| this.end_drag_overlay(cx)))
             .child(recorder)

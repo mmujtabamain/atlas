@@ -34,18 +34,28 @@ use std::collections::HashMap;
 use atlas_workspace::{DockTarget, LayoutNode, OpError, PaneId, Rect, Side, WindowId, WorkspaceLayout, ops};
 use gpui_kit::{Bounds, Pixels, Point, SharedString, point, px, size};
 
+use super::kinds;
 use super::mirror;
+use crate::nav::Route;
 
 /// How thick one band is.
 pub const BAND_THICKNESS: Pixels = px(14.);
 /// How many broader targets are shown on one side at once.
 pub const MAX_VISIBLE_LEVELS: usize = 3;
 
-/// A pane drag as the overlay follows it: which pane, where the pointer is,
+/// What is being dragged: a pane already in the layout, or a screen from
+/// the launcher that becomes a pane where it is dropped.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Dragged {
+    Pane(PaneId),
+    New(Route),
+}
+
+/// A drag as the overlay follows it: what is dragged, where the pointer is,
 /// and how far `Space` has cycled the visible levels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DragInFlight {
-    pub pane: PaneId,
+    pub dragged: Dragged,
     pub pointer: Point<Pixels>,
     pub level_offset: usize,
 }
@@ -132,7 +142,7 @@ pub fn bands_for(layout: &WorkspaceLayout, window: &WindowId, drawn: &HashMap<Pa
             // The last of the visible levels is the broadest, and goes nearest the edge.
             let depth = shown - 1 - index;
             let bounds = band_bounds(pane_bounds, side, depth);
-            let outcome = outcome_of(layout, window, &drag.pane, target);
+            let outcome = outcome_of(layout, window, &drag.dragged, target);
             let label = describe(root, target, side);
             bands.push(Band { target: target.clone(), side, depth, bounds, label, outcome, hovered: bounds.contains(&drag.pointer) });
         }
@@ -156,12 +166,17 @@ pub fn band_bounds(pane: Bounds<Pixels>, side: Side, depth: usize) -> Bounds<Pix
     }
 }
 
-/// What moving `pane` to `target` would do, tried on a copy of the model.
-pub fn outcome_of(layout: &WorkspaceLayout, window: &WindowId, pane: &PaneId, target: &DockTarget) -> Outcome {
+/// What dropping `dragged` on `target` would do, tried on a copy of the
+/// model: a pane is moved there, a new screen is opened there.
+pub fn outcome_of(layout: &WorkspaceLayout, window: &WindowId, dragged: &Dragged, target: &DockTarget) -> Outcome {
     let mut trial = layout.clone();
-    match trial.move_pane(pane, window, target.clone()) {
-        Ok(()) => {
-            let preview = trial.window(window).and_then(|window| window.root.as_ref()).and_then(|root| root.pane_rects().into_iter().find(|(id, _)| id == pane)).map(|(_, rect)| rect).unwrap_or(Rect::UNIT);
+    let landed = match dragged {
+        Dragged::Pane(pane) => trial.move_pane(pane, window, target.clone()).map(|()| pane.clone()),
+        Dragged::New(route) => trial.open_pane(window, kinds::definition_of(*route), target.clone()),
+    };
+    match landed {
+        Ok(pane) => {
+            let preview = trial.window(window).and_then(|window| window.root.as_ref()).and_then(|root| root.pane_rects().into_iter().find(|(id, _)| *id == pane)).map(|(_, rect)| rect).unwrap_or(Rect::UNIT);
             Outcome::Allowed { preview }
         }
         Err(OpError::NoOp) => Outcome::Unchanged,
@@ -254,7 +269,7 @@ mod tests {
         let four = layout.open_pane(&WindowId::main(), PaneDefinition::new("forecast"), DockTarget::tab(stack)).unwrap();
         layout.set_active_pane(&panes[2]).unwrap();
         drawn.insert(four.clone(), drawn[&panes[2]]);
-        let drag = DragInFlight { pane: four.clone(), pointer: point(px(1000.), px(590.)), level_offset: 0 };
+        let drag = DragInFlight { dragged: Dragged::Pane(four.clone()), pointer: point(px(1000.), px(590.)), level_offset: 0 };
         let bands = bands_for(&layout, &WindowId::main(), &drawn, &drag);
         let bottom: Vec<&Band> = bands.iter().filter(|band| band.side == Side::Bottom).collect();
         assert_eq!(bottom.len(), 2, "{bottom:#?}");
@@ -290,13 +305,23 @@ mod tests {
         let panes = layout.main_window().unwrap().panes();
         // Tight limits: no split may leave a pane under 40 % of the window.
         layout.set_limits(atlas_workspace::SplitLimits { min_share: 0.4, max_depth: 12 });
-        let drag = DragInFlight { pane: panes[0].clone(), pointer: point(px(1000.), px(590.)), level_offset: 0 };
+        let drag = DragInFlight { dragged: Dragged::Pane(panes[0].clone()), pointer: point(px(1000.), px(590.)), level_offset: 0 };
         let bands = bands_for(&layout, &WindowId::main(), &drawn, &drag);
         let window_band = bands.iter().find(|band| band.side == Side::Bottom && band.depth == 0).unwrap();
         assert!(matches!(window_band.outcome, Outcome::Refused(_)), "{:?}", window_band.outcome);
         assert!(!window_band.accepts_drops());
+        // A screen from the launcher is judged the same way, as a new pane.
+        let drag = DragInFlight { dragged: Dragged::New(Route::ForecastPath), pointer: point(px(1000.), px(590.)), level_offset: 0 };
+        let bands = bands_for(&layout, &WindowId::main(), &drawn, &drag);
+        let window_band = bands.iter().find(|band| band.side == Side::Bottom && band.depth == 0).unwrap();
+        assert!(matches!(window_band.outcome, Outcome::Refused(_)));
+        layout.set_limits(atlas_workspace::SplitLimits::default());
+        let bands = bands_for(&layout, &WindowId::main(), &drawn, &drag);
+        let window_band = bands.iter().find(|band| band.side == Side::Bottom && band.depth == 0).unwrap();
+        assert!(matches!(window_band.outcome, Outcome::Allowed { .. }), "{:?}", window_band.outcome);
+        layout.set_limits(atlas_workspace::SplitLimits { min_share: 0.4, max_depth: 12 });
         // Pane 3 is already at the window's right edge.
-        let drag = DragInFlight { pane: panes[2].clone(), pointer: point(px(1190.), px(300.)), level_offset: 0 };
+        let drag = DragInFlight { dragged: Dragged::Pane(panes[2].clone()), pointer: point(px(1190.), px(300.)), level_offset: 0 };
         let bands = bands_for(&layout, &WindowId::main(), &drawn, &drag);
         let right = bands.iter().find(|band| band.side == Side::Right && band.depth == 0).unwrap();
         assert_eq!(right.outcome, Outcome::Unchanged);
@@ -312,7 +337,7 @@ mod tests {
         let five = layout.open_pane(&WindowId::main(), PaneDefinition::new("people"), DockTarget::WindowEdge { side: Side::Right, share: Some(0.2) }).unwrap();
         drawn.insert(four.clone(), Bounds::new(point(px(1200.), px(0.)), size(px(400.), px(600.))));
         drawn.insert(five.clone(), Bounds::new(point(px(1600.), px(0.)), size(px(400.), px(600.))));
-        let mut drag = DragInFlight { pane: five, pointer: point(px(1000.), px(590.)), level_offset: 0 };
+        let mut drag = DragInFlight { dragged: Dragged::Pane(five), pointer: point(px(1000.), px(590.)), level_offset: 0 };
         let first = bands_for(&layout, &WindowId::main(), &drawn, &drag);
         let labels = |bands: &[Band]| {
             let mut bottom: Vec<&Band> = bands.iter().filter(|band| band.side == Side::Bottom).collect();

@@ -8,7 +8,7 @@
 //!
 //! | module | contents |
 //! |---|---|
-//! | [`shell`] | `Shell`, the window's root view: title bar, cached sidebar, cached content, status bar |
+//! | [`shell`] | `Shell`, the window's root view: title bar, cached launcher strip, cached content, status bar |
 //! | [`app`] | `AtlasApp`, the content view: household, derived models, the active screen |
 //! | [`derived`] | `Lazy`, a screen model dropped on change and computed on first use |
 //! | [`nav`] | destinations, routes and the slugs that address them |
