@@ -38,7 +38,6 @@
 //! | [`floating`] | a floating window: another root over the same workspace |
 //! | [`session`] | the session file per household: debounced atomic autosave and restore |
 //! | [`skin`] | the dock's look: panes as cards with a gap, tabs with a close button, the room a drag needs |
-//! | [`scaled`] | an element drawn scaled about a point without relayout — ready for the cards while a tab is held, not applied for now |
 //! | [`layouts`] | saved layouts and templates: save, load, presets, manage |
 //! | [`commands`] | the keyboard commands: split, close, next pane, back |
 //!
@@ -59,7 +58,6 @@ pub mod launcher;
 pub mod layouts;
 pub mod mirror;
 pub mod pane;
-pub mod scaled;
 pub mod session;
 pub mod skin;
 pub mod view;

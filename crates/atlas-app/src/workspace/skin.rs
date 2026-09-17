@@ -13,8 +13,7 @@
 //! window's edges, both on a spring, so there is room to drop the tab
 //! *between* two panes or along the window's edge, and the cards dim; on
 //! drop, everything springs back. The cards shrink through the layout alone
-//! — their contents keep their size. (The paint-time scale, [`super::scaled`],
-//! is not applied for now.)
+//! — their contents keep their size.
 //!
 //! Tabs carry a close button — on show for the displayed tab, on hover for
 //! the others — and a single pane's title bar carries one too. The tab bar's

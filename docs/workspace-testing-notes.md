@@ -623,16 +623,14 @@ other windows). While a tab is held (`WorkspaceSkin::set_held`, driven by `follo
 (26 px) and each card's opacity for `HELD_OPACITY` (0.75), all on the theme's `spring_move`;
 released, they spring back. The cards shrink through the layout alone — the widened gap and
 inset — so their contents relayout at their normal size (text, icons, controls unchanged).
+There is no drawn scale (it was tried and taken out again; nothing of it remains).
 
-*Scale — held back for now* (`workspace/scaled.rs`, `Scaled` element + the engine addition in
-`vendor/gpui-pre`, see `vendor/gpui-pre/PATCH.md`): `Window::with_scale(scale, origin, f)` is a
-paint-time transform — layout and hitboxes untouched, every primitive (quads, borders, shadows,
-text re-rasterized at the scaled size, images, paths, inner content masks) drawn scaled about
-the origin; `Scaled` wraps a child in it and, while scaled, takes mouse-down and wheel in the
-capture phase. The skin no longer wraps the card's halves in it (a temporary decision: no size
-change inside the cards while a tab is held); the element, the engine addition and its
-mouse-up modality fix (which Space-then-release drops depend on) stay. The workspace's
-keystroke interceptor still swallows every key but Escape and Space while a drag is in flight.
+*Keys while a tab is held* (`WorkspaceView::new`, the keystroke interceptor): Escape cancels,
+Space cycles the docking levels, every other key is swallowed. After a key press gpui counts
+the pointer as away until the mouse moves (hover is for the mouse only), so a release right
+after Space would miss its target; the interceptor therefore re-dispatches a mouse move at the
+pointer's position (`Window::dispatch_event`) right after Space, before the key is stopped —
+synchronously, since the release may be the next event (the tests send it with no frame between).
 
 *Drop targets* (`workspace/dock_targets.rs`): `zones_for(layout, window, Field, drag)` — one
 `ZoneKind::Gap` per divider of every split (`dock-gap-<split>-<index>`, target `Beside` the
@@ -678,12 +676,12 @@ button is an icon with the tooltip "Move the panes to the active pane in the mai
    (over the desktop): a new floating window, as before. Launcher drag into a floating window.
 7. Text while a tab is held: run a drag over every screen (the reference shoot with a drag
    step) and look for text, images and icons that wrap or clip badly in the narrower cards.
-8. Keys while a tab is held: only Escape (cancel) and Space (cycle) do anything.
+8. Keys while a tab is held: only Escape (cancel) and Space (cycle) do anything. Space and
+   then a release without moving the pointer: the drop lands (the strip at the new level).
 9. The sash: hover a divider (faint line), drag it (accent line, full length), release.
 
-**Known / fragile.** The gpui change lives in `vendor/gpui-pre` (3 MB of source) behind
-`[patch.crates-io]`; a gpui-kit upgrade means re-applying the diff of that commit. If the scale
-is wired back in: scaled hitboxes stay where the layout put them (by design of the first
-version), which is why `Scaled` holds off clicks and wheel while scaled. Zones use element ids
+**Known / fragile.** The re-dispatched mouse move after Space leans on gpui's public
+`Window::dispatch_event`; if a gpui upgrade counts a mouse-up as mouse input itself the
+re-dispatch becomes redundant but stays harmless. Zones use element ids
 with the level in them (`dock-band-bottom-1` after one Space). The gap between two cards belongs
 to the outer split at a T-junction.

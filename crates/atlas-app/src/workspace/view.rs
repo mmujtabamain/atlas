@@ -243,7 +243,6 @@ impl WorkspaceView {
                     log::info!("workspace: drag cancelled with Escape; nothing changed");
                 }
                 "space" => {
-                    cx.stop_propagation();
                     let _ = this_for_keys.update(cx, |this, cx| {
                         if let Some(drag) = this.drag.as_mut() {
                             drag.level_offset += 1;
@@ -251,6 +250,16 @@ impl WorkspaceView {
                             cx.notify();
                         }
                     });
+                    // After a key press gpui counts the pointer as away until
+                    // the mouse moves again (hover is for the mouse only), and
+                    // a release before that would miss its target. Telling the
+                    // window the pointer is still where it is puts it back —
+                    // now, not later: the release may be the very next event.
+                    // (A nested dispatch resets propagation, so the key is
+                    // stopped after it.)
+                    let still_here = MouseMoveEvent { position: window.mouse_position(), pressed_button: Some(MouseButton::Left), modifiers: window.modifiers() };
+                    window.dispatch_event(PlatformInput::MouseMove(still_here), cx);
+                    cx.stop_propagation();
                 }
                 // The panes are out of use while a tab is held: no other
                 // key reaches them.

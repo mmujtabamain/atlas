@@ -5,14 +5,6 @@ resolver = "2"
 # `cargo build` leaves it next to `atlas` in `target/debug/`. Never a dependency
 # of the product crates.
 members = ["crates/atlas-core", "crates/atlas-store", "crates/atlas-workspace", "crates/atlas-app", "tools/gpui-shot"]
-# `vendor/gpui-pre` is gpui 0.3.4 (the build gpui-kit 0.6 uses) plus one
-# addition the workspace needs and the engine does not offer: a paint-time
-# scale — `Window::with_scale` — that draws everything painted inside it
-# scaled about a point, layout untouched. See vendor/gpui-pre/PATCH.md.
-exclude = ["vendor/gpui-pre"]
-
-[patch.crates-io]
-gpui-pre = { path = "vendor/gpui-pre" }
 
 [workspace.package]
 version = "0.1.0"
