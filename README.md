@@ -106,6 +106,11 @@ is off by default).
   in the top-right corner is gpui's other readout (current draw, 1 %/10 % worst, max, frame
   count), painted straight into the scene; it is off by default and `--perf-overlay` or
   `ATLAS_PERF_OVERLAY=1` shows it.
+- While a pane is dragged, the chip that follows the pointer rides in a **ghost window** of its
+  own — a transparent pop-up the size of the display, above every window — so it is one chip
+  wherever the pointer goes. A bare X server without a compositor (Xvfb on a headless box) draws
+  a transparent window as black; `ATLAS_DRAG_GHOST_WINDOW=0` keeps the ghost off there, and the
+  window that owns the drag draws the chip inside itself instead. The screenshot scripts set it.
 - `cargo run` compiles every dependency at opt-level 2 and `atlas-app` at 1 (see the profile
   notes in `Cargo.toml`); the engine crates stay unoptimised for debugging. The first build
   after pulling this is a full rebuild of the dependencies.

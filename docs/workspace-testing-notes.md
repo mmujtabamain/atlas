@@ -660,10 +660,7 @@ over the main window is on top until the main window is clicked. Windows never d
 themselves that "the pointer is inside me": the source window's bounds come from the `Window`
 at hand (its handle cannot be read while it is being updated). `render_drag_overlay_for` draws
 only in the window the resolver named (`DragInFlight::seen_from`): the strips and gap pills
-laid on that window's `Field`, the **chip** that follows the pointer (`dock-drag-chip`: the
-pane's icon and title, held at the `grab`; the engine's own drag preview is an empty view now,
-because the engine draws its preview in every window at each window's last pointer position),
-and — from another window, with no zone hovered — `dock-elsewhere` over the pane under the
+laid on that window's `Field`, and — from another window, with no zone hovered — `dock-elsewhere` over the pane under the
 pointer, else the window's active pane ("Move here, as a tab" / "Open here, as a tab"; a drop
 over chrome joins the active pane as a tab). The drag's own window shows nothing while the
 pointer is over another, and keeps the engine's indicator down (`set_zone_hovered(true)`),
@@ -674,9 +671,21 @@ the pane in the window the resolver names (`target_elsewhere`: the hovered zone'
 refused zone does nothing, else the pane under the pointer or the active stack as a tab),
 opens a window of its own over no window, or leaves the drop to the engine over the window's
 own area. Launcher drags keep the engine's chip (they also reorder the launcher, outside the
-workspace); a pane's chip is not drawn over the desktop between windows — gpui 0.3.4 cannot
-move a window, so a cursor-following window is not available without extending every
-platform backend.
+workspace).
+
+*The ghost window* (`workspace/ghost.rs`): the **chip** that follows a dragged pane
+(`dock-drag-chip`: the pane's icon and title, held at the `grab`; `WorkspaceView::render_drag_chip`)
+rides in a window of its own — a transparent `WindowKind::PopUp` the size of the display the
+pointer is on, never focused, above every window (`GhostView`, `ghost::window_options`). gpui
+cannot move a window, so the ghost covers the display and draws the chip at the pointer's
+screen position (`DragInFlight::screen`) instead of following it; it opens with the drag
+(`follow_with_ghost`, deferred, the primary display when the pointer is on none), reopens on
+another display when the pointer crosses over, and closes with the drag (`close_ghost` from
+`end_drag_overlay`). The engine's own preview is an empty view (it would draw one per window).
+The platform delivers a drag's mouse events to the window the press was in, so the ghost on
+top takes nothing from it. `Launch::drag_ghost_window` (`ATLAS_DRAG_GHOST_WINDOW=0`) turns the
+ghost off — a bare X server without a compositor draws a transparent window black — and the
+owning window's overlay draws the chip inside itself then; the screenshot scripts set it.
 
 *One bar in a single-pane floating window* (`floating.rs`, `skin.rs`): when a floating
 window's tree is one stack of one pane, the window's title bar (`TitleBar`, which keeps the
@@ -752,6 +761,10 @@ intent; asked again, the open one is brought forward (the title-bar tooltip says
     time it is not open, the same one brought forward when it is; the main window unchanged.
 13. Empty main window with the only pane in a floating window (focused): "Add pane → <the
     same screen>" — a new pane in the main window, the floating one untouched.
+6c. The ghost: pick a tab up — a chip at the pointer, over every window and over the desktop
+   between windows, one only; let go or Escape — gone; on a second display, the chip follows
+   across. Nothing behind the ghost stops responding to the drag (zones light, the drop lands).
+   `ATLAS_DRAG_GHOST_WINDOW=0`: the chip is inside the owning window instead.
 7. Text while a tab is held: run a drag over every screen (the reference shoot with a drag
    step) and look for text, images and icons that wrap or clip badly in the narrower cards.
 8. Keys while a tab is held: only Escape (cancel) and Space (cycle) do anything. Space and

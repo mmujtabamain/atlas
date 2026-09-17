@@ -2387,15 +2387,28 @@ fn a_held_tab_widens_the_gaps_and_a_drop_closes_them(cx: &mut TestAppContext) {
     })
     .unwrap();
     assert!(cx.update(|cx| workspace.read(cx).skin().is_held()), "the skin knows a tab is held");
+    // The chip rides in a window of its own, above every window.
+    cx.run_until_parked();
+    let ghost = cx.update(|cx| workspace.read(cx).ghost_window()).expect("the drag opened its ghost window");
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+    cx.update_window(ghost, |_, window, cx| {
+        window.render_frame(cx);
+        // Found and sized (the harness's window hangs off the display's
+        // edge, so the chip may lie outside the ghost's own bounds).
+        assert_eq!(window.find("dock-drag-chip").bounds().size.width, atlas_app::workspace::view::DRAG_CHIP_SIZE.width, "the chip is in the ghost window");
+    })
+    .unwrap();
     cx.update_window(window, |_, window, cx| {
-        assert!(window.find("dock-drag-chip").visible(), "the chip follows the pointer");
+        window.render_frame(cx);
+        assert!(window.try_find("dock-drag-chip").is_none(), "and not in the window that owns the drag");
         window.press("escape", cx);
         window.render_frame(cx);
-        assert!(window.try_find("dock-drag-chip").is_none(), "and goes with the drag");
     })
     .unwrap();
     settle(cx, window);
     assert!(!cx.update(|cx| workspace.read(cx).skin().is_held()), "and that it was let go");
+    assert!(cx.update(|cx| workspace.read(cx).ghost_window()).is_none(), "the ghost window went with the drag");
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1);
 }
 
 #[gpui_kit::test]
@@ -2461,7 +2474,7 @@ fn the_top_most_window_under_the_pointer_owns_the_drag(cx: &mut TestAppContext) 
         move_pressed_to(window, covered, cx);
         window.render_frame(cx);
         assert!(cx.has_active_drag());
-        assert!(window.try_find("dock-band-bottom-0").is_none() && window.try_find("dock-drag-chip").is_none(), "the main window, underneath, shows nothing");
+        assert!(window.try_find("dock-band-bottom-0").is_none() && window.try_find("dock-elsewhere").is_none(), "the main window, underneath, shows nothing");
     })
     .unwrap();
     cx.update(|cx| {
@@ -2471,7 +2484,7 @@ fn the_top_most_window_under_the_pointer_owns_the_drag(cx: &mut TestAppContext) 
     cx.update_window(floating_window, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("dock-elsewhere").visible(), "the floating window shows where the pane would land");
-        assert!(window.find("dock-band-bottom-0").visible() && window.find("dock-drag-chip").visible(), "with its strips and the chip");
+        assert!(window.find("dock-band-bottom-0").visible(), "with its strips");
     })
     .unwrap();
     // The main window raised over the floating one (the platform activated
@@ -2480,13 +2493,13 @@ fn the_top_most_window_under_the_pointer_owns_the_drag(cx: &mut TestAppContext) 
     cx.update_window(window, |_, window, cx| {
         move_pressed_to(window, covered + point(px(1.), px(0.)), cx);
         window.render_frame(cx);
-        assert!(window.find("dock-band-bottom-0").visible() && window.find("dock-drag-chip").visible(), "the main window, on top, shows its own zones and the chip");
+        assert!(window.find("dock-band-bottom-0").visible(), "the main window, on top, shows its own zones");
     })
     .unwrap();
     assert!(cx.update(|cx| workspace.read(cx).drag_in_flight().and_then(|drag| drag.elsewhere.clone()).is_none()));
     cx.update_window(floating_window, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("dock-elsewhere").is_none() && window.try_find("dock-drag-chip").is_none(), "the floating window, underneath now, shows nothing");
+        assert!(window.try_find("dock-elsewhere").is_none() && window.try_find("dock-band-bottom-0").is_none(), "the floating window, underneath now, shows nothing");
     })
     .unwrap();
     // The floating window raised again, and the release inside the main

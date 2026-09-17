@@ -203,7 +203,19 @@ pub struct WorkspaceView {
     /// windows reads this and asks only the top-most window under the
     /// pointer.
     stacking: Vec<WindowId>,
+    /// The ghost window carrying the chip of the drag in flight, and the
+    /// display it covers. See [`super::ghost`].
+    ghost: Option<GhostWindow>,
+    /// Whether a drag gets a ghost window at all (`Launch::drag_ghost_window`);
+    /// without one the owning window's overlay draws the chip.
+    ghost_window_enabled: bool,
     _subscriptions: Vec<Subscription>,
+}
+
+/// The ghost window of the drag in flight.
+struct GhostWindow {
+    handle: AnyWindowHandle,
+    display: DisplayId,
 }
 
 /// One floating window: the gpui window, its root view and its dock area.
@@ -307,6 +319,8 @@ impl WorkspaceView {
             explicit_screen: launch.explicit_screen,
             layouts: super::layouts::LayoutStore::new(launch.data_dir.as_deref()),
             stacking: vec![WindowId::main()],
+            ghost: None,
+            ghost_window_enabled: launch.drag_ghost_window,
             _subscriptions: vec![area_events, app_changes, escape_cancels_drag, raises],
         };
         this.follow_household(window, cx);
@@ -1304,13 +1318,69 @@ impl WorkspaceView {
     fn follow_dragged(&mut self, dragged: Dragged, pointer: Point<Pixels>, grab: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
         let level_offset = self.drag.as_ref().filter(|drag| drag.dragged == dragged).map(|drag| drag.level_offset).unwrap_or(0);
         let source = self.window_id_of_handle(window.window_handle()).unwrap_or_else(WindowId::main);
-        let elsewhere = self.window_under(&source, window.bounds(), window.bounds().origin + pointer, cx);
-        let next = DragInFlight { dragged, source, pointer, grab, level_offset, elsewhere };
+        let screen = window.bounds().origin + pointer;
+        let elsewhere = self.window_under(&source, window.bounds(), screen, cx);
+        let next = DragInFlight { dragged, source, pointer, screen, grab, level_offset, elsewhere };
         if self.drag.as_ref() != Some(&next) {
+            let is_pane = matches!(next.dragged, Dragged::Pane(_));
             self.drag = Some(next);
             self.set_skins_held(true, cx);
+            if is_pane {
+                self.follow_with_ghost(screen, cx);
+            }
             cx.notify();
         }
+    }
+
+    /// The ghost window over the display the pointer is on: opened with the
+    /// drag, reopened when the pointer crosses to another display. Opening
+    /// a window draws its first frame at once, so it waits for this update
+    /// to finish.
+    fn follow_with_ghost(&mut self, screen: Point<Pixels>, cx: &mut Context<Self>) {
+        if !self.ghost_window_enabled {
+            return;
+        }
+        // The display under the pointer; the primary one when the pointer is
+        // on none (a window hanging off the screen's edge).
+        let Some(display) = cx.displays().into_iter().find(|display| display.bounds().contains(&screen)).or_else(|| cx.primary_display()) else {
+            return;
+        };
+        if self.ghost.as_ref().is_some_and(|ghost| ghost.display == display.id()) {
+            return;
+        }
+        self.close_ghost(cx);
+        let workspace = cx.entity();
+        let display_id = display.id();
+        let origin = display.bounds().origin;
+        let options = super::ghost::window_options(display.as_ref());
+        cx.defer(move |cx| {
+            // The drag may have ended meanwhile, or a ghost be there already.
+            if workspace.read(cx).drag.is_none() || workspace.read(cx).ghost.is_some() {
+                return;
+            }
+            let for_view = workspace.clone();
+            match cx.open_window(options, |_, cx| cx.new(|cx| super::ghost::GhostView::new(for_view, origin, cx))) {
+                Ok(handle) => workspace.update(cx, |workspace, _| {
+                    log::debug!("workspace: ghost window opened over display {display_id:?}");
+                    workspace.ghost = Some(GhostWindow { handle: handle.into(), display: display_id });
+                }),
+                Err(err) => log::warn!("workspace: the drag's ghost window could not be opened: {err}"),
+            }
+        });
+    }
+
+    /// Closes the ghost window, if there is one.
+    fn close_ghost(&mut self, cx: &mut App) {
+        if let Some(ghost) = self.ghost.take()
+            && let Err(err) = ghost.handle.update(cx, |_, window, _| window.remove_window())
+        {
+            log::warn!("workspace: the drag's ghost window could not be closed: {err}");
+        }
+    }
+
+    /// The ghost window of the drag in flight, if one is open.
+    pub fn ghost_window(&self) -> Option<AnyWindowHandle> {
+        self.ghost.as_ref().map(|ghost| ghost.handle)
     }
 
     /// The drag in flight, if any: what the overlay follows.
@@ -1842,6 +1912,7 @@ impl WorkspaceView {
 
     /// The drag is over (dropped, cancelled, released elsewhere): no overlay.
     pub(crate) fn end_drag_overlay(&mut self, cx: &mut Context<Self>) {
+        self.close_ghost(cx);
         if self.drag.take().is_some() {
             self.set_skins_held(false, cx);
             self.skin.set_zone_hovered(false);
@@ -1877,6 +1948,45 @@ impl WorkspaceView {
     }
 
     /// The skin of `in_window`'s area.
+    /// The chip that follows the pointer: the dragged pane's icon and title,
+    /// held where the pointer took hold of the tab, with the pointer at `at`
+    /// (in the coordinates of whatever draws the chip). The workspace's own
+    /// rather than the engine's drag preview, which every window would draw
+    /// at its own last pointer position.
+    pub(crate) fn render_drag_chip(&self, drag: &DragInFlight, at: Point<Pixels>, cx: &App) -> Option<AnyElement> {
+        let Dragged::Pane(pane) = &drag.dragged else {
+            return None;
+        };
+        let route = self.pane_route(pane, cx)?;
+        let theme = cx.theme();
+        let grab = point(drag.grab.x.clamp(px(0.), DRAG_CHIP_SIZE.width - px(16.)), drag.grab.y.clamp(px(0.), DRAG_CHIP_SIZE.height));
+        let chip_origin = at - grab;
+        let title = kinds::title_of(route, self.app.read(cx).household());
+        Some(
+            h_flex()
+                .id("dock-drag-chip")
+                .test_support()
+                .absolute()
+                .left(chip_origin.x)
+                .top(chip_origin.y)
+                .w(DRAG_CHIP_SIZE.width)
+                .h(DRAG_CHIP_SIZE.height)
+                .px_2()
+                .gap_2()
+                .items_center()
+                .rounded(px(6.))
+                .bg(theme.background)
+                .border_1()
+                .border_color(theme.border)
+                .shadow_md()
+                .text_sm()
+                .text_color(theme.foreground)
+                .child(Icon::new(kinds::icon_of(route)).small())
+                .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+                .into_any_element(),
+        )
+    }
+
     pub(crate) fn skin_of(&self, in_window: &WindowId) -> Option<&Rc<WorkspaceSkin>> {
         if *in_window == WindowId::main() { Some(&self.skin) } else { self.floating.get(in_window).map(|floating| &floating.skin) }
     }
@@ -2014,38 +2124,10 @@ impl WorkspaceView {
                 }));
             overlay = overlay.child(strip);
         }
-        // The chip that follows the pointer: the dragged pane's icon and
-        // title, held where the pointer took hold of the tab. The workspace's
-        // own rather than the engine's drag preview, which every window would
-        // draw at its own last pointer position.
-        if let Dragged::Pane(pane) = &drag.dragged
-            && let Some(route) = self.pane_route(pane, cx)
-        {
-            let grab = point(drag.grab.x.clamp(px(0.), DRAG_CHIP_SIZE.width - px(16.)), drag.grab.y.clamp(px(0.), DRAG_CHIP_SIZE.height));
-            let chip_origin = drag.pointer - grab - origin;
-            let title = kinds::title_of(route, self.app.read(cx).household());
-            overlay = overlay.child(
-                h_flex()
-                    .id("dock-drag-chip")
-                    .test_support()
-                    .absolute()
-                    .left(chip_origin.x)
-                    .top(chip_origin.y)
-                    .w(DRAG_CHIP_SIZE.width)
-                    .h(DRAG_CHIP_SIZE.height)
-                    .px_2()
-                    .gap_2()
-                    .items_center()
-                    .rounded(px(6.))
-                    .bg(theme.background)
-                    .border_1()
-                    .border_color(theme.border)
-                    .shadow_md()
-                    .text_sm()
-                    .text_color(theme.foreground)
-                    .child(Icon::new(kinds::icon_of(route)).small())
-                    .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title)),
-            );
+        // The chip that follows the pointer rides in the ghost window; without
+        // one (see `Launch::drag_ghost_window`) the owning window draws it.
+        if self.ghost.is_none() && !self.ghost_window_enabled {
+            overlay = overlay.children(self.render_drag_chip(drag, drag.pointer - origin, cx));
         }
         if let Some(zone) = hovered {
             // The rectangle the pane would take, and what will happen.

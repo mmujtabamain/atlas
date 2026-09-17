@@ -36,6 +36,7 @@
 //! | [`launcher`] | the pane launcher strip under the title bar, and its saved arrangement |
 //! | [`jobs`] | the job centre: long-running work that outlives the pane that started it |
 //! | [`floating`] | a floating window: another root over the same workspace |
+//! | [`ghost`] | the ghost window: the chip that follows the pointer while a pane is dragged, above every window |
 //! | [`session`] | the session file per household: debounced atomic autosave and restore |
 //! | [`skin`] | the dock's look: panes as cards with a gap, tabs with a close button, the room a drag needs |
 //! | [`layouts`] | saved layouts and templates: save, load, presets, manage |
@@ -52,6 +53,7 @@
 pub mod commands;
 pub mod dock_targets;
 pub mod floating;
+pub mod ghost;
 pub mod jobs;
 pub mod kinds;
 pub mod launcher;

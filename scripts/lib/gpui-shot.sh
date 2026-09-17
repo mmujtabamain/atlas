@@ -16,6 +16,10 @@
 TARGET="${CARGO_TARGET_DIR:-$REPO/target}"
 APP="$TARGET/debug/atlas"
 SHOT="${GPUI_SHOT:-$TARGET/debug/gpui-shot}"
+# Xvfb has no compositor: the drag's ghost window (a transparent pop-up over the whole
+# display) would come out black over everything, so the app draws the chip inside the
+# window that owns the drag instead.
+export ATLAS_DRAG_GHOST_WINDOW=0
 
 # Fails early, with the command to run, when the Linux box has no vendored sysroot
 # yet: without it the app does not link and gpui-shot has no Vulkan driver to offer.

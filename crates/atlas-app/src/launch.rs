@@ -61,6 +61,11 @@ pub struct Launch {
     /// Off unless `--perf-overlay` or `ATLAS_PERF_OVERLAY=1` asks for it; the
     /// status bar keeps gpui's fps reading either way.
     pub perf_overlay: bool,
+    /// The chip that follows a dragged pane rides in a transparent window
+    /// of its own, above every window. On unless `ATLAS_DRAG_GHOST_WINDOW=0`
+    /// (a bare X server without a compositor shows a transparent window as
+    /// black); off, the chip is drawn inside the window that owns the drag.
+    pub drag_ghost_window: bool,
     /// Where the app keeps its own files (the launcher's arrangement,
     /// workspace sessions, saved layouts): `--data-dir`, else
     /// `ATLAS_DATA_DIR`, else the platform's per-user application directory.
@@ -96,6 +101,7 @@ impl Default for Launch {
             owner: std::env::var("USER").unwrap_or_else(|_| "user".into()),
             take_over: false,
             perf_overlay: std::env::var("ATLAS_PERF_OVERLAY").map(|v| matches!(v.trim(), "1" | "on" | "true" | "yes")).unwrap_or(false),
+            drag_ghost_window: std::env::var("ATLAS_DRAG_GHOST_WINDOW").map(|v| !matches!(v.trim(), "0" | "off" | "false" | "no")).unwrap_or(true),
         }
     }
 }
