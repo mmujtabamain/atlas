@@ -11,16 +11,16 @@
 //!
 //! While a tab is held the gap widens and the cards pull in from the
 //! window's edges, both on a spring, so there is room to drop the tab
-//! *between* two panes or along the window's edge; on drop, everything
-//! springs back. (gpui cannot scale a painted frame on every platform, so
-//! the pull-in is a layout change, not a bitmap scale.)
+//! *between* two panes or along the window's edge, and the cards dim; on
+//! drop, everything springs back. The cards shrink through the layout alone
+//! — their contents keep their size. (The paint-time scale, [`super::scaled`],
+//! is not applied for now.)
 //!
 //! Tabs carry a close button — on show for the displayed tab, on hover for
 //! the others — and a single pane's title bar carries one too. The tab bar's
 //! menu is the pane's own commands, then zoom, then close.
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -40,8 +40,6 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::scaled::{ScaleOrigin, Scaled};
-
 /// The gap between two cards at rest.
 pub const GAP: Pixels = px(8.);
 /// The gap while a tab is held: wide enough to drop the tab into.
@@ -51,8 +49,6 @@ pub const HELD_GAP: Pixels = px(28.);
 pub const HELD_INSET: Pixels = px(26.);
 /// The card's corner radius.
 const RADIUS: Pixels = px(8.);
-/// How much of its size a card is drawn at while a tab is held.
-pub const HELD_SCALE: f32 = 0.9;
 /// How opaque a card is drawn while a tab is held.
 pub const HELD_OPACITY: f32 = 0.75;
 /// The size of the ghost that follows the pointer while a tab is dragged.
@@ -65,9 +61,6 @@ pub struct SkinState {
     /// The inset and the gap as last laid out — mid-spring while a tab is
     /// picked up or let go — so the drop zones are laid where the cards are.
     laid_out: Cell<(Pixels, Pixels)>,
-    /// Each card's rectangle as last drawn, by group node: the point its two
-    /// halves scale about.
-    cards: RefCell<HashMap<u64, Rc<Cell<Bounds<Pixels>>>>>,
     /// The pointer is over one of the workspace's own drop zones (a gap, an
     /// edge strip), which takes the drop: the engine's pane indicator would
     /// promise a second place for it.
@@ -90,19 +83,9 @@ impl SkinState {
         if self.held.get() { HELD_INSET } else { GAP / 2. }
     }
 
-    /// The scale the cards are heading for.
-    pub fn target_scale(&self) -> f32 {
-        if self.held.get() { HELD_SCALE } else { 1. }
-    }
-
     /// The opacity the cards are heading for.
     pub fn target_opacity(&self) -> f32 {
         if self.held.get() { HELD_OPACITY } else { 1. }
-    }
-
-    /// The live rectangle of the card of group `node`.
-    fn card(&self, node: u64) -> Rc<Cell<Bounds<Pixels>>> {
-        self.cards.borrow_mut().entry(node).or_default().clone()
     }
 }
 
@@ -117,7 +100,7 @@ impl WorkspaceSkin {
     pub fn dock_area(id: impl Into<SharedString>, version: Option<usize>, window: &mut Window, cx: &mut App) -> (Entity<DockArea>, Rc<Self>) {
         let mut skin = None;
         let area = cx.new(|cx| {
-            let this = Rc::new(WorkspaceSkin { base: DockSkin::new(cx), state: Rc::new(SkinState { area: cx.weak_entity(), held: Cell::new(false), laid_out: Cell::new((GAP / 2., GAP)), cards: RefCell::new(HashMap::new()), zone_hovered: Cell::new(false) }) });
+            let this = Rc::new(WorkspaceSkin { base: DockSkin::new(cx), state: Rc::new(SkinState { area: cx.weak_entity(), held: Cell::new(false), laid_out: Cell::new((GAP / 2., GAP)), zone_hovered: Cell::new(false) }) });
             skin = Some(this.clone());
             DockArea::new(id, version, window, cx).with_renderer(this)
         });
@@ -271,18 +254,7 @@ impl TabGroupRenderer for WorkspaceTabs {
         let opacity = spring((("pane-opacity", node), "opacity"), self.state.target_opacity(), motion, window, cx);
         let (inset, _) = self.state.laid_out.get();
         self.state.laid_out.set((inset, half_gap * 2.));
-        // The card's rectangle (the frame less its padding) is what its two
-        // halves scale about; a canvas records it as the frame is laid out.
-        let card = self.state.card(node);
-        let recorder = canvas(
-            move |bounds, _, _| {
-                card.set(bounds);
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .inset(half_gap);
-        self.base.frame(group, window, cx).bg(gap_colour(cx)).p(half_gap).opacity(opacity).child(recorder)
+        self.base.frame(group, window, cx).bg(gap_colour(cx)).p(half_gap).opacity(opacity)
     }
 
     /// The card's lower half.
@@ -293,17 +265,15 @@ impl TabGroupRenderer for WorkspaceTabs {
 
     fn render_tab_bar(&self, group: &TabGroupContext, window: &mut Window, cx: &mut App) -> AnyElement {
         let visible: Vec<usize> = group.panels().iter().enumerate().filter(|(_, panel)| panel.visible(cx)).map(|(ix, _)| ix).collect();
-        let bar = match visible.as_slice() {
-            [] => return Empty.into_any_element(),
+        match visible.as_slice() {
+            [] => Empty.into_any_element(),
             [ix] => self.render_title(group, *ix, window, cx),
             _ => self.render_tabs(group, &visible, window, cx),
-        };
-        self.scaled(group, bar, window, cx)
+        }
     }
 
     fn render_active_panel(&self, panel: AnyView, group: &TabGroupContext, window: &mut Window, cx: &mut App) -> AnyElement {
-        let content = self.base.render_active_panel(panel, group, window, cx);
-        self.scaled(group, content, window, cx)
+        self.base.render_active_panel(panel, group, window, cx)
     }
 
     fn render_drop_indicator(&self, indicator: DropIndicator, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
@@ -319,16 +289,6 @@ impl TabGroupRenderer for WorkspaceTabs {
 }
 
 impl WorkspaceTabs {
-    /// One half of the card, drawn at the card's scale about the card's
-    /// centre — so the tab bar and the content shrink as one — and, while it
-    /// is drawn at any size but its own, taking no input.
-    fn scaled(&self, group: &TabGroupContext, half: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement {
-        let node = group.node().as_u64();
-        let motion = cx.theme().motion_tokens().spring_move;
-        let scale = spring((("pane-scale", node), "scale"), self.state.target_scale(), motion, window, cx);
-        Scaled::new(scale, ScaleOrigin::CenterOf(self.state.card(node)), half).into_any_element()
-    }
-
     /// The card's upper half around `bar`: the top corners and border.
     fn bar_shell(&self, cx: &App) -> Div {
         let theme = cx.theme();

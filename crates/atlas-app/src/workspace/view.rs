@@ -252,8 +252,8 @@ impl WorkspaceView {
                         }
                     });
                 }
-                // The panes are drawn scaled and out of use while a tab is
-                // held: no other key reaches them.
+                // The panes are out of use while a tab is held: no other
+                // key reaches them.
                 _ => cx.stop_propagation(),
             }
         });

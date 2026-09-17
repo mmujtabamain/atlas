@@ -8,6 +8,11 @@
 //! child is drawn at any size but its own the element takes its clicks and
 //! its wheel before they reach it: a scaled pane is on show, not in use.
 //! Drags and drops pass, because they are what a scaled pane is there for.
+//!
+//! The workspace skin does not apply it for now: while a tab is held the
+//! cards shrink through the layout alone, so their contents keep their size.
+//! It stays here, with the engine addition it rests on, for when it is
+//! wanted again.
 
 use std::cell::Cell;
 use std::rc::Rc;

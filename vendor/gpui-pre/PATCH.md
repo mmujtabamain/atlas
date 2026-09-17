@@ -37,9 +37,11 @@ drags and drops pass.
 
 ## Where it is used
 
-`crates/atlas-app/src/workspace/scaled.rs` — the `Scaled` element — and
-`crates/atlas-app/src/workspace/skin.rs`, which scales each pane card about its centre
-while a tab is held.
+`crates/atlas-app/src/workspace/scaled.rs` — the `Scaled` element. The workspace skin
+(`crates/atlas-app/src/workspace/skin.rs`) does not apply it for now: while a tab is held
+the pane cards shrink through the layout alone, so their contents keep their size. The
+element and this addition stay for when the scale is wanted again. The mouse-up modality
+fix is in use regardless.
 
 ## Keeping it in step
 

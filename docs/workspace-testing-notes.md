@@ -620,17 +620,19 @@ divider paints nothing at rest, a 2 px accent line while dragged and a fainter o
 title has `tab-close`. A window's last pane is draggable (the engine says no; the workspace has
 other windows). While a tab is held (`WorkspaceSkin::set_held`, driven by `follow_dragged` /
 `end_drag_overlay`) the gap heads for `HELD_GAP` (28 px), the area's inset for `HELD_INSET`
-(26 px), each card's scale for `HELD_SCALE` (0.9) and opacity for `HELD_OPACITY` (0.75), all on
-the theme's `spring_move`; released, they spring back.
+(26 px) and each card's opacity for `HELD_OPACITY` (0.75), all on the theme's `spring_move`;
+released, they spring back. The cards shrink through the layout alone — the widened gap and
+inset — so their contents relayout at their normal size (text, icons, controls unchanged).
 
-*Scale* (`workspace/scaled.rs`, `Scaled` element + the engine addition in
+*Scale — held back for now* (`workspace/scaled.rs`, `Scaled` element + the engine addition in
 `vendor/gpui-pre`, see `vendor/gpui-pre/PATCH.md`): `Window::with_scale(scale, origin, f)` is a
 paint-time transform — layout and hitboxes untouched, every primitive (quads, borders, shadows,
 text re-rasterized at the scaled size, images, paths, inner content masks) drawn scaled about
-the origin. The card's two halves scale about the card's centre (a canvas in the group frame
-records the card's rectangle). While scaled, `Scaled` takes mouse-down and wheel in the capture
-phase (no clicks, no scrolling); drags and drops pass; the workspace's keystroke interceptor
-swallows every key but Escape and Space while a drag is in flight.
+the origin; `Scaled` wraps a child in it and, while scaled, takes mouse-down and wheel in the
+capture phase. The skin no longer wraps the card's halves in it (a temporary decision: no size
+change inside the cards while a tab is held); the element, the engine addition and its
+mouse-up modality fix (which Space-then-release drops depend on) stay. The workspace's
+keystroke interceptor still swallows every key but Escape and Space while a drag is in flight.
 
 *Drop targets* (`workspace/dock_targets.rs`): `zones_for(layout, window, Field, drag)` — one
 `ZoneKind::Gap` per divider of every split (`dock-gap-<split>-<index>`, target `Beside` the
@@ -661,12 +663,12 @@ button is an icon with the tooltip "Move the panes to the active pane in the mai
    `space_walks_the_edge_strip…`, `a_band_the_minimum_size_rule_refuses…`),
    `a_pane_dragged_from_a_floating_window_into_the_main_window_lands_as_a_tab`; unit tests in
    `dock_targets.rs`.
-2. Scale in the harness: springs do not advance (the executor's clock is fake), so tests see
-   the cards at rest; the scaled state is checked by eye (screenshots) and the engine change by
-   the app (a held tab: cards at 90 %, 75 % opacity, titles intact).
-3. Drop onto a *scaled* pane's tab bar and content halves (tab and split zones of the engine)
-   — must still work; clicks on a scaled pane must not (hold a tab, click a toggle with the
-   other hand on a touchpad: nothing).
+2. The held state in the harness: springs do not advance (the executor's clock is fake), so
+   tests see the cards at rest; the held state is checked by eye (screenshots): a held tab
+   widens the gaps, pulls the cards in, dims them to 75 % — and leaves every title, icon and
+   control at its normal size.
+3. Drop onto a *held-state* pane's tab bar and content halves (tab and split zones of the
+   engine) — must still work.
 4. Every gap of a nested layout (`1 | [2 / 3]`): the gap between 2 and 3 places between them
    (a row of that column), the gap between 1 and the column places a column.
 5. Edge strips: each side, level 0, then Space through the levels for panes that meet the edge;
@@ -674,13 +676,14 @@ button is an icon with the tooltip "Move the panes to the active pane in the mai
 6. A drag from window A over window B then back into A: A's zones return, B's highlight goes.
    Drop over B's chrome (title bar): the pane joins B's active stack. Drop between two windows
    (over the desktop): a new floating window, as before. Launcher drag into a floating window.
-7. Text at scale: run a drag over every screen (the reference shoot with a drag step) and look
-   for clipped or misplaced text, images and icons; the SVG icons scale about their own centre.
+7. Text while a tab is held: run a drag over every screen (the reference shoot with a drag
+   step) and look for text, images and icons that wrap or clip badly in the narrower cards.
 8. Keys while a tab is held: only Escape (cancel) and Space (cycle) do anything.
 9. The sash: hover a divider (faint line), drag it (accent line, full length), release.
 
 **Known / fragile.** The gpui change lives in `vendor/gpui-pre` (3 MB of source) behind
-`[patch.crates-io]`; a gpui-kit upgrade means re-applying the diff of that commit. Scaled
-hitboxes stay where the layout put them (by design of the first version). Zones use element ids
+`[patch.crates-io]`; a gpui-kit upgrade means re-applying the diff of that commit. If the scale
+is wired back in: scaled hitboxes stay where the layout put them (by design of the first
+version), which is why `Scaled` holds off clicks and wheel while scaled. Zones use element ids
 with the level in them (`dock-band-bottom-1` after one Space). The gap between two cards belongs
 to the outer split at a T-junction.
