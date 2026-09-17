@@ -278,11 +278,15 @@ impl PaneView {
         cx.notify();
     }
 
-    /// The workspace's word on whether this pane is the active one.
+    /// The workspace's word on whether this pane is the active one. The
+    /// group draws the title, so it redraws too.
     pub(crate) fn set_workspace_active(&mut self, active: bool, cx: &mut Context<Self>) {
         if self.active != active {
             self.active = active;
             cx.notify();
+            if let Some(group) = &self.group {
+                let _ = group.update(cx, |_, cx| cx.notify());
+            }
         }
     }
 
@@ -352,9 +356,12 @@ impl Panel for PaneView {
     }
 
     /// The title element the skin wraps in the drag handle; its id lets a
-    /// test take hold of exactly what a person would.
+    /// test take hold of exactly what a person would. The active pane's
+    /// title is the bright one — the way an editor lights the tab of the
+    /// group that has the focus — and every other pane's is muted.
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let title_colour = if self.active { cx.theme().foreground } else { muted };
         let (icon, title, context) = match &self.placeholder {
             Some(Placeholder::Unsupported { kind }) => (gpui_kit::assets::IconName::CircleQuestionMark, SharedString::from(kinds::label_of_unknown_kind(kind)), Some("Cannot be shown")),
             None => (kinds::icon_of(self.route), kinds::title_of(self.route, self.app.read(cx).household()), kinds::context_of(self.route)),
@@ -365,6 +372,7 @@ impl Panel for PaneView {
             .min_w_0()
             .gap_2()
             .items_center()
+            .text_color(title_colour)
             .child(Icon::new(icon).small())
             .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
             .when_some(context, |this, context| this.child(div().text_xs().text_color(muted).whitespace_nowrap().child(context)))
@@ -562,10 +570,10 @@ impl Focusable for PaneView {
 }
 
 impl Render for PaneView {
-    /// The pane's content: the screen inside its own scroll region, with a
-    /// hairline in the focus-ring colour when this is the active pane. The
-    /// dock skin draws the pane as a cached view, so this runs only when the
-    /// pane (or the app it observes) was notified.
+    /// The pane's content: the screen inside its own scroll region. (Which
+    /// pane is active shows in its title, not here.) The dock skin draws the
+    /// pane as a cached view, so this runs only when the pane (or the app it
+    /// observes) was notified.
     ///
     /// Two scroll regions, one per axis, because the width the screen wraps
     /// its text at has to be definite: the body scrolls sideways as a plain
@@ -602,7 +610,6 @@ impl Render for PaneView {
             kinds::availability(route, app.household(), app.viewer()).is_err() || self.workspace.upgrade().is_some_and(|workspace| workspace.read(cx).shown_elsewhere(&self.id, route, cx).is_some())
         };
         let min_width = if showing_placeholder { px(0.) } else { MIN_CONTENT_WIDTH };
-        let border = if self.active { cx.theme().ring } else { transparent_black() };
         let id = self.id.clone();
         let workspace = self.workspace.clone();
         // The canvas fills the pane and does nothing but note where it was
@@ -623,8 +630,6 @@ impl Render for PaneView {
             .test_support()
             .relative()
             .size_full()
-            .border_1()
-            .border_color(border)
             .track_focus(&self.focus_handle)
             // A press anywhere in the pane makes it the pane commands act on.
             // Capture phase, so a control inside that stops propagation (a
