@@ -55,9 +55,35 @@ pub enum Dragged {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DragInFlight {
     pub dragged: Dragged,
+    /// The window the drag is in: the one the tab was picked up in.
+    pub source: WindowId,
+    /// The pointer, in the source window's coordinates.
     pub pointer: Point<Pixels>,
     pub level_offset: usize,
-    pub elsewhere: Option<(WindowId, Option<PaneId>)>,
+    /// The other window of the workspace the pointer is over, if any.
+    pub elsewhere: Option<Elsewhere>,
+}
+
+impl DragInFlight {
+    /// The same drag as `window` sees it: the pointer in that window's
+    /// coordinates, or `None` when the pointer is not over that window.
+    pub fn seen_from(&self, window: &WindowId) -> Option<DragInFlight> {
+        match &self.elsewhere {
+            Some(elsewhere) => (elsewhere.window == *window).then(|| DragInFlight { pointer: elsewhere.pointer, ..self.clone() }),
+            None => (self.source == *window).then(|| self.clone()),
+        }
+    }
+}
+
+/// Where a drag's pointer is when it is over another window than its own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Elsewhere {
+    /// The window under the pointer.
+    pub window: WindowId,
+    /// The displayed pane under the pointer there, none over its chrome.
+    pub pane: Option<PaneId>,
+    /// The pointer in that window's coordinates.
+    pub pointer: Point<Pixels>,
 }
 
 /// What dropping on a zone would do, decided by the model on a copy.
@@ -386,7 +412,7 @@ mod tests {
     }
 
     fn drag_at(x: f32, y: f32) -> DragInFlight {
-        DragInFlight { dragged: Dragged::New(Route::ForecastPath), pointer: point(px(x), px(y)), level_offset: 0, elsewhere: None }
+        DragInFlight { dragged: Dragged::New(Route::ForecastPath), source: WindowId::main(), pointer: point(px(x), px(y)), level_offset: 0, elsewhere: None }
     }
 
     #[test]
@@ -463,7 +489,7 @@ mod tests {
         let x = f32::from(field.content().origin.x + field.content().size.width * 5. / 6.);
         let y = f32::from(field.area.origin.y + field.area.size.height - px(10.));
         let labels_at = |offset: usize| {
-            let drag = DragInFlight { dragged: Dragged::New(Route::ForecastPath), pointer: point(px(x), px(y)), level_offset: offset, elsewhere: None };
+            let drag = DragInFlight { dragged: Dragged::New(Route::ForecastPath), source: WindowId::main(), pointer: point(px(x), px(y)), level_offset: offset, elsewhere: None };
             let zones = zones_for(&layout, &WindowId::main(), field, &drag);
             let bottom = zones.into_iter().find(|zone| matches!(zone.kind, ZoneKind::Edge { side: Side::Bottom, .. })).unwrap();
             assert!(bottom.hovered, "the pointer is in the bottom strip");
@@ -489,13 +515,13 @@ mod tests {
         // the default share, would squeeze the others below it.
         let mut crowded = layout.clone();
         while crowded.open_pane(&WindowId::main(), PaneDefinition::new("today"), DockTarget::WindowEdge { side: Side::Right, share: Some(ops::MIN_SHARE_ARG) }).is_ok() {}
-        let drag = DragInFlight { dragged: Dragged::New(Route::ForecastPath), pointer: point(px(1190.), px(300.)), level_offset: 0, elsewhere: None };
+        let drag = DragInFlight { dragged: Dragged::New(Route::ForecastPath), source: WindowId::main(), pointer: point(px(1190.), px(300.)), level_offset: 0, elsewhere: None };
         let zones = zones_for(&crowded, &WindowId::main(), field, &drag);
         let right = zones.iter().find(|zone| zone.side() == Side::Right && matches!(zone.kind, ZoneKind::Edge { .. })).unwrap();
         assert!(matches!(right.outcome, Outcome::Refused(_)), "{:?}", right.outcome);
         assert!(!right.accepts_drops());
         // Dragging the third pane to the right edge, where it already is, changes nothing.
-        let drag = DragInFlight { dragged: Dragged::Pane(panes[2].clone()), pointer: point(px(1190.), px(300.)), level_offset: 0, elsewhere: None };
+        let drag = DragInFlight { dragged: Dragged::Pane(panes[2].clone()), source: WindowId::main(), pointer: point(px(1190.), px(300.)), level_offset: 0, elsewhere: None };
         let zones = zones_for(&layout, &WindowId::main(), field, &drag);
         let right = zones.iter().find(|zone| zone.side() == Side::Right && matches!(zone.kind, ZoneKind::Edge { .. })).unwrap();
         assert_eq!(right.outcome, Outcome::Unchanged);

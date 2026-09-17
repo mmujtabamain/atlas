@@ -2425,6 +2425,64 @@ fn the_edge_strips_lie_along_the_areas_own_edges(cx: &mut TestAppContext) {
 // ----- a drag from one window into another --------------------------------------------------
 
 #[gpui_kit::test]
+fn the_window_a_pane_is_dragged_over_shows_its_strips_and_the_drop_takes_the_strip(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let today = cx.update(|cx| workspace.read(cx).panes_in_order()[0].clone());
+    let accounts = active(cx, &workspace);
+    let floating = drive(cx, window, &workspace, |workspace, window, cx| workspace.detach_pane(&accounts, None, window, cx).expect("detach"));
+    let floating_window = cx.update(|cx| workspace.read(cx).window_handle_of(&floating)).expect("the floating window");
+    let (main_origin, today_centre) = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            (window.bounds().origin, window.find(pane_id(1)).bounds().center())
+        })
+        .unwrap();
+    let floating_origin = cx.update_window(floating_window, |_, window, _| window.bounds().origin).unwrap();
+    let to_floating = |in_main: Point<Pixels>| main_origin + in_main - floating_origin;
+    // Pick Accounts up in the floating window and carry it over Today.
+    cx.update_window(floating_window, |_, window, cx| {
+        window.render_frame(cx);
+        let handle = window.find(title_id(2)).bounds().center();
+        press_at(window, handle, cx);
+        move_pressed_to(window, handle + point(px(12.), px(4.)), cx);
+        move_pressed_to(window, to_floating(today_centre), cx);
+        window.render_frame(cx);
+        assert!(window.try_find("dock-band-bottom-0").is_none(), "the source window shows no strips while the pointer is elsewhere");
+    })
+    .unwrap();
+    // The main window shows its strips, like it does for its own drags, and
+    // the pane the drop would join between them.
+    let strip_centre = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            for side in ["top", "bottom", "left", "right"] {
+                assert!(window.find(SharedString::from(format!("dock-band-{side}-0"))).visible(), "the {side} strip is up");
+            }
+            assert_eq!(window.find("dock-elsewhere").label(), Some("Move here, as a tab"));
+            window.find("dock-band-bottom-0").bounds().center()
+        })
+        .unwrap();
+    // Onto the bottom strip: it lights, the pane highlight goes.
+    cx.update_window(floating_window, |_, window, cx| move_pressed_to(window, to_floating(strip_centre), cx)).unwrap();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("dock-band-label").label(), Some("Dock along the bottom of the window"));
+        assert!(window.try_find("dock-elsewhere").is_none(), "over a strip the strip is the target");
+    })
+    .unwrap();
+    cx.update_window(floating_window, |_, window, cx| release_at(window, to_floating(strip_centre), cx)).unwrap();
+    cx.run_until_parked();
+    settle(cx, window);
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.layout().window_id_of(&accounts), Some(atlas_workspace::WindowId::main()), "Accounts moved into the main window");
+        assert_ne!(workspace.layout().stack_of(&accounts), workspace.layout().stack_of(&today), "not as a tab of Today");
+        assert!(workspace.floating_windows().is_empty(), "the emptied floating window closed");
+    });
+    assert_eq!(grid(cx, &workspace, 1, 2), "1\n2", "Today over Accounts");
+}
+
+#[gpui_kit::test]
 fn settings_opens_in_a_window_of_its_own_and_is_reused(cx: &mut TestAppContext) {
     let (window, _app, workspace) = today_and_accounts(cx);
     let settings = drive(cx, window, &workspace, |workspace, window, cx| workspace.open(Route::Settings, Intent::Open, window, cx).expect("open settings"));
@@ -2497,7 +2555,9 @@ fn a_pane_dragged_from_a_floating_window_into_the_main_window_lands_as_a_tab(cx:
     .unwrap();
     cx.update(|cx| {
         let drag = workspace.read(cx).drag_in_flight().expect("a drag in flight");
-        assert_eq!(drag.elsewhere, Some((atlas_workspace::WindowId::main(), Some(today.clone()))), "the drag knows it is over Today in the main window");
+        let elsewhere = drag.elsewhere.as_ref().expect("the drag knows it is over another window");
+        assert_eq!((elsewhere.window.clone(), elsewhere.pane.clone()), (atlas_workspace::WindowId::main(), Some(today.clone())), "the drag knows it is over Today in the main window");
+        assert_eq!(elsewhere.pointer, today_centre, "and where, in that window's coordinates");
     });
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);

@@ -91,7 +91,7 @@ use std::cell::{Cell, RefCell};
 
 use super::commands;
 use atlas_workspace::focus::{self, Direction};
-use super::dock_targets::{self, DragInFlight, Dragged, Field, Outcome, Zone, ZoneKind};
+use super::dock_targets::{self, DragInFlight, Dragged, Elsewhere, Field, Outcome, Zone, ZoneKind};
 use super::floating::FloatingView;
 use super::session::{self, SessionStore};
 use super::skin::WorkspaceSkin;
@@ -1286,11 +1286,9 @@ impl WorkspaceView {
 
     fn follow_dragged(&mut self, dragged: Dragged, pointer: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
         let level_offset = self.drag.as_ref().filter(|drag| drag.dragged == dragged).map(|drag| drag.level_offset).unwrap_or(0);
-        let elsewhere = match self.window_id_of_handle(window.window_handle()) {
-            Some(source) => self.window_under(&source, window.bounds().origin + pointer, cx),
-            None => None,
-        };
-        let next = DragInFlight { dragged, pointer, level_offset, elsewhere };
+        let source = self.window_id_of_handle(window.window_handle()).unwrap_or_else(WindowId::main);
+        let elsewhere = self.window_under(&source, window.bounds().origin + pointer, cx);
+        let next = DragInFlight { dragged, source, pointer, level_offset, elsewhere };
         if self.drag.as_ref() != Some(&next) {
             self.drag = Some(next);
             self.set_skins_held(true, cx);
@@ -1312,9 +1310,10 @@ impl WorkspaceView {
     }
 
     /// The window of the workspace, other than `from`, under the screen
-    /// point, and the displayed pane there (none over its chrome). The last
-    /// opened floating window is taken first: it is the one on top.
-    fn window_under(&self, from: &WindowId, screen: Point<Pixels>, cx: &mut App) -> Option<(WindowId, Option<PaneId>)> {
+    /// point, with the displayed pane there (none over its chrome) and the
+    /// point in that window's coordinates. The last opened floating window
+    /// is taken first: it is the one on top.
+    fn window_under(&self, from: &WindowId, screen: Point<Pixels>, cx: &mut App) -> Option<Elsewhere> {
         let mut candidates: Vec<(WindowId, AnyWindowHandle)> = self.floating.iter().map(|(id, floating)| (id.clone(), floating.handle)).collect();
         candidates.sort_by(|a, b| b.0.to_string().cmp(&a.0.to_string()));
         candidates.push((WindowId::main(), self.window));
@@ -1331,9 +1330,36 @@ impl WorkspaceView {
             let local = screen - bounds.origin;
             let root = self.layout.window(&id).and_then(|layout| layout.root.as_ref());
             let pane = dock_targets::hovered_pane(root, &self.pane_bounds.borrow(), local);
-            return Some((id, pane));
+            return Some(Elsewhere { window: id, pane, pointer: local });
         }
         None
+    }
+
+    /// The field the drop zones of `window` are laid on: its area, and the
+    /// inset and gap the cards are heading for.
+    fn field_of(&self, window: &WindowId, cx: &App) -> Option<Field> {
+        let area = self.area_of(window)?.read(cx).bounds();
+        let skin = self.skin_of(window)?;
+        Some(Field { area, inset: skin.target_inset(), gap: skin.target_gap() })
+    }
+
+    /// Where a drag let go over another window lands there: the zone under
+    /// the pointer (a gap, an edge strip), else the pane under it as a tab,
+    /// else that window's active stack as a tab. `None` when the zone under
+    /// the pointer refuses the drop: nothing happens then.
+    fn target_elsewhere(&self, drag: &DragInFlight, elsewhere: &Elsewhere, cx: &App) -> Option<DockTarget> {
+        let seen = DragInFlight { pointer: elsewhere.pointer, ..drag.clone() };
+        let zones = self.field_of(&elsewhere.window, cx).map(|field| dock_targets::zones_for(&self.layout, &elsewhere.window, field, &seen)).unwrap_or_default();
+        if let Some(zone) = zones.into_iter().find(|zone| zone.hovered) {
+            return match &zone.outcome {
+                Outcome::Refused(reason) => {
+                    log::info!("workspace: released over {} in {}, which refuses the drop ({reason}); nothing changed", zone.element_id(), elsewhere.window);
+                    None
+                }
+                _ => Some(zone.target.clone()),
+            };
+        }
+        elsewhere.pane.as_ref().and_then(|pane| self.layout.stack_of(pane)).map(DockTarget::tab).or_else(|| self.layout.window(&elsewhere.window).map(WindowLayout::default_target))
     }
 
     /// A screen from the launcher was dropped on one of the dock's tab groups:
@@ -1464,10 +1490,11 @@ impl WorkspaceView {
     /// A pane drag ended outside the window it was in: the pane opens a
     /// window of its own where the pointer was let go.
     pub(crate) fn drag_released_outside(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(DragInFlight { dragged, .. }) = self.drag.clone() else {
+        let Some(drag) = self.drag.clone() else {
             self.end_drag_overlay(cx);
             return;
         };
+        let dragged = drag.dragged.clone();
         let viewport = Bounds::new(Point::default(), window.viewport_size());
         if viewport.contains(&position) {
             // Released over the window's own chrome (title bar, launcher):
@@ -1475,13 +1502,21 @@ impl WorkspaceView {
             self.end_drag_overlay(cx);
             return;
         }
-        self.end_drag_overlay(cx);
         let screen = window.bounds().origin + position;
         let source = self.window_id_of_handle(window.window_handle()).unwrap_or_else(WindowId::main);
-        // Over another window of the workspace: the pane goes there, as a tab
-        // of the pane under the pointer, or of that window's active stack.
-        if let Some((target_window, under)) = self.window_under(&source, screen, cx) {
-            let target = under.and_then(|pane| self.layout.stack_of(&pane)).map(DockTarget::tab).or_else(|| self.layout.window(&target_window).map(WindowLayout::default_target));
+        // Where the pane lands is settled while the drag is still on — the
+        // zones of the other window lie where its held cards leave room, and
+        // ending the overlay lets the cards back out.
+        let landing = self.window_under(&source, screen, cx).map(|elsewhere| {
+            let target = self.target_elsewhere(&drag, &elsewhere, cx);
+            (elsewhere, target)
+        });
+        self.end_drag_overlay(cx);
+        // Over another window of the workspace: the pane goes where that
+        // window showed it landing — a zone, or the pane under the pointer
+        // (or that window's active stack) as a tab.
+        if let Some((elsewhere, target)) = landing {
+            let target_window = elsewhere.window.clone();
             let Some(target) = target else {
                 return;
             };
@@ -1787,24 +1822,23 @@ impl WorkspaceView {
     /// The bands and the preview for the drag in flight, over the area of
     /// `in_window`, placed relative to that window's `origin` (where its pane
     /// area is drawn) and kept within `root_size`. Drawn only while a drag is
-    /// in flight; the panes' own drop zones stay the engine's, underneath.
+    /// in flight, and only in the window the pointer is over — the drag's
+    /// own, or another window of the workspace, which shows the same zones
+    /// and, between them, the pane the drop would join as a tab. The panes'
+    /// own drop zones stay the engine's, underneath, in the drag's window.
     pub(crate) fn render_drag_overlay_for(&self, in_window: &WindowId, origin: Point<Pixels>, root_size: Size<Pixels>, cx: &mut Context<Self>) -> Option<AnyElement> {
         let drag = self.drag.clone()?;
         if !cx.has_active_drag() {
             return None;
         }
-        let drag = &drag;
-        let area_entity = self.area_of(in_window)?;
-        // The pointer is in another window of the workspace: that window
-        // shows where the pane would land; this one shows nothing.
-        if let Some((over, under)) = &drag.elsewhere {
-            return if over == in_window { self.render_elsewhere_target(over, under.as_ref(), origin, cx) } else { None };
-        }
+        // The pointer is over another window: this one shows nothing.
+        let drag = &drag.seen_from(in_window)?;
+        let from_elsewhere = drag.source != *in_window;
         let skin = self.skin_of(in_window)?;
         // The zones lie where the cards are heading, not where the spring has
         // them this frame: a target that moved under the pointer would be
         // missed, and the strips need their room from the first frame.
-        let field = Field { area: area_entity.read(cx).bounds(), inset: skin.target_inset(), gap: skin.target_gap() };
+        let field = self.field_of(in_window, cx)?;
         let zones = dock_targets::zones_for(&self.layout, in_window, field, drag);
         if zones.is_empty() {
             return None;
@@ -1817,6 +1851,35 @@ impl WorkspaceView {
         let hovered = zones.iter().find(|zone| zone.hovered).cloned();
         skin.set_zone_hovered(hovered.is_some());
         let mut overlay = div().id("dock-targets").test_support().absolute().inset_0();
+        // From another window, between the zones: the pane the drop joins
+        // as a tab — the one under the pointer, else this window's active
+        // pane — lit up and named. (In the drag's own window the engine's
+        // indicator does this.)
+        if from_elsewhere && hovered.is_none() {
+            let under = drag.elsewhere.as_ref().and_then(|elsewhere| elsewhere.pane.clone()).or_else(|| self.layout.window(in_window).and_then(|layout| layout.active_pane.clone()));
+            let target = under.and_then(|pane| self.pane_bounds.borrow().get(&pane).copied()).unwrap_or(field.area);
+            let relative = Bounds::new(target.origin - origin, target.size);
+            let label = match &drag.dragged {
+                Dragged::Pane(_) => "Move here, as a tab",
+                Dragged::New(_) => "Open here, as a tab",
+            };
+            overlay = overlay.child(
+                div()
+                    .id("dock-elsewhere")
+                    .test_support()
+                    .aria_label(label)
+                    .absolute()
+                    .left(relative.origin.x)
+                    .top(relative.origin.y)
+                    .w(relative.size.width)
+                    .h(relative.size.height)
+                    .bg(primary.opacity(0.14))
+                    .border_2()
+                    .border_color(primary.opacity(0.7))
+                    .rounded(px(8.))
+                    .child(div().absolute().left(px(12.)).top(px(12.)).px_2().py_1().rounded(px(4.)).bg(popover).text_color(popover_foreground).text_xs().whitespace_nowrap().child(label)),
+            );
+        }
         for zone in zones {
             let relative = Bounds::new(zone.bounds.origin - origin, zone.bounds.size);
             let accepts = zone.accepts_drops();
@@ -1923,48 +1986,6 @@ impl WorkspaceView {
             );
         }
         Some(overlay.into_any_element())
-    }
-
-    /// What a drag from another window shows in this one: the pane under the
-    /// pointer lit up (the drop adds a tab to it), or the whole area when the
-    /// pointer is over chrome (the drop goes to the active stack).
-    fn render_elsewhere_target(&self, in_window: &WindowId, under: Option<&PaneId>, origin: Point<Pixels>, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let drag = self.drag.as_ref()?;
-        let area = self.area_of(in_window)?.read(cx).bounds();
-        let target = under.and_then(|pane| self.pane_bounds.borrow().get(pane).copied()).unwrap_or(area);
-        let relative = Bounds::new(target.origin - origin, target.size);
-        let primary = cx.theme().primary;
-        let (popover, popover_foreground) = (cx.theme().popover, cx.theme().popover_foreground);
-        let label = match (&drag.dragged, under) {
-            (Dragged::Pane(_), Some(_)) => "Move here, as a tab",
-            (Dragged::Pane(_), None) => "Move into this window",
-            (Dragged::New(_), Some(_)) => "Open here, as a tab",
-            (Dragged::New(_), None) => "Open in this window",
-        };
-        Some(
-            div()
-                .id("dock-targets")
-                .test_support()
-                .absolute()
-                .inset_0()
-                .child(
-                    div()
-                        .id("dock-elsewhere")
-                        .test_support()
-                        .aria_label(label)
-                        .absolute()
-                        .left(relative.origin.x)
-                        .top(relative.origin.y)
-                        .w(relative.size.width)
-                        .h(relative.size.height)
-                        .bg(primary.opacity(0.14))
-                        .border_2()
-                        .border_color(primary.opacity(0.7))
-                        .rounded(px(8.))
-                        .child(div().absolute().left(px(12.)).top(px(12.)).px_2().py_1().rounded(px(4.)).bg(popover).text_color(popover_foreground).text_xs().whitespace_nowrap().child(label)),
-                )
-                .into_any_element(),
-        )
     }
 
     /// The pane behind an engine panel id.
