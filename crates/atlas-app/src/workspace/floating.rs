@@ -45,12 +45,21 @@ pub struct FloatingView {
 }
 
 impl FloatingView {
-    pub fn new(workspace: Entity<WorkspaceView>, id: WindowId, area: Entity<DockArea>, cx: &mut Context<Self>) -> Self {
+    pub fn new(workspace: Entity<WorkspaceView>, id: WindowId, area: Entity<DockArea>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // The workspace notifies on every change that could matter here (a
         // drag in flight, a pane moved, the model rebuilt), so this view follows it.
         let _observe_workspace = cx.observe(&workspace, |_, _, cx| cx.notify());
-        FloatingView { workspace, id, area, focus_handle: cx.focus_handle(), root_bounds: Rc::new(Cell::new(Bounds::default())), _observe_workspace }
+        // The platform raises a window it activates; the workspace's
+        // stacking order follows.
+        let _observe_activation = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                let id = this.id.clone();
+                this.workspace.update(cx, |workspace, cx| workspace.raise_window(&id, cx));
+            }
+        });
+        FloatingView { workspace, id, area, focus_handle: cx.focus_handle(), root_bounds: Rc::new(Cell::new(Bounds::default())), _observe_workspace, _observe_activation }
     }
+    _observe_activation: Subscription,
 
     /// The model's id of this window.
     pub fn window_id(&self) -> &WindowId {
@@ -125,9 +134,10 @@ impl Render for FloatingView {
             .on_drag_move({
                 let workspace = workspace.clone();
                 move |event: &DragMoveEvent<DragPanel>, window, cx| {
-                    let panel = event.drag(cx).panel();
+                    let dragged = event.drag(cx);
+                    let (panel, grab) = (dragged.panel(), dragged.drag_offset());
                     let position = event.event.position;
-                    workspace.update(cx, |workspace, cx| workspace.follow_drag(panel, position, window, cx));
+                    workspace.update(cx, |workspace, cx| workspace.follow_drag(panel, position, grab, window, cx));
                 }
             })
             .on_drag_move({
@@ -140,13 +150,20 @@ impl Render for FloatingView {
             })
             .capture_any_mouse_up({
                 let workspace = workspace.clone();
-                move |_, _, cx| workspace.update(cx, |workspace, cx| workspace.end_drag_overlay(cx))
+                move |event: &MouseUpEvent, window, cx| {
+                    let position = event.position;
+                    if workspace.update(cx, |workspace, cx| workspace.drag_released(position, window, cx)) {
+                        cx.stop_propagation();
+                    }
+                }
             })
             .on_mouse_up_out(MouseButton::Left, {
                 let workspace = workspace.clone();
                 move |event: &MouseUpEvent, window, cx| {
                     let position = event.position;
-                    workspace.update(cx, |workspace, cx| workspace.drag_released_outside(position, window, cx));
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.drag_released(position, window, cx);
+                    });
                 }
             })
             .child(recorder)
@@ -164,3 +181,5 @@ impl Render for FloatingView {
             .children(Root::render_notification_layer(window, cx))
     }
 }
+            // See the main window's root: a release inside the window is this
+            // workspace's drop when another window lies on top of the pointer.

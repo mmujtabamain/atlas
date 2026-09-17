@@ -83,7 +83,7 @@ use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Placement, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
-    v_flex,
+    h_flex, v_flex,
 };
 use gpui_kit::*;
 
@@ -197,6 +197,12 @@ pub struct WorkspaceView {
     explicit_screen: bool,
     /// The saved layouts and templates, and which one is on show.
     pub(crate) layouts: super::layouts::LayoutStore,
+    /// The windows of the workspace, bottom to top, as the platform stacks
+    /// them: a window goes on top when it is activated (the platform raises
+    /// it) and when it opens. The one resolver for a drag over several
+    /// windows reads this and asks only the top-most window under the
+    /// pointer.
+    stacking: Vec<WindowId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -211,6 +217,9 @@ struct FloatingWindow {
 
 /// The size a detached pane's window opens at.
 const FLOATING_WINDOW_SIZE: Size<Pixels> = size(px(960.), px(720.));
+
+/// The size of the chip that follows the pointer while a pane is dragged.
+pub const DRAG_CHIP_SIZE: Size<Pixels> = size(px(160.), px(30.));
 
 impl WorkspaceView {
     /// The workspace for `app`'s window. Starts empty, and with the household
@@ -266,6 +275,13 @@ impl WorkspaceView {
                 _ => cx.stop_propagation(),
             }
         });
+        // The platform raises a window it activates; the stacking order
+        // follows.
+        let raises = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.raise_window(&WindowId::main(), cx);
+            }
+        });
         let mut this = WorkspaceView {
             window: window.window_handle(),
             app,
@@ -290,7 +306,8 @@ impl WorkspaceView {
             data_dir: launch.data_dir.clone(),
             explicit_screen: launch.explicit_screen,
             layouts: super::layouts::LayoutStore::new(launch.data_dir.as_deref()),
-            _subscriptions: vec![area_events, app_changes, escape_cancels_drag],
+            stacking: vec![WindowId::main()],
+            _subscriptions: vec![area_events, app_changes, escape_cancels_drag, raises],
         };
         this.follow_household(window, cx);
         this
@@ -1269,11 +1286,11 @@ impl WorkspaceView {
     /// The pointer moved while a pane is dragged: the overlay follows it.
     /// `window` is the window the drag started in, whose coordinates
     /// `pointer` is in — it keeps the pointer even past its own edge.
-    pub(crate) fn follow_drag(&mut self, panel: PanelId, pointer: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn follow_drag(&mut self, panel: PanelId, pointer: Point<Pixels>, grab: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
         let Some(pane) = self.pane_of_panel(panel) else {
             return;
         };
-        self.follow_dragged(Dragged::Pane(pane), pointer, window, cx);
+        self.follow_dragged(Dragged::Pane(pane), pointer, grab, window, cx);
     }
 
     /// The pointer moved while a screen is dragged off the launcher.
@@ -1281,14 +1298,14 @@ impl WorkspaceView {
         let Some(launch) = item.value().downcast_ref::<LaunchDrag>() else {
             return;
         };
-        self.follow_dragged(Dragged::New(launch.route), pointer, window, cx);
+        self.follow_dragged(Dragged::New(launch.route), pointer, Point::default(), window, cx);
     }
 
-    fn follow_dragged(&mut self, dragged: Dragged, pointer: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
+    fn follow_dragged(&mut self, dragged: Dragged, pointer: Point<Pixels>, grab: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
         let level_offset = self.drag.as_ref().filter(|drag| drag.dragged == dragged).map(|drag| drag.level_offset).unwrap_or(0);
         let source = self.window_id_of_handle(window.window_handle()).unwrap_or_else(WindowId::main);
-        let elsewhere = self.window_under(&source, window.bounds().origin + pointer, cx);
-        let next = DragInFlight { dragged, source, pointer, level_offset, elsewhere };
+        let elsewhere = self.window_under(&source, window.bounds(), window.bounds().origin + pointer, cx);
+        let next = DragInFlight { dragged, source, pointer, grab, level_offset, elsewhere };
         if self.drag.as_ref() != Some(&next) {
             self.drag = Some(next);
             self.set_skins_held(true, cx);
@@ -1309,28 +1326,40 @@ impl WorkspaceView {
         self.floating.iter().find(|(_, floating)| floating.handle == handle).map(|(id, _)| id.clone())
     }
 
-    /// The window of the workspace, other than `from`, under the screen
-    /// point, with the displayed pane there (none over its chrome) and the
-    /// point in that window's coordinates. The last opened floating window
-    /// is taken first: it is the one on top.
-    fn window_under(&self, from: &WindowId, screen: Point<Pixels>, cx: &mut App) -> Option<Elsewhere> {
-        let mut candidates: Vec<(WindowId, AnyWindowHandle)> = self.floating.iter().map(|(id, floating)| (id.clone(), floating.handle)).collect();
-        candidates.sort_by(|a, b| b.0.to_string().cmp(&a.0.to_string()));
-        candidates.push((WindowId::main(), self.window));
-        for (id, handle) in candidates {
-            if id == *from {
-                continue;
-            }
-            let Ok(bounds) = handle.update(cx, |_, window, _| window.bounds()) else {
-                continue;
+    /// The window of the workspace under the screen point — the top-most
+    /// one, whichever windows lie beneath it — when it is not `from`: with
+    /// the displayed pane there (none over its chrome) and the point in
+    /// that window's coordinates. `None` when the top-most window is `from`
+    /// itself or the point is over no window. This is the one place a drag
+    /// asks which window it is over; the windows never decide it for
+    /// themselves.
+    ///
+    /// `from_bounds` is the bounds of `from`, which the caller has at hand:
+    /// `from` is the window being updated, and cannot be read through its
+    /// handle meanwhile.
+    fn window_under(&self, from: &WindowId, from_bounds: Bounds<Pixels>, screen: Point<Pixels>, cx: &mut App) -> Option<Elsewhere> {
+        for id in self.stacking.iter().rev() {
+            let bounds = if id == from {
+                from_bounds
+            } else {
+                let Some(handle) = self.window_handle_of(id) else {
+                    continue;
+                };
+                let Ok(bounds) = handle.update(cx, |_, window, _| window.bounds()) else {
+                    continue;
+                };
+                bounds
             };
             if !bounds.contains(&screen) {
                 continue;
             }
+            if id == from {
+                return None;
+            }
             let local = screen - bounds.origin;
-            let root = self.layout.window(&id).and_then(|layout| layout.root.as_ref());
+            let root = self.layout.window(id).and_then(|layout| layout.root.as_ref());
             let pane = dock_targets::hovered_pane(root, &self.pane_bounds.borrow(), local);
-            return Some(Elsewhere { window: id, pane, pointer: local });
+            return Some(Elsewhere { window: id.clone(), pane, pointer: local });
         }
         None
     }
@@ -1487,27 +1516,26 @@ impl WorkspaceView {
         self.sync_chrome(cx);
     }
 
-    /// A pane drag ended outside the window it was in: the pane opens a
-    /// window of its own where the pointer was let go.
-    pub(crate) fn drag_released_outside(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    /// A drag let go in the window it was in, at `position` — inside the
+    /// window or outside it (the platform delivers the release to the window
+    /// the press was in). Over another window of the workspace on top of the
+    /// pointer, the pane goes there, where that window showed it landing;
+    /// over no window, it opens a window of its own; over this window's own
+    /// area, the engine underneath takes the drop, and over this window's
+    /// chrome nothing happens. `true` when the drop was taken here, so the
+    /// caller stops the release from reaching the engine.
+    pub(crate) fn drag_released(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(drag) = self.drag.clone() else {
             self.end_drag_overlay(cx);
             return;
         };
         let dragged = drag.dragged.clone();
-        let viewport = Bounds::new(Point::default(), window.viewport_size());
-        if viewport.contains(&position) {
-            // Released over the window's own chrome (title bar, launcher):
-            // not a request for a new window.
-            self.end_drag_overlay(cx);
-            return;
-        }
         let screen = window.bounds().origin + position;
         let source = self.window_id_of_handle(window.window_handle()).unwrap_or_else(WindowId::main);
         // Where the pane lands is settled while the drag is still on — the
         // zones of the other window lie where its held cards leave room, and
         // ending the overlay lets the cards back out.
-        let landing = self.window_under(&source, screen, cx).map(|elsewhere| {
+        let landing = self.window_under(&source, window.bounds(), screen, cx).map(|elsewhere| {
             let target = self.target_elsewhere(&drag, &elsewhere, cx);
             (elsewhere, target)
         });
@@ -1518,7 +1546,7 @@ impl WorkspaceView {
         if let Some((elsewhere, target)) = landing {
             let target_window = elsewhere.window.clone();
             let Some(target) = target else {
-                return;
+                return true;
             };
             match dragged {
                 Dragged::Pane(pane) => {
@@ -1531,7 +1559,7 @@ impl WorkspaceView {
                     self.report(&result, window, cx);
                 }
             }
-            return;
+            return false;
         }
         match dragged {
             Dragged::Pane(pane) => {
@@ -1571,11 +1599,18 @@ impl WorkspaceView {
     /// its area's contents.
     pub(crate) fn open_floating_window(&mut self, id: &WindowId, frame: WindowFrame, cx: &mut Context<Self>) {
         if self.floating.contains_key(id) {
-            return;
+            return true;
+        }
+        let viewport = Bounds::new(Point::default(), window.viewport_size());
+        if viewport.contains(&position) {
+            // Over this window's own area (the engine's drop) or its chrome
+            // (nothing): not a request for a new window.
+            return false;
         }
         let fallback = WindowFrame::new(80.0, 80.0, f64::from(f32::from(FLOATING_WINDOW_SIZE.width)), f64::from(f32::from(FLOATING_WINDOW_SIZE.height)));
         let frame = frame.clamped_to_displays(&Self::display_frames(cx), fallback);
         let _ = self.layout.set_frame(id, Some(frame));
+        true
         let workspace = cx.entity();
         let window_id = id.clone();
         cx.defer(move |cx| {
@@ -1594,7 +1629,7 @@ impl WorkspaceView {
             let id_for_build = window_id.clone();
             let result = cx.open_window(options, |window, cx| {
                 let (area, skin) = WorkspaceSkin::dock_area(SharedString::from(format!("atlas-workspace-{id_for_build}")), None, window, cx);
-                let view = cx.new(|cx| FloatingView::new(for_build.clone(), id_for_build.clone(), area.clone(), cx));
+                let view = cx.new(|cx| FloatingView::new(for_build.clone(), id_for_build.clone(), area.clone(), window, cx));
                 opened = Some((view.clone(), area, skin));
                 // The close box sends the panes home rather than losing them.
                 let closing = for_build.clone();
@@ -1667,6 +1702,9 @@ impl WorkspaceView {
         self.apply_active_flags(cx);
         cx.notify();
     }
+        // A new window opens on top.
+        self.stacking.retain(|candidate| candidate != id);
+        self.stacking.push(id.clone());
 
     /// Focuses the active pane if it lives in window `id`, through the window's handle.
     fn focus_active_in(&self, id: &WindowId, cx: &mut Context<Self>) {
@@ -1723,6 +1761,7 @@ impl WorkspaceView {
             self.open_floating_window(&id, frame, cx);
         }
     }
+        self.stacking.retain(|candidate| candidate != id);
 
     /// The model stack shown by the engine group `node`, from any pane it displays.
     fn stack_of_group_any(&self, node: gpui_kit::component::dock::NodeId, cx: &App) -> Option<NodeId> {
@@ -1734,6 +1773,7 @@ impl WorkspaceView {
 
     /// Everything back to one pane: the active screen (or Today) alone in the
     /// window, as one undoable step. Application data is untouched.
+                self.stacking.retain(|candidate| *candidate != id);
     pub fn reset_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.layouts.current = None;
         let route = self.active_route(cx).unwrap_or(Route::Today);
@@ -1831,9 +1871,6 @@ impl WorkspaceView {
         if !cx.has_active_drag() {
             return None;
         }
-        // The pointer is over another window: this one shows nothing.
-        let drag = &drag.seen_from(in_window)?;
-        let from_elsewhere = drag.source != *in_window;
         let skin = self.skin_of(in_window)?;
         // The zones lie where the cards are heading, not where the spring has
         // them this frame: a target that moved under the pointer would be
@@ -1865,6 +1902,17 @@ impl WorkspaceView {
             };
             overlay = overlay.child(
                 div()
+        // The pointer is over another window: this one shows nothing — and
+        // the drag's own window keeps the engine's indicator down too, since
+        // the engine still sees the pointer move over its panes.
+        let Some(drag) = drag.seen_from(in_window) else {
+            if drag.source == *in_window {
+                skin.set_zone_hovered(true);
+            }
+            return None;
+        };
+        let drag = &drag;
+        let from_elsewhere = drag.source != *in_window;
                     .id("dock-elsewhere")
                     .test_support()
                     .aria_label(label)
@@ -1966,6 +2014,39 @@ impl WorkspaceView {
             let anchor = drag.pointer - origin;
             let room_below = root_size.height - anchor.y;
             let label_top = if room_below < px(48.) { anchor.y - px(32.) } else { anchor.y + px(16.) };
+        // The chip that follows the pointer: the dragged pane's icon and
+        // title, held where the pointer took hold of the tab. The workspace's
+        // own rather than the engine's drag preview, which every window would
+        // draw at its own last pointer position.
+        if let Dragged::Pane(pane) = &drag.dragged
+            && let Some(route) = self.pane_route(pane, cx)
+        {
+            let grab = point(drag.grab.x.clamp(px(0.), DRAG_CHIP_SIZE.width - px(16.)), drag.grab.y.clamp(px(0.), DRAG_CHIP_SIZE.height));
+            let chip_origin = drag.pointer - grab - origin;
+            let title = kinds::title_of(route, self.app.read(cx).household());
+            overlay = overlay.child(
+                h_flex()
+                    .id("dock-drag-chip")
+                    .test_support()
+                    .absolute()
+                    .left(chip_origin.x)
+                    .top(chip_origin.y)
+                    .w(DRAG_CHIP_SIZE.width)
+                    .h(DRAG_CHIP_SIZE.height)
+                    .px_2()
+                    .gap_2()
+                    .items_center()
+                    .rounded(px(6.))
+                    .bg(theme.background)
+                    .border_1()
+                    .border_color(theme.border)
+                    .shadow_md()
+                    .text_sm()
+                    .text_color(theme.foreground)
+                    .child(Icon::new(kinds::icon_of(route)).small())
+                    .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title)),
+            );
+        }
             let label_left = (anchor.x + px(16.)).min(root_size.width - px(260.)).max(px(0.));
             overlay = overlay.child(
                 div()
@@ -2490,15 +2571,26 @@ impl Render for WorkspaceView {
             .relative()
             .size_full()
             .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DragPanel>, window, cx| {
-                let panel = event.drag(cx).panel();
-                this.follow_drag(panel, event.event.position, window, cx);
+                let dragged = event.drag(cx);
+                let (panel, grab) = (dragged.panel(), dragged.drag_offset());
+                this.follow_drag(panel, event.event.position, grab, window, cx);
             }))
             .on_drag_move(cx.listener(|this, event: &DragMoveEvent<AnyDrag>, window, cx| {
                 let item = event.drag(cx).clone();
                 this.follow_launch_drag(&item, event.event.position, window, cx);
             }))
-            .capture_any_mouse_up(cx.listener(|this, _, _, cx| this.end_drag_overlay(cx)))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, event: &MouseUpEvent, window, cx| this.drag_released_outside(event.position, window, cx)))
+            // A release inside the window: the drop is this workspace's when
+            // another window lies on top of the pointer, and the engine's
+            // otherwise. Capture phase, before the engine's own drop
+            // listeners, so a taken drop does not reach them as well.
+            .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                if this.drag_released(event.position, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                this.drag_released(event.position, window, cx);
+            }))
             .child(recorder);
         let root = commands::attach(root, cx.entity());
         if has_panes { root.child(self.area.clone()).children(overlay) } else { root.child(self.render_empty(cx)) }

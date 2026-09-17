@@ -2388,8 +2388,10 @@ fn a_held_tab_widens_the_gaps_and_a_drop_closes_them(cx: &mut TestAppContext) {
     .unwrap();
     assert!(cx.update(|cx| workspace.read(cx).skin().is_held()), "the skin knows a tab is held");
     cx.update_window(window, |_, window, cx| {
+        assert!(window.find("dock-drag-chip").visible(), "the chip follows the pointer");
         window.press("escape", cx);
         window.render_frame(cx);
+        assert!(window.try_find("dock-drag-chip").is_none(), "and goes with the drag");
     })
     .unwrap();
     settle(cx, window);
@@ -2422,6 +2424,91 @@ fn the_edge_strips_lie_along_the_areas_own_edges(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// `in_main` (main-window coordinates) moved left until the floating window
+/// at `floating` (screen coordinates) no longer covers it — a floating window
+/// lies on top of the main window, so a covered point is the floating
+/// window's, not Today's.
+fn uncovered_point_of(main_origin: Point<Pixels>, in_main: Point<Pixels>, floating: Bounds<Pixels>) -> Point<Pixels> {
+    let mut candidate = in_main;
+    while floating.contains(&(main_origin + candidate)) && candidate.x > px(24.) {
+        candidate.x -= px(8.);
+    }
+    assert!(!floating.contains(&(main_origin + candidate)), "no point of Today is clear of the floating window");
+    candidate
+}
+
+#[gpui_kit::test]
+fn the_top_most_window_under_the_pointer_owns_the_drag(cx: &mut TestAppContext) {
+    // Today in the main window; Accounts in a floating window that lies over
+    // part of the main window.
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let today = cx.update(|cx| workspace.read(cx).panes_in_order()[0].clone());
+    let accounts = active(cx, &workspace);
+    let floating = drive(cx, window, &workspace, |workspace, window, cx| workspace.detach_pane(&accounts, None, window, cx).expect("detach"));
+    let floating_window = cx.update(|cx| workspace.read(cx).window_handle_of(&floating)).expect("the floating window");
+    assert_eq!(cx.update(|cx| workspace.read(cx).stacking().to_vec()), vec![atlas_workspace::WindowId::main(), floating.clone()], "the new window is on top");
+    let main_bounds = cx.update_window(window, |_, window, _| window.bounds()).unwrap();
+    let floating_bounds = cx.update_window(floating_window, |_, window, _| window.bounds()).unwrap();
+    // A point both windows cover, in the main window's coordinates.
+    let covered = floating_bounds.center() - main_bounds.origin;
+    assert!(main_bounds.contains(&(main_bounds.origin + covered)), "the floating window's centre is over the main window");
+    // Today's title picked up in the main window and carried to that point.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let handle = window.find(title_id(1)).bounds().center();
+        press_at(window, handle, cx);
+        move_pressed_to(window, handle + point(px(12.), px(4.)), cx);
+        move_pressed_to(window, covered, cx);
+        window.render_frame(cx);
+        assert!(cx.has_active_drag());
+        assert!(window.try_find("dock-band-bottom-0").is_none() && window.try_find("dock-drag-chip").is_none(), "the main window, underneath, shows nothing");
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let drag = workspace.read(cx).drag_in_flight().expect("a drag in flight");
+        assert_eq!(drag.elsewhere.as_ref().map(|elsewhere| elsewhere.window.clone()), Some(floating.clone()), "the floating window, on top, owns the drag");
+    });
+    cx.update_window(floating_window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("dock-elsewhere").visible(), "the floating window shows where the pane would land");
+        assert!(window.find("dock-band-bottom-0").visible() && window.find("dock-drag-chip").visible(), "with its strips and the chip");
+    })
+    .unwrap();
+    // The main window raised over the floating one (the platform activated
+    // it): the same point is the main window's own.
+    drive(cx, window, &workspace, |workspace, _, cx| workspace.raise_window(&atlas_workspace::WindowId::main(), cx));
+    cx.update_window(window, |_, window, cx| {
+        move_pressed_to(window, covered + point(px(1.), px(0.)), cx);
+        window.render_frame(cx);
+        assert!(window.find("dock-band-bottom-0").visible() && window.find("dock-drag-chip").visible(), "the main window, on top, shows its own zones and the chip");
+    })
+    .unwrap();
+    assert!(cx.update(|cx| workspace.read(cx).drag_in_flight().and_then(|drag| drag.elsewhere.clone()).is_none()));
+    cx.update_window(floating_window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("dock-elsewhere").is_none() && window.try_find("dock-drag-chip").is_none(), "the floating window, underneath now, shows nothing");
+    })
+    .unwrap();
+    // The floating window raised again, and the release inside the main
+    // window's own viewport: the pane goes to the window on top, not to the
+    // engine of the window the press was in.
+    drive(cx, window, &workspace, |workspace, _, cx| workspace.raise_window(&floating, cx));
+    cx.update_window(window, |_, window, cx| {
+        move_pressed_to(window, covered, cx);
+        window.render_frame(cx);
+        release_at(window, covered, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    settle(cx, window);
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.layout().window_id_of(&today), Some(floating.clone()), "Today moved into the floating window on top");
+        assert_eq!(workspace.layout().stack_of(&today), workspace.layout().stack_of(&accounts), "as a tab of Accounts");
+    });
+    assert_eq!(grid(cx, &workspace, 1, 1), "", "the main window is empty");
+}
+
 // ----- a drag from one window into another --------------------------------------------------
 
 #[gpui_kit::test]
@@ -2437,8 +2524,11 @@ fn the_window_a_pane_is_dragged_over_shows_its_strips_and_the_drop_takes_the_str
             (window.bounds().origin, window.find(pane_id(1)).bounds().center())
         })
         .unwrap();
-    let floating_origin = cx.update_window(floating_window, |_, window, _| window.bounds().origin).unwrap();
+    let floating_bounds = cx.update_window(floating_window, |_, window, _| window.bounds()).unwrap();
+    let floating_origin = floating_bounds.origin;
     let to_floating = |in_main: Point<Pixels>| main_origin + in_main - floating_origin;
+    // A point of Today the floating window (on top) does not cover.
+    let today_centre = uncovered_point_of(main_origin, today_centre, floating_bounds);
     // Pick Accounts up in the floating window and carry it over Today.
     cx.update_window(floating_window, |_, window, cx| {
         window.render_frame(cx);
@@ -2539,8 +2629,11 @@ fn a_pane_dragged_from_a_floating_window_into_the_main_window_lands_as_a_tab(cx:
             (window.bounds().origin, window.find(pane_id(1)).bounds().center())
         })
         .unwrap();
-    let floating_origin = cx.update_window(floating_window, |_, window, _| window.bounds().origin).unwrap();
-    // In the floating window's own coordinates, that point is outside it.
+    let floating_bounds = cx.update_window(floating_window, |_, window, _| window.bounds()).unwrap();
+    let floating_origin = floating_bounds.origin;
+    // A point of Today the floating window (on top) does not cover; in the
+    // floating window's own coordinates it is outside it.
+    let today_centre = uncovered_point_of(main_origin, today_centre, floating_bounds);
     let over_today = main_origin + today_centre - floating_origin;
     cx.update_window(floating_window, |_, window, cx| {
         window.render_frame(cx);

@@ -310,7 +310,6 @@ impl WorkspaceTabs {
         let panel = &group.panels()[ix];
         let title = title_of(panel, window, cx);
         let drag = (!group.is_locked()).then(|| group.drag_panel(ix, cx)).flatten();
-        let panel_for_ghost = panel.clone();
         let panel_id = panel.panel_id(cx);
         let closable = group.is_closable() && !group.is_collapsed();
         let group_for_close = group.clone();
@@ -336,8 +335,7 @@ impl WorkspaceTabs {
                                     cx.stop_propagation();
                                     drag.set_drag_offset(offset);
                                     drag.set_preview_size(DRAG_PREVIEW_SIZE);
-                                    let panel = panel_for_ghost.clone();
-                                    cx.new(|_| TabGhost { panel })
+                                    cx.new(|_| TabGhost)
                                 })
                             }),
                     )
@@ -380,8 +378,7 @@ impl WorkspaceTabs {
                 let panel_id = panel.panel_id(cx);
                 let selected = Some(ix) == displayed_ix;
                 let drag = (!group.is_locked()).then(|| group.drag_panel(ix, cx)).flatten();
-                let panel_for_ghost = panel.clone();
-                let group_name = SharedString::from(format!("workspace-tab-{ix}"));
+                        let group_name = SharedString::from(format!("workspace-tab-{ix}"));
                 let group_for_close = group.clone();
                 let close = Button::new(SharedString::from(format!("tab-close-{ix}")))
                     .icon(IconName::X)
@@ -409,8 +406,7 @@ impl WorkspaceTabs {
                             cx.stop_propagation();
                             drag.set_drag_offset(offset);
                             drag.set_preview_size(DRAG_PREVIEW_SIZE);
-                            let panel = panel_for_ghost.clone();
-                            cx.new(|_| TabGhost { panel })
+                            cx.new(|_| TabGhost)
                         })
                     })
                     .when(droppable, |this| {
@@ -512,26 +508,14 @@ fn title_of(panel: &Arc<dyn BasePanelView>, window: &mut Window, cx: &mut App) -
     }
 }
 
-/// The chip that follows the pointer while a tab is dragged: the tab's title.
-struct TabGhost {
-    panel: Arc<dyn BasePanelView>,
-}
+/// The engine's drag preview: nothing. The engine draws its preview in
+/// every window, each at that window's own last pointer position, so the
+/// chip that follows the pointer is the workspace's own, drawn by the drag
+/// overlay in the one window the pointer is over.
+pub(crate) struct TabGhost;
 
 impl Render for TabGhost {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        h_flex()
-            .w(DRAG_PREVIEW_SIZE.width)
-            .h(DRAG_PREVIEW_SIZE.height)
-            .px_2()
-            .items_center()
-            .rounded(px(6.))
-            .bg(theme.background)
-            .border_1()
-            .border_color(theme.border)
-            .shadow_md()
-            .text_sm()
-            .overflow_hidden()
-            .child(title_of(&self.panel, window, cx))
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
     }
 }
