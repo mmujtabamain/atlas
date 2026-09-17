@@ -646,14 +646,35 @@ edge. Zones are laid on the
 *target* inset/gap, not the spring's current value. The stacked pane-edge bands are gone; the
 engine's own centre/half zones on each pane stay.
 
-*Cross-window drag* (`view.rs`): `follow_dragged` gets the source window; `window_under(from,
+*Cross-window drag* (`view.rs`): `DragInFlight` carries its `source` window; `window_under(from,
 screen)` finds another workspace window under the pointer (last-opened floating first, then
-main) and the displayed pane there; `DragInFlight.elsewhere` records it; the other window draws
-`dock-elsewhere` over that pane ("Move here, as a tab" / "Open here, as a tab" / "…into this
-window"); the source window draws no zones meanwhile. `drag_released_outside` docks into that
-window (tab of the pane under the pointer, else its active stack) for panes and launcher
-screens alike, and only otherwise opens a new floating window. The floating title bar's gather
-button is an icon with the tooltip "Move the panes to the active pane in the main window".
+main), the displayed pane there and the pointer in that window's coordinates
+(`dock_targets::Elsewhere`). `render_drag_overlay_for` draws in whichever window the pointer is
+over (`DragInFlight::seen_from`): the same strips and gap pills as in the drag's own window,
+laid on that window's `Field`, and — from another window, with no zone hovered — `dock-elsewhere`
+over the pane under the pointer, else the window's active pane ("Move here, as a tab" / "Open
+here, as a tab"; there is no separate "into this window" any more, a drop over chrome joins the
+active pane as a tab). The source window draws nothing meanwhile. `drag_released_outside`
+resolves the drop through the same zones (`target_elsewhere`: the hovered zone's target, a
+refused zone does nothing, else the pane under the pointer or the active stack as a tab) for
+panes and launcher screens alike, and only otherwise opens a new floating window. The floating
+title bar's gather button is an icon with the tooltip "Move the panes to the active pane in the
+main window".
+
+*Which pane is active* (`pane.rs`): the active pane's title (its tab, or its lone title) is
+drawn in the foreground colour and every other pane's in `muted_foreground` — the tab of the
+group that has the focus is the bright one, as in a code editor. The 1 px ring border the pane
+used to draw around itself is gone. `set_workspace_active` notifies the pane's tab group as
+well, since the group draws the title.
+
+*Where a request opens* (`resolver::resolve_in`, `WorkspaceView::open`): "here" is the window
+the request came from (the gpui window of the click), not the window holding the active pane —
+an empty main window's "Add pane" opens in the main window even while a floating window has
+the active pane, and an empty window never reuses a pane that is open elsewhere (it asked for
+its first pane). With panes, the reuse rule is unchanged: an exact match in this window's
+active stack, then in this window, then anywhere, is focused. Settings
+(`kinds::opens_in_own_window`) always opens in a floating window of its own, whatever the
+intent; asked again, the open one is brought forward (the title-bar tooltip says so).
 
 **Verify.**
 
@@ -664,8 +685,12 @@ button is an icon with the tooltip "Move the panes to the active pane in the mai
    tests (`dropping_on_the_band_of_two_columns…`, `dropping_on_the_window_band…`,
    `dropping_on_a_groups_band…`, `the_analysis_shape…`, `hovering_a_band…`,
    `space_walks_the_edge_strip…`, `a_band_the_minimum_size_rule_refuses…`),
-   `a_pane_dragged_from_a_floating_window_into_the_main_window_lands_as_a_tab`; unit tests in
-   `dock_targets.rs`.
+   `a_pane_dragged_from_a_floating_window_into_the_main_window_lands_as_a_tab`,
+   `the_window_a_pane_is_dragged_over_shows_its_strips_and_the_drop_takes_the_strip`,
+   `settings_opens_in_a_window_of_its_own_and_is_reused`,
+   `an_empty_main_window_opens_its_first_pane_in_itself_while_a_floating_window_has_the_active_pane`;
+   unit tests in `dock_targets.rs`; `a_request_resolves_in_the_window_it_came_from…` in
+   `atlas-workspace/tests/layout.rs`.
 2. The held state in the harness: springs do not advance (the executor's clock is fake), so
    tests see the cards at rest; the held state is checked by eye (screenshots): a held tab
    widens the gaps, pulls the cards in, dims them to 75 % — and leaves every title, icon and
@@ -676,9 +701,17 @@ button is an icon with the tooltip "Move the panes to the active pane in the mai
    (a row of that column), the gap between 1 and the column places a column.
 5. Edge strips: each side, level 0, then Space through the levels for panes that meet the edge;
    Space with the pointer over a *gap* (no effect); the refused case (minimum share) on a strip.
-6. A drag from window A over window B then back into A: A's zones return, B's highlight goes.
-   Drop over B's chrome (title bar): the pane joins B's active stack. Drop between two windows
-   (over the desktop): a new floating window, as before. Launcher drag into a floating window.
+6. A drag from window A over window B then back into A: A's zones return, B's go. In B: the
+   strips and gaps light and take the drop like B's own drags (Space cycles the levels there
+   too); between them the pane under the pointer, or B's active pane over chrome, lights with
+   "Move here, as a tab" and the drop joins it. Drop between two windows (over the desktop): a
+   new floating window, as before. Launcher drag into a floating window.
+11. Focus: click into each pane in turn — only that pane's title is bright, no outline around
+    the pane; with a floating window focused, every title in the main window is muted.
+12. Settings: the gear, the launcher's + menu, the app menu (macOS) — a floating window each
+    time it is not open, the same one brought forward when it is; the main window unchanged.
+13. Empty main window with the only pane in a floating window (focused): "Add pane → <the
+    same screen>" — a new pane in the main window, the floating one untouched.
 7. Text while a tab is held: run a drag over every screen (the reference shoot with a drag
    step) and look for text, images and icons that wrap or clip badly in the narrower cards.
 8. Keys while a tab is held: only Escape (cancel) and Space (cycle) do anything. Space and
