@@ -1364,6 +1364,36 @@ impl WorkspaceView {
         None
     }
 
+    /// `window` is now the top of the stack: the platform raised it.
+    pub fn raise_window(&mut self, window: &WindowId, cx: &mut Context<Self>) {
+        if self.stacking.last() == Some(window) {
+            return;
+        }
+        self.stacking.retain(|candidate| candidate != window);
+        self.stacking.push(window.clone());
+        log::debug!("workspace: window {window} raised; stacking {:?}", self.stacking);
+        cx.notify();
+    }
+
+    /// The windows of the workspace, bottom to top.
+    pub fn stacking(&self) -> &[WindowId] {
+        &self.stacking
+    }
+
+    /// The view of a pane.
+    pub(crate) fn pane_view(&self, pane: &PaneId) -> Option<Entity<PaneView>> {
+        self.panes.get(pane).cloned()
+    }
+
+    /// The one pane of `window`, when the window holds exactly one: its
+    /// title bar then carries that pane's title.
+    pub(crate) fn single_pane_of_window(&self, window: &WindowId) -> Option<PaneId> {
+        match self.layout.window(window)?.root.as_ref()? {
+            LayoutNode::Stack { panes, .. } if panes.len() == 1 => panes.first().cloned(),
+            _ => None,
+        }
+    }
+
     /// The field the drop zones of `window` are laid on: its area, and the
     /// inset and gap the cards are heading for.
     fn field_of(&self, window: &WindowId, cx: &App) -> Option<Field> {
@@ -1527,7 +1557,7 @@ impl WorkspaceView {
     pub(crate) fn drag_released(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(drag) = self.drag.clone() else {
             self.end_drag_overlay(cx);
-            return;
+            return false;
         };
         let dragged = drag.dragged.clone();
         let screen = window.bounds().origin + position;
@@ -1559,6 +1589,12 @@ impl WorkspaceView {
                     self.report(&result, window, cx);
                 }
             }
+            return true;
+        }
+        let viewport = Bounds::new(Point::default(), window.viewport_size());
+        if viewport.contains(&position) {
+            // Over this window's own area (the engine's drop) or its chrome
+            // (nothing): not a request for a new window.
             return false;
         }
         match dragged {
@@ -1574,6 +1610,7 @@ impl WorkspaceView {
                 self.report(&result, window, cx);
             }
         }
+        true
     }
 
     /// Where a new floating window goes: at `at` (its top-left corner, on
@@ -1599,18 +1636,11 @@ impl WorkspaceView {
     /// its area's contents.
     pub(crate) fn open_floating_window(&mut self, id: &WindowId, frame: WindowFrame, cx: &mut Context<Self>) {
         if self.floating.contains_key(id) {
-            return true;
-        }
-        let viewport = Bounds::new(Point::default(), window.viewport_size());
-        if viewport.contains(&position) {
-            // Over this window's own area (the engine's drop) or its chrome
-            // (nothing): not a request for a new window.
-            return false;
+            return;
         }
         let fallback = WindowFrame::new(80.0, 80.0, f64::from(f32::from(FLOATING_WINDOW_SIZE.width)), f64::from(f32::from(FLOATING_WINDOW_SIZE.height)));
         let frame = frame.clamped_to_displays(&Self::display_frames(cx), fallback);
         let _ = self.layout.set_frame(id, Some(frame));
-        true
         let workspace = cx.entity();
         let window_id = id.clone();
         cx.defer(move |cx| {
@@ -1672,6 +1702,9 @@ impl WorkspaceView {
             }
         });
         self.floating.insert(id.clone(), FloatingWindow { handle, view, area, skin, _subscriptions: vec![events] });
+        // A new window opens on top.
+        self.stacking.retain(|candidate| candidate != id);
+        self.stacking.push(id.clone());
         log::info!("workspace: floating window {id} opened at {frame:?}");
         if self.layout.window(id).is_none() {
             // The model dropped the window before it could open (its pane
@@ -1702,9 +1735,6 @@ impl WorkspaceView {
         self.apply_active_flags(cx);
         cx.notify();
     }
-        // A new window opens on top.
-        self.stacking.retain(|candidate| candidate != id);
-        self.stacking.push(id.clone());
 
     /// Focuses the active pane if it lives in window `id`, through the window's handle.
     fn focus_active_in(&self, id: &WindowId, cx: &mut Context<Self>) {
@@ -1731,6 +1761,7 @@ impl WorkspaceView {
             self.layout.windows.remove(index);
         }
         self.floating.remove(id);
+        self.stacking.retain(|candidate| candidate != id);
         cx.notify();
     }
 
@@ -1742,6 +1773,7 @@ impl WorkspaceView {
         let vanished: Vec<WindowId> = self.floating.keys().filter(|id| !live.contains(*id)).cloned().collect();
         for id in vanished {
             if let Some(floating) = self.floating.remove(&id) {
+                self.stacking.retain(|candidate| *candidate != id);
                 log::info!("workspace: floating window {id} has no panes left; closing it");
                 if floating.handle == window.window_handle() {
                     window.remove_window();
@@ -1761,7 +1793,6 @@ impl WorkspaceView {
             self.open_floating_window(&id, frame, cx);
         }
     }
-        self.stacking.retain(|candidate| candidate != id);
 
     /// The model stack shown by the engine group `node`, from any pane it displays.
     fn stack_of_group_any(&self, node: gpui_kit::component::dock::NodeId, cx: &App) -> Option<NodeId> {
@@ -1773,7 +1804,6 @@ impl WorkspaceView {
 
     /// Everything back to one pane: the active screen (or Today) alone in the
     /// window, as one undoable step. Application data is untouched.
-                self.stacking.retain(|candidate| *candidate != id);
     pub fn reset_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.layouts.current = None;
         let route = self.active_route(cx).unwrap_or(Route::Today);
@@ -1847,7 +1877,7 @@ impl WorkspaceView {
     }
 
     /// The skin of `in_window`'s area.
-    fn skin_of(&self, in_window: &WindowId) -> Option<&Rc<WorkspaceSkin>> {
+    pub(crate) fn skin_of(&self, in_window: &WindowId) -> Option<&Rc<WorkspaceSkin>> {
         if *in_window == WindowId::main() { Some(&self.skin) } else { self.floating.get(in_window).map(|floating| &floating.skin) }
     }
 
@@ -1872,6 +1902,17 @@ impl WorkspaceView {
             return None;
         }
         let skin = self.skin_of(in_window)?;
+        // The pointer is over another window: this one shows nothing — and
+        // the drag's own window keeps the engine's indicator down too, since
+        // the engine still sees the pointer move over its panes.
+        let Some(drag) = drag.seen_from(in_window) else {
+            if drag.source == *in_window {
+                skin.set_zone_hovered(true);
+            }
+            return None;
+        };
+        let drag = &drag;
+        let from_elsewhere = drag.source != *in_window;
         // The zones lie where the cards are heading, not where the spring has
         // them this frame: a target that moved under the pointer would be
         // missed, and the strips need their room from the first frame.
@@ -1902,17 +1943,6 @@ impl WorkspaceView {
             };
             overlay = overlay.child(
                 div()
-        // The pointer is over another window: this one shows nothing — and
-        // the drag's own window keeps the engine's indicator down too, since
-        // the engine still sees the pointer move over its panes.
-        let Some(drag) = drag.seen_from(in_window) else {
-            if drag.source == *in_window {
-                skin.set_zone_hovered(true);
-            }
-            return None;
-        };
-        let drag = &drag;
-        let from_elsewhere = drag.source != *in_window;
                     .id("dock-elsewhere")
                     .test_support()
                     .aria_label(label)
@@ -1984,36 +2014,6 @@ impl WorkspaceView {
                 }));
             overlay = overlay.child(strip);
         }
-        if let Some(zone) = hovered {
-            // The rectangle the pane would take, and what will happen.
-            if let Outcome::Allowed { preview } = &zone.outcome {
-                let placed = field.place(*preview);
-                let rect = Bounds::new(placed.origin - origin, placed.size);
-                overlay = overlay.child(
-                    div()
-                        .id("dock-preview")
-                        .test_support()
-                        .absolute()
-                        .left(rect.origin.x)
-                        .top(rect.origin.y)
-                        .w(rect.size.width)
-                        .h(rect.size.height)
-                        .bg(primary.opacity(0.12))
-                        .border_1()
-                        .border_color(primary)
-                        .rounded(px(3.)),
-                );
-            }
-            let label = match &zone.outcome {
-                Outcome::Allowed { .. } => zone.label.clone(),
-                Outcome::Unchanged => "Already here: dropping changes nothing".to_string(),
-                Outcome::Refused(_) => "Not enough room here".to_string(),
-            };
-            // Beside the pointer, or above it when the pointer is near the
-            // bottom (the bands people aim for are at the edges).
-            let anchor = drag.pointer - origin;
-            let room_below = root_size.height - anchor.y;
-            let label_top = if room_below < px(48.) { anchor.y - px(32.) } else { anchor.y + px(16.) };
         // The chip that follows the pointer: the dragged pane's icon and
         // title, held where the pointer took hold of the tab. The workspace's
         // own rather than the engine's drag preview, which every window would
@@ -2047,6 +2047,36 @@ impl WorkspaceView {
                     .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title)),
             );
         }
+        if let Some(zone) = hovered {
+            // The rectangle the pane would take, and what will happen.
+            if let Outcome::Allowed { preview } = &zone.outcome {
+                let placed = field.place(*preview);
+                let rect = Bounds::new(placed.origin - origin, placed.size);
+                overlay = overlay.child(
+                    div()
+                        .id("dock-preview")
+                        .test_support()
+                        .absolute()
+                        .left(rect.origin.x)
+                        .top(rect.origin.y)
+                        .w(rect.size.width)
+                        .h(rect.size.height)
+                        .bg(primary.opacity(0.12))
+                        .border_1()
+                        .border_color(primary)
+                        .rounded(px(3.)),
+                );
+            }
+            let label = match &zone.outcome {
+                Outcome::Allowed { .. } => zone.label.clone(),
+                Outcome::Unchanged => "Already here: dropping changes nothing".to_string(),
+                Outcome::Refused(_) => "Not enough room here".to_string(),
+            };
+            // Beside the pointer, or above it when the pointer is near the
+            // bottom (the bands people aim for are at the edges).
+            let anchor = drag.pointer - origin;
+            let room_below = root_size.height - anchor.y;
+            let label_top = if room_below < px(48.) { anchor.y - px(32.) } else { anchor.y + px(16.) };
             let label_left = (anchor.x + px(16.)).min(root_size.width - px(260.)).max(px(0.));
             overlay = overlay.child(
                 div()

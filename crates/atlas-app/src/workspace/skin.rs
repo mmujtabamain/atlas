@@ -64,6 +64,9 @@ pub struct SkinState {
     /// edge strip), which takes the drop: the engine's pane indicator would
     /// promise a second place for it.
     zone_hovered: Cell<bool>,
+    /// The window's own title bar shows the one pane's title, so the pane
+    /// draws no bar of its own: a single-pane floating window has one bar.
+    merged_title: Cell<bool>,
 }
 
 impl SkinState {
@@ -99,7 +102,7 @@ impl WorkspaceSkin {
     pub fn dock_area(id: impl Into<SharedString>, version: Option<usize>, window: &mut Window, cx: &mut App) -> (Entity<DockArea>, Rc<Self>) {
         let mut skin = None;
         let area = cx.new(|cx| {
-            let this = Rc::new(WorkspaceSkin { base: DockSkin::new(cx), state: Rc::new(SkinState { area: cx.weak_entity(), held: Cell::new(false), laid_out: Cell::new((GAP / 2., GAP)), zone_hovered: Cell::new(false) }) });
+            let this = Rc::new(WorkspaceSkin { base: DockSkin::new(cx), state: Rc::new(SkinState { area: cx.weak_entity(), held: Cell::new(false), laid_out: Cell::new((GAP / 2., GAP)), zone_hovered: Cell::new(false), merged_title: Cell::new(false) }) });
             skin = Some(this.clone());
             DockArea::new(id, version, window, cx).with_renderer(this)
         });
@@ -138,6 +141,14 @@ impl WorkspaceSkin {
     /// so the engine's own drop indicator stays out of the way meanwhile.
     pub fn set_zone_hovered(&self, hovered: bool) {
         self.state.zone_hovered.set(hovered);
+    }
+
+    /// Whether the window's title bar carries the one pane's title, so the
+    /// pane draws none: set by a floating window that holds a single pane.
+    pub fn set_merged_title(&self, merged: bool, cx: &mut App) {
+        if self.state.merged_title.replace(merged) != merged {
+            let _ = self.state.area.update(cx, |_, cx| cx.notify());
+        }
     }
 
     /// The inset the area is heading for.
@@ -263,16 +274,20 @@ impl TabGroupRenderer for WorkspaceTabs {
         self.base.frame(group, window, cx).bg(gap_colour(cx)).p(half_gap).opacity(opacity)
     }
 
-    /// The card's lower half.
+    /// The card's lower half — or the whole card, when the window's title
+    /// bar carries the title and the pane draws no bar.
     fn content_frame(&self, group: &TabGroupContext, window: &mut Window, cx: &mut App) -> Stateful<Div> {
         let (background, border) = (cx.theme().background, cx.theme().border);
-        self.base.content_frame(group, window, cx).bg(background).border_1().border_t_0().border_color(border).rounded_b(RADIUS).overflow_hidden()
+        let frame = self.base.content_frame(group, window, cx).bg(background).border_1().border_color(border).overflow_hidden();
+        if self.state.merged_title.get() { frame.rounded(RADIUS) } else { frame.border_t_0().rounded_b(RADIUS) }
     }
 
     fn render_tab_bar(&self, group: &TabGroupContext, window: &mut Window, cx: &mut App) -> AnyElement {
         let visible: Vec<usize> = group.panels().iter().enumerate().filter(|(_, panel)| panel.visible(cx)).map(|(ix, _)| ix).collect();
         match visible.as_slice() {
             [] => Empty.into_any_element(),
+            // The window's title bar shows this one pane's title.
+            [_] if self.state.merged_title.get() => Empty.into_any_element(),
             [ix] => self.render_title(group, *ix, window, cx),
             _ => self.render_tabs(group, &visible, window, cx),
         }

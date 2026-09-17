@@ -2509,6 +2509,30 @@ fn the_top_most_window_under_the_pointer_owns_the_drag(cx: &mut TestAppContext) 
     assert_eq!(grid(cx, &workspace, 1, 1), "", "the main window is empty");
 }
 
+#[gpui_kit::test]
+fn a_floating_window_with_one_pane_has_one_bar(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let accounts = active(cx, &workspace);
+    let floating = drive(cx, window, &workspace, |workspace, window, cx| workspace.detach_pane(&accounts, None, window, cx).expect("detach"));
+    let floating_window = cx.update(|cx| workspace.read(cx).window_handle_of(&floating)).expect("the floating window");
+    cx.update_window(floating_window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("floating-pane-title").visible(), "the title bar carries the pane's title");
+        assert!(window.find(title_id(2)).visible(), "the pane's own title element, in the title bar");
+        assert!(window.try_find("tab-close").is_none(), "and the pane draws no bar of its own");
+        assert!(window.find("floating-pane-close").visible() && window.find("floating-pane-menu").visible() && window.find("floating-gather").visible());
+    })
+    .unwrap();
+    // A second pane in the window: the panes draw their bars again.
+    drive(cx, floating_window, &workspace, |workspace, window, cx| workspace.stack_onto(&accounts, Route::Rules, window, cx).expect("tab"));
+    cx.update_window(floating_window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("floating-pane-title").is_none(), "two panes: the title bar names the window");
+        assert!(window.find("tab-close-0").visible() || window.find("tab-close-1").visible(), "and the panes have their tab bar");
+    })
+    .unwrap();
+}
+
 // ----- a drag from one window into another --------------------------------------------------
 
 #[gpui_kit::test]
