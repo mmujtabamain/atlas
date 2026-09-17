@@ -646,20 +646,48 @@ edge. Zones are laid on the
 *target* inset/gap, not the spring's current value. The stacked pane-edge bands are gone; the
 engine's own centre/half zones on each pane stay.
 
-*Cross-window drag* (`view.rs`): `DragInFlight` carries its `source` window; `window_under(from,
-screen)` finds another workspace window under the pointer (last-opened floating first, then
-main), the displayed pane there and the pointer in that window's coordinates
-(`dock_targets::Elsewhere`). `render_drag_overlay_for` draws in whichever window the pointer is
-over (`DragInFlight::seen_from`): the same strips and gap pills as in the drag's own window,
-laid on that window's `Field`, and — from another window, with no zone hovered — `dock-elsewhere`
-over the pane under the pointer, else the window's active pane ("Move here, as a tab" / "Open
-here, as a tab"; there is no separate "into this window" any more, a drop over chrome joins the
-active pane as a tab). The source window draws nothing meanwhile. `drag_released_outside`
-resolves the drop through the same zones (`target_elsewhere`: the hovered zone's target, a
-refused zone does nothing, else the pane under the pointer or the active stack as a tab) for
-panes and launcher screens alike, and only otherwise opens a new floating window. The floating
-title bar's gather button is an icon with the tooltip "Move the panes to the active pane in the
-main window".
+*Cross-window drag — one window owns it* (`view.rs`): there is one drag record for the whole
+workspace (`DragInFlight`: what is dragged, its `source` window, the pointer there, the `grab`
+within the tab, and `elsewhere`) and one resolver, `window_under(from, from_bounds, screen)`,
+which walks the workspace's **stacking order** top-down and takes the first window under the
+screen point: the source itself (`None`: the pointer is over the drag's own window) or another
+window (`dock_targets::Elsewhere`: that window, the displayed pane under the pointer, the point
+in its coordinates). The stacking (`WorkspaceView::stacking`, bottom to top) is the app's own
+explicit order: a window goes on top when it opens and when the platform activates it
+(`observe_window_activation` on the main window and on each floating window →
+`raise_window`); the press that starts a drag has activated the source, so a floating window
+over the main window is on top until the main window is clicked. Windows never decide for
+themselves that "the pointer is inside me": the source window's bounds come from the `Window`
+at hand (its handle cannot be read while it is being updated). `render_drag_overlay_for` draws
+only in the window the resolver named (`DragInFlight::seen_from`): the strips and gap pills
+laid on that window's `Field`, the **chip** that follows the pointer (`dock-drag-chip`: the
+pane's icon and title, held at the `grab`; the engine's own drag preview is an empty view now,
+because the engine draws its preview in every window at each window's last pointer position),
+and — from another window, with no zone hovered — `dock-elsewhere` over the pane under the
+pointer, else the window's active pane ("Move here, as a tab" / "Open here, as a tab"; a drop
+over chrome joins the active pane as a tab). The drag's own window shows nothing while the
+pointer is over another, and keeps the engine's indicator down (`set_zone_hovered(true)`),
+since the platform still delivers the pointer's moves to it. `drag_released(position)` runs
+for every release — inside the window (`capture_any_mouse_up`, before the engine's drop
+listeners, which it stops when it took the drop) and outside (`on_mouse_up_out`) — and lands
+the pane in the window the resolver names (`target_elsewhere`: the hovered zone's target, a
+refused zone does nothing, else the pane under the pointer or the active stack as a tab),
+opens a window of its own over no window, or leaves the drop to the engine over the window's
+own area. Launcher drags keep the engine's chip (they also reorder the launcher, outside the
+workspace); a pane's chip is not drawn over the desktop between windows — gpui 0.3.4 cannot
+move a window, so a cursor-following window is not available without extending every
+platform backend.
+
+*One bar in a single-pane floating window* (`floating.rs`, `skin.rs`): when a floating
+window's tree is one stack of one pane, the window's title bar (`TitleBar`, which keeps the
+traffic-light padding, the window move on its empty space and the double-click) carries that
+pane's title (`floating-pane-title`, the pane's own `pane-title-<n>` inside; the drag handle,
+with a `DragPanel::new(panel, group node)` and a mouse-down that stops propagation so the bar
+does not move the window), `floating-pane-close`, `floating-pane-menu` (the pane's menu plus
+Close) and `floating-gather`; the skin (`set_merged_title`) draws no tab bar for the pane and
+rounds the content frame on all corners. With two panes or more the bar names the window and
+the panes draw their bars. The gather button's tooltip is "Move the panes to the active pane in
+the main window".
 
 *Which pane is active* (`pane.rs`): the active pane's title (its tab, or its lone title) is
 drawn in the foreground colour and every other pane's in `muted_foreground` — the tab of the
@@ -688,7 +716,9 @@ intent; asked again, the open one is brought forward (the title-bar tooltip says
    `a_pane_dragged_from_a_floating_window_into_the_main_window_lands_as_a_tab`,
    `the_window_a_pane_is_dragged_over_shows_its_strips_and_the_drop_takes_the_strip`,
    `settings_opens_in_a_window_of_its_own_and_is_reused`,
-   `an_empty_main_window_opens_its_first_pane_in_itself_while_a_floating_window_has_the_active_pane`;
+   `an_empty_main_window_opens_its_first_pane_in_itself_while_a_floating_window_has_the_active_pane`,
+   `the_top_most_window_under_the_pointer_owns_the_drag`, `a_floating_window_with_one_pane_has_one_bar`
+   (and the chip in `a_held_tab_widens_the_gaps…`);
    unit tests in `dock_targets.rs`; `a_request_resolves_in_the_window_it_came_from…` in
    `atlas-workspace/tests/layout.rs`.
 2. The held state in the harness: springs do not advance (the executor's clock is fake), so
@@ -706,6 +736,16 @@ intent; asked again, the open one is brought forward (the title-bar tooltip says
    too); between them the pane under the pointer, or B's active pane over chrome, lights with
    "Move here, as a tab" and the drop joins it. Drop between two windows (over the desktop): a
    new floating window, as before. Launcher drag into a floating window.
+6a. Overlap: a floating window over the main window. Drag from the main window to a point the
+   floating window covers — only the floating window shows anything (its strips, the chip, the
+   pane highlight); the main window shows no zones, no chip, no engine indicator; the release
+   lands in the floating window. Click the main window (it comes on top), the same drag: the
+   main window's own zones, the floating window shows nothing. Two floating windows overlapping:
+   the last clicked one wins. The chip appears in exactly one window at a time, never two.
+6b. Single-pane floating window: one bar — the pane's title, ×, ··· and the gather icon, with
+   room for the traffic lights on macOS; drag the title into the main window (a pane drag, the
+   window does not move); drag the bar's empty space (the window moves); a second pane in the
+   window brings the tab bar back and the bar names the window.
 11. Focus: click into each pane in turn — only that pane's title is bright, no outline around
     the pane; with a floating window focused, every title in the main window is muted.
 12. Settings: the gear, the launcher's + menu, the app menu (macOS) — a floating window each
