@@ -58,6 +58,13 @@ pub fn definition_of(route: Route) -> PaneDefinition {
     }
 }
 
+/// Whether a screen lives in a floating window of its own rather than in a
+/// pane of the window it was asked for from: Settings does, so it never
+/// takes the place of the work it is about.
+pub fn opens_in_own_window(route: Route) -> bool {
+    matches!(route, Route::Settings)
+}
+
 /// The route a definition names: `None` for a kind this build does not know,
 /// a detail kind without its record id, or `Welcome`, which is not a pane.
 pub fn route_of(definition: &PaneDefinition) -> Option<Route> {

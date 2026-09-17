@@ -625,8 +625,28 @@ impl WorkspaceView {
     /// available yet, so `OpenNewWindow` opens in the active stack instead.
     pub fn open(&mut self, route: Route, intent: Intent, window: &mut Window, cx: &mut Context<Self>) -> Result<PaneId, OpError> {
         let definition = kinds::definition_of(route);
-        let resolution = resolver::resolve(&self.layout, &definition.kind, definition.resource.as_ref(), intent);
-        log::info!("workspace: open {} ({intent:?}) → {resolution:?}", route.slug());
+        // A screen that lives in a window of its own: the one already open,
+        // else a new floating window, whatever the intent.
+        if kinds::opens_in_own_window(route) {
+            let existing = self.layout.find_panes(&definition.kind, definition.resource.as_ref()).into_iter().next();
+            let result = match existing {
+                Some(pane) => {
+                    log::info!("workspace: open {} ({intent:?}) → already open as {pane}; focusing it", route.slug());
+                    self.set_active_pane(&pane, window, cx).map(|()| pane)
+                }
+                None => {
+                    log::info!("workspace: open {} ({intent:?}) → a window of its own", route.slug());
+                    self.open_in_new_window(route, None, window, cx)
+                }
+            };
+            self.report(&result, window, cx);
+            return result;
+        }
+        // "Here" is the window the request came from, whichever window
+        // holds the active pane.
+        let here = self.window_id_of_handle(window.window_handle()).unwrap_or_else(WindowId::main);
+        let resolution = resolver::resolve_in(&self.layout, &here, &definition.kind, definition.resource.as_ref(), intent);
+        log::info!("workspace: open {} ({intent:?}) from {here} → {resolution:?}", route.slug());
         let result = match resolution {
             Resolution::Focus(pane) => self.set_active_pane(&pane, window, cx).map(|()| pane),
             Resolution::Create { window: target_window, target } => self.create_pane(route, definition, &target_window, target, window, cx),

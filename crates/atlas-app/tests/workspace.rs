@@ -1375,7 +1375,23 @@ fn the_title_bar_opens_settings_and_resets_the_layout(cx: &mut TestAppContext) {
     .unwrap();
     settle(cx, window);
     assert_eq!(pane_count(cx, &workspace), 3);
-    cx.update_window(window, |_, window, _| assert!(window.find("screen-settings").visible(), "Settings opened as a pane")).unwrap();
+    // Settings lives in a floating window of its own, not in the main window.
+    let settings_window = cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        let floating = workspace.floating_windows();
+        assert_eq!(floating.len(), 1, "Settings opened in a floating window");
+        workspace.window_handle_of(&floating[0]).expect("its window")
+    });
+    cx.update_window(settings_window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("screen-settings").visible(), "Settings is shown there");
+    })
+    .unwrap();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("screen-settings").is_none(), "and not in the main window");
+    })
+    .unwrap();
     // Layout ▾ → Reset layout: one pane, showing the active screen.
     cx.update_window(window, |_, window, cx| window.click("layout-menu", cx)).unwrap();
     cx.run_until_parked();
@@ -2407,6 +2423,49 @@ fn the_edge_strips_lie_along_the_areas_own_edges(cx: &mut TestAppContext) {
 }
 
 // ----- a drag from one window into another --------------------------------------------------
+
+#[gpui_kit::test]
+fn settings_opens_in_a_window_of_its_own_and_is_reused(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let settings = drive(cx, window, &workspace, |workspace, window, cx| workspace.open(Route::Settings, Intent::Open, window, cx).expect("open settings"));
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        let floating = workspace.floating_windows();
+        assert_eq!(floating.len(), 1, "Settings took a floating window");
+        assert_eq!(workspace.layout().window_id_of(&settings), floating.first().cloned());
+    });
+    // Asked again — from the main window, with another intent — it is the
+    // same pane, brought forward.
+    let again = drive(cx, window, &workspace, |workspace, window, cx| workspace.open(Route::Settings, Intent::OpenRight, window, cx).expect("open settings again"));
+    assert_eq!(again, settings);
+    assert_eq!(cx.update(|cx| workspace.read(cx).floating_windows().len()), 1);
+    assert_eq!(cx.update(|cx| workspace.read(cx).active_pane()), Some(settings));
+    assert_eq!(grid(cx, &workspace, 2, 1), "12", "the main window is as it was");
+}
+
+#[gpui_kit::test]
+fn an_empty_main_window_opens_its_first_pane_in_itself_while_a_floating_window_has_the_active_pane(cx: &mut TestAppContext) {
+    let (window, _app, workspace) = today_and_accounts(cx);
+    let today = cx.update(|cx| workspace.read(cx).panes_in_order()[0].clone());
+    let accounts = active(cx, &workspace);
+    // Both panes leave for floating windows; the main window is empty and
+    // the active pane is in a floating one.
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.detach_pane(&accounts, None, window, cx).expect("detach"));
+    drive(cx, window, &workspace, |workspace, window, cx| workspace.detach_pane(&today, None, window, cx).expect("detach"));
+    assert_eq!(grid(cx, &workspace, 1, 1), "");
+    assert_ne!(cx.update(|cx| workspace.read(cx).layout().window_id_of(&today)), Some(atlas_workspace::WindowId::main()));
+    // "Add pane → Accounts" in the main window: a pane of the main window,
+    // even though Accounts is open in a floating window.
+    let opened = drive(cx, window, &workspace, |workspace, window, cx| workspace.open(Route::Accounts, Intent::Open, window, cx).expect("open"));
+    assert_ne!(opened, accounts, "a new pane, not the floating one");
+    assert_eq!(cx.update(|cx| workspace.read(cx).layout().window_id_of(&opened)), Some(atlas_workspace::WindowId::main()));
+    assert_eq!(grid(cx, &workspace, 1, 1), "1", "one pane in the main window");
+    // Asked from the floating window that shows Today, Today is simply focused.
+    let today_window = cx.update(|cx| workspace.read(cx).window_handle_of(&workspace.read(cx).layout().window_id_of(&today).unwrap())).expect("Today's window");
+    let found = drive(cx, today_window, &workspace, |workspace, window, cx| workspace.open(Route::Today, Intent::Open, window, cx).expect("open"));
+    assert_eq!(found, today);
+}
+
 
 #[gpui_kit::test]
 fn a_pane_dragged_from_a_floating_window_into_the_main_window_lands_as_a_tab(cx: &mut TestAppContext) {

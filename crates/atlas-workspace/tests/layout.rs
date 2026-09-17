@@ -1022,6 +1022,63 @@ fn the_resolver_focuses_exact_matches_and_creates_otherwise() {
     assert_eq!(resolver::resolve(&ws, "today", None, Intent::Open), Resolution::Focus(today_in_main));
 }
 
+#[test]
+fn a_request_resolves_in_the_window_it_came_from_and_an_empty_window_gets_its_own_pane() {
+    let mut ws = WorkspaceLayout::new("test");
+    let today = open(&mut ws, "today", DockTarget::edge(Side::Right));
+    let floating = ws.detach_pane(&today, WindowFrame::new(0.0, 0.0, 500.0, 400.0)).unwrap();
+    // The floating window holds the only pane and is the active window.
+    assert_eq!(ws.active_window().map(|window| window.id.clone()), Some(floating.clone()));
+    assert!(ws.main_window().unwrap().root.is_none(), "the main window is empty");
+    // Asked from the (empty) main window, a screen opens there — even Today,
+    // which the floating window shows: an empty window asked for its first pane.
+    assert_eq!(
+        resolver::resolve_in(&ws, &WindowId::main(), "today", None, Intent::Open),
+        Resolution::Create {
+            window: WindowId::main(),
+            target: DockTarget::edge(Side::Right)
+        }
+    );
+    assert_eq!(
+        resolver::resolve_in(&ws, &WindowId::main(), "account", Some(&j!({ "id": "a1" })), Intent::OpenBelow),
+        Resolution::Create {
+            window: WindowId::main(),
+            target: DockTarget::edge(Side::Bottom)
+        }
+    );
+    // Asked from the floating window: Today is reused there, another screen
+    // joins its stack.
+    let floating_stack = stack_of(&ws, &today);
+    assert_eq!(resolver::resolve_in(&ws, &floating, "today", None, Intent::Open), Resolution::Focus(today.clone()));
+    assert_eq!(
+        resolver::resolve_in(&ws, &floating, "account", Some(&j!({ "id": "a1" })), Intent::Open),
+        Resolution::Create {
+            window: floating.clone(),
+            target: DockTarget::tab(floating_stack)
+        }
+    );
+    // Once the main window has a pane, a screen open only in the floating
+    // window is reused from the main window too.
+    let account_in_main = open(&mut ws, "account", DockTarget::edge(Side::Left));
+    let main_stack = stack_of(&ws, &account_in_main);
+    assert_eq!(resolver::resolve_in(&ws, &WindowId::main(), "today", None, Intent::Open), Resolution::Focus(today));
+    assert_eq!(
+        resolver::resolve_in(&ws, &WindowId::main(), "forecast", None, Intent::Open),
+        Resolution::Create {
+            window: WindowId::main(),
+            target: DockTarget::tab(main_stack)
+        }
+    );
+    // A window that is not in the layout counts as the main window.
+    assert_eq!(
+        resolver::resolve_in(&ws, &WindowId::new("nowhere"), "forecast", None, Intent::Open),
+        Resolution::Create {
+            window: WindowId::main(),
+            target: DockTarget::tab(stack_of(&ws, &account_in_main))
+        }
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 13. Focus geometry
 // ---------------------------------------------------------------------------

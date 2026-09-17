@@ -436,7 +436,7 @@ impl Shell {
                                 .ghost()
                                 .compact()
                                 .icon(IconName::Settings)
-                                .tooltip("Open Settings in a pane")
+                                .tooltip("Open Settings in its own window")
                                 .on_click(move |_, window, cx| {
                                     settings.update(cx, |workspace, cx| {
                                         let _ = workspace.open(Route::Settings, Intent::Open, window, cx);
