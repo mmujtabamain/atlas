@@ -2380,6 +2380,32 @@ fn a_held_tab_widens_the_gaps_and_a_drop_closes_them(cx: &mut TestAppContext) {
     assert!(!cx.update(|cx| workspace.read(cx).skin().is_held()), "and that it was let go");
 }
 
+#[gpui_kit::test]
+fn the_edge_strips_lie_along_the_areas_own_edges(cx: &mut TestAppContext) {
+    // The engine measures the area through a child of its frame, which sits
+    // inside any padding the frame has; the strips are laid on that
+    // measurement, so an inset carried by the frame itself would move every
+    // strip inward by the inset (and the bottom one out of the area).
+    let (window, _app, _workspace) = today_and_accounts(cx);
+    cx.update_window(window, |_, window, cx| {
+        start_drag_over(window, 2, 1, cx);
+        let area = window.find("dock-area").bounds();
+        let margin = px(3.);
+        let top = window.find("dock-band-top-0").bounds();
+        let bottom = window.find("dock-band-bottom-0").bounds();
+        let left = window.find("dock-band-left-0").bounds();
+        let right = window.find("dock-band-right-0").bounds();
+        assert_eq!(top.origin.y, area.origin.y + margin, "the top strip starts a margin below the area's top edge");
+        assert_eq!(bottom.bottom_right().y, area.bottom_right().y - margin, "the bottom strip ends a margin above the area's bottom edge");
+        assert_eq!(left.origin.x, area.origin.x + margin, "the left strip starts a margin in from the area's left edge");
+        assert_eq!(right.bottom_right().x, area.bottom_right().x - margin, "the right strip ends a margin in from the area's right edge");
+        assert!(area.contains(&bottom.origin) && area.contains(&bottom.bottom_right()), "the bottom strip is inside the area, where a pointer can reach it");
+        window.press("escape", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
 // ----- a drag from one window into another --------------------------------------------------
 
 #[gpui_kit::test]

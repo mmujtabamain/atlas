@@ -152,17 +152,24 @@ impl WorkspaceSkin {
 }
 
 impl DockAreaRenderer for WorkspaceSkin {
-    /// The area pulls in from its edges while a tab is held, on a spring.
+    /// The area's outer frame: the well the cards sit in. It carries no
+    /// padding of its own — the engine measures the area through a child
+    /// of this frame, and a child sits inside the padding, so padding here
+    /// would put the recorded bounds (which the drop zones are laid on) off
+    /// by the inset. The inset goes on the centre frame instead.
     fn frame(&self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
         let motion = cx.theme().motion_tokens().spring_move;
         let inset = spring(("workspace-inset", "inset"), self.state.target_inset(), motion, window, cx);
         let (_, gap) = self.state.laid_out.get();
         self.state.laid_out.set((inset, gap));
-        div().id("dock-area").p(inset).bg(gap_colour(cx))
+        div().id("dock-area").bg(gap_colour(cx))
     }
 
+    /// The cards pull in from the area's edges while a tab is held, on the
+    /// spring the frame advanced this frame.
     fn center_frame(&self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
-        self.base.center_frame(window, cx)
+        let (inset, _) = self.state.laid_out.get();
+        self.base.center_frame(window, cx).p(inset)
     }
 
     fn split_frame(&self, node: NodeId, _: Axis, _: &mut Window, cx: &mut App) -> Stateful<Div> {

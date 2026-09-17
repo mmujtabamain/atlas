@@ -637,7 +637,12 @@ synchronously, since the release may be the next event (the tests send it with n
 child before the divider, label "Place between these panes, as a column/row") and one
 `ZoneKind::Edge` strip per window edge in the area's inset (`dock-band-<side>-<level>`;
 level 0 = `WindowEdge`; `Space` walks `ancestor_targets` for the pane meeting the edge under the
-pointer, broadest first, and the highlight shrinks to that target's span). Zones are laid on the
+pointer, broadest first, and the highlight shrinks to that target's span). The strips are laid
+on the engine's recorded area bounds (`DockArea::bounds`), which gpui-base measures through a
+child canvas of the frame — a child sits inside the frame's padding — so the skin keeps the
+frame unpadded and puts the held inset on the centre frame (`WorkspaceSkin::center_frame`);
+`the_edge_strips_lie_along_the_areas_own_edges` pins each strip a margin in from the area's
+edge. Zones are laid on the
 *target* inset/gap, not the spring's current value. The stacked pane-edge bands are gone; the
 engine's own centre/half zones on each pane stay.
 
@@ -679,6 +684,8 @@ button is an icon with the tooltip "Move the panes to the active pane in the mai
 8. Keys while a tab is held: only Escape (cancel) and Space (cycle) do anything. Space and
    then a release without moving the pointer: the drop lands (the strip at the new level).
 9. The sash: hover a divider (faint line), drag it (accent line, full length), release.
+10. The four strips in a real window (springs settled): each hugs its window edge, a margin in;
+    the bottom one is reachable — hold a tab at the very bottom of the area and the strip lights.
 
 **Known / fragile.** The re-dispatched mouse move after Space leans on gpui's public
 `Window::dispatch_event`; if a gpui upgrade counts a mouse-up as mouse input itself the
